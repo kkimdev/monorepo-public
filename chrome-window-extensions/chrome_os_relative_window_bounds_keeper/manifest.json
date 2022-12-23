@@ -1,0 +1,15 @@
+{
+    "manifest_version": 3,
+    "name": "Relative Window Bounds Keeper for Chrome OS",
+    "description": "Relative Window Bounds Keeper for Chrome OS",
+    "version": "0.1",
+  
+    "permissions": [
+      "system.display"
+    ],
+  
+    "background" : {
+      "service_worker": "service_worker.js"
+    }
+  }
+  
