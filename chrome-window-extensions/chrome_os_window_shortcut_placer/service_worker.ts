@@ -77,7 +77,6 @@ chrome.commands.onCommand.addListener(command => {
     place(parseInt(command.slice(-1)));
 });
 
-
 chrome.action.onClicked.addListener(tab => {
     chrome.tabs.create({
         url: "chrome://extensions/shortcuts",

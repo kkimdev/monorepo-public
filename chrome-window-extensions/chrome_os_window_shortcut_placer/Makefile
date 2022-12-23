@@ -12,6 +12,7 @@ build: clean
 	mkdir -p ./dist/
 
 	cp manifest.json ./dist/
+	cp options_ui.html ./dist/
 	tsc
 
 # https://react-icons.github.io/react-icons/search?q=window

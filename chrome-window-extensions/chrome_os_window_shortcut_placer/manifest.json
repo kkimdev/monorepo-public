@@ -10,10 +10,15 @@
   
     "action": {
       "browser_style": true,
-      "default_title": "Click Me",
+      "default_title": "Configure Shortcuts",
       "default_icon": {
         "128": "icon-128.png"
       }
+    },
+
+    "options_ui": {
+      "page": "options_ui.html",
+      "open_in_tab": true
     },
 
     "background" : {

@@ -1,10 +1,15 @@
 {
-    "include": ["./service_worker.ts"],
+    "include": [
+        "./service_worker.ts",
+        "./options_ui.ts",
+    ],
     "compilerOptions": {
         "target": "esnext",
         "sourceMap": true,
         "outDir": "./dist/",
         "moduleResolution": "nodenext",
-        "types" : ["chrome-types"]
+        "types": [
+            "chrome-types"
+        ],
     }
 }
