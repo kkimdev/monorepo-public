@@ -1,0 +1,27 @@
+{
+    "manifest_version": 3,
+    "name": "Window Shortcut Placer for Chrome OS",
+    "description": "Window Shortcut Placer for Chrome OS",
+    "version": "0.8",
+  
+    "permissions": [
+      "system.display"
+    ],
+  
+    "background" : {
+      "service_worker": "service_worker.js"
+    },
+  
+    "commands": {
+      "place-1": {"description": "1"},
+      "place-2": {"description": "2"},
+      "place-3": {"description": "3"},
+      "place-4": {"description": "4", "suggested_key": "Alt+A"},
+      "place-5": {"description": "5", "suggested_key": "Alt+S"},
+      "place-6": {"description": "6", "suggested_key": "Alt+D"},
+      "place-7": {"description": "7"},
+      "place-8": {"description": "8"},
+      "place-9": {"description": "9"}
+    }
+  }
+  
