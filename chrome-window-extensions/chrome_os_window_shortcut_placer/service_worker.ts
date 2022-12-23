@@ -2,18 +2,23 @@
 
 // TODO: console.debug is not working for some reason so using console.log for now.
 
-function computeCenter(box) {
+interface Point {
+    x: number;
+    y: number;
+}
+
+function computeCenter(box): Point {
     return {
         x: box.left + box.width / 2,
         y: box.top + box.height / 2
     };
 }
 
-function computeDistance(point1, point2) {
+function computeDistance(point1: Point, point2: Point): number {
     return (point2.x - point1.x) ** 2 + (point2.y - point1.y) ** 2;
 }
 
-async function getClosestDisplay(window) {
+async function getClosestDisplay(window: chrome.windows.Window): Promise<chrome.system.display.DisplayUnitInfo> {
     const displayInfos = await chrome.system.display.getInfo();
     if (displayInfos.length === 1)
         return displayInfos[0];
@@ -24,7 +29,7 @@ async function getClosestDisplay(window) {
 
     // TODO: minimum distance logic might not be the best algorithm.
     let minDistance = Infinity;
-    let minDistanceWindow = undefined
+    let minDistanceWindow = undefined;
 
     for (const displayInfo of displayInfos) {
         const distance = computeDistance(windowCenter, computeCenter(displayInfo.workArea));
@@ -65,6 +70,7 @@ async function place(positionNumber: number): Promise<void> {
         height: Math.round(height),
         state: "normal",
     } as const;
+
     console.log("Placing window", focusedWindow, "to", placingBounds);
     chrome.windows.update(focusedWindow.id, placingBounds);
 }
