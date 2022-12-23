@@ -151,3 +151,6 @@ addListeners();
 // TODO: Need to ensure `addAllWindows()` is finished before listener handling.
 //       Though it will be the case 99.99% times in practice already.
 addAllWindows();
+
+let s = chrome.storage.session.get();
+console.log(s.getBytesInUse());
