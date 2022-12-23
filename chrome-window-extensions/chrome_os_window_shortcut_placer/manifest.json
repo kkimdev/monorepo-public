@@ -8,6 +8,14 @@
       "system.display"
     ],
   
+    "action": {
+      "browser_style": true,
+      "default_title": "Click Me",
+      "default_icon": {
+        "128": "icon-128.png"
+      }
+    },
+
     "background" : {
       "service_worker": "service_worker.js"
     },

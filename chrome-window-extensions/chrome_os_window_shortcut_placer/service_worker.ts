@@ -1,5 +1,3 @@
-// import * as T from "chrome-types";
-
 // TODO: console.debug is not working for some reason so using console.log for now.
 
 interface Point {
@@ -47,21 +45,20 @@ async function getClosestDisplay(window: chrome.windows.Window): Promise<chrome.
 async function place(positionNumber: number): Promise<void> {
     const focusedWindow = await chrome.windows.getLastFocused();
     const display = await getClosestDisplay(focusedWindow);
-    const displayWorkArea = display.workArea;
 
-    let left = displayWorkArea.left;
-    let top = displayWorkArea.top;
-    let width = displayWorkArea.width;
-    let height = displayWorkArea.height;
+    let left = display.workArea.left;
+    let top = display.workArea.top;
+    let width = display.workArea.width;
+    let height = display.workArea.height;
 
     if ([3, 6, 9].includes(positionNumber))
-        left += displayWorkArea.width / 2;
+        left += display.workArea.width / 2;
     if ([1, 2, 3].includes(positionNumber))
-        top += displayWorkArea.height / 2;
+        top += display.workArea.height / 2;
     if ([1, 4, 7, 3, 6, 9].includes(positionNumber))
-        width = displayWorkArea.width / 2;
+        width = display.workArea.width / 2;
     if ([7, 8, 9, 1, 2, 3].includes(positionNumber))
-        height = displayWorkArea.height / 2;
+        height = display.workArea.height / 2;
 
     const placingBounds = {
         top: Math.round(top),
@@ -75,7 +72,14 @@ async function place(positionNumber: number): Promise<void> {
     chrome.windows.update(focusedWindow.id, placingBounds);
 }
 
-chrome.commands.onCommand.addListener((command) => {
+chrome.commands.onCommand.addListener(command => {
     console.log('Command received:', command);
     place(parseInt(command.slice(-1)));
+});
+
+
+chrome.action.onClicked.addListener(tab => {
+    chrome.tabs.create({
+        url: "chrome://extensions/shortcuts",
+      });
 });
