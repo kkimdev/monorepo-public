@@ -8,8 +8,5 @@
         "sourceMap": true,
         "outDir": "./dist/",
         "moduleResolution": "nodenext",
-        "types": [
-            "chrome-types"
-        ]
     }
 }

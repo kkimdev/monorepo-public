@@ -16,7 +16,7 @@ function computeDistance(point1: Point, point2: Point): number {
     return (point2.x - point1.x) ** 2 + (point2.y - point1.y) ** 2;
 }
 
-async function getClosestDisplay(window: chrome.windows.Window): Promise<chrome.system.display.DisplayUnitInfo> {
+async function getClosestDisplay(window: chrome.windows.Window): Promise<chrome.system.display.DisplayInfo> {
     const displayInfos = await chrome.system.display.getInfo();
     if (displayInfos.length === 1)
         return displayInfos[0];
@@ -75,10 +75,4 @@ async function place(positionNumber: number): Promise<void> {
 chrome.commands.onCommand.addListener(command => {
     console.log('Command received:', command);
     place(parseInt(command.slice(-1)));
-});
-
-chrome.action.onClicked.addListener(tab => {
-    chrome.tabs.create({
-        url: "chrome://extensions/shortcuts",
-    });
 });
