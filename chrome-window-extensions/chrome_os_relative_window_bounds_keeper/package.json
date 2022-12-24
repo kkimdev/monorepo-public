@@ -1,5 +1,1 @@
-{
-	"devDependencies": {
-		"chrome-types": "^0.1.156"
-	}
-}
+{"devDependencies":{"@types/chrome":"^0.0.206"}}

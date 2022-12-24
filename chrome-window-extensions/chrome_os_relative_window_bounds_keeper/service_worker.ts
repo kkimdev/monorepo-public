@@ -9,6 +9,16 @@ let displayChangedVersion: number = 0;
 let scaledWindowBounds = {}
 let chromeSystemDisplayGetInfoCache = undefined;
 
+// function getScaledWindowBounds() {
+//     chrome.storage.session.set({ scaledWindowBounds: value }).then(() => {
+//         console.log("Value is set to " + value);
+//       });
+// }
+
+// function setScaledWindowBounds(value): void {
+    
+// }
+
 function logger(...msgs) {
     // TODO: console.debug is not working for some reason so using console.log for now.
     console.log('\t'.repeat(Error().stack.split('\n').length - 2), ...msgs);
@@ -146,11 +156,7 @@ function addListeners() {
         }
     );
 }
-
 addListeners();
 // TODO: Need to ensure `addAllWindows()` is finished before listener handling.
 //       Though it will be the case 99.99% times in practice already.
 addAllWindows();
-
-let s = chrome.storage.session.get();
-console.log(s.getBytesInUse());

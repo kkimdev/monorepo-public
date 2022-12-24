@@ -10,6 +10,6 @@
         "moduleResolution": "nodenext",
         "types": [
             "chrome-types"
-        ],
+        ]
     }
 }
