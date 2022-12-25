@@ -75,3 +75,8 @@ chrome.commands.onCommand.addListener(command => {
     console.log('Command received:', command);
     place(parseInt(command.slice(-1)));
 });
+
+chrome.runtime.onInstalled.addListener(details => {
+    if (details.reason === "install")
+        chrome.tabs.create({ url: "chrome://extensions/shortcuts" });
+});
