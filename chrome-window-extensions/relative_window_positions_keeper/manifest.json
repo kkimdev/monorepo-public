@@ -3,7 +3,10 @@
     "name": "Relative Window Positions Keeper (Chrome OS)",
     "description": "Relative Window Positions Keeper (Chrome OS)",
     "version": "0.1",
-  
+    "icons": {
+      "128": "icon-128.png"
+    },
+
     "permissions": [
       "system.display",
       "storage"
