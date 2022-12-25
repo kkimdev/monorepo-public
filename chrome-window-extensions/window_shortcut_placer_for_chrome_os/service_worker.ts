@@ -42,7 +42,7 @@ async function getClosestDisplay(window: chrome.windows.Window): Promise<chrome.
     return minDistanceWindow;
 }
 
-async function place(positionNumber: number): Promise<void> {
+async function place(positionNumber: number): Promise<chrome.windows.Window> {
     const focusedWindow = await chrome.windows.getLastFocused();
     const display = await getClosestDisplay(focusedWindow);
 
@@ -60,16 +60,15 @@ async function place(positionNumber: number): Promise<void> {
     if ([7, 8, 9, 1, 2, 3].includes(positionNumber))
         height = display.workArea.height / 2;
 
-    const placingBounds = {
+    const placingBounds: chrome.windows.UpdateInfo = {
         top: Math.round(top),
         left: Math.round(left),
         width: Math.round(width),
         height: Math.round(height),
-        state: "normal",
     } as const;
 
     console.log("Placing window", focusedWindow, "to", placingBounds);
-    chrome.windows.update(focusedWindow.id, placingBounds);
+    return chrome.windows.update(focusedWindow.id, placingBounds);
 }
 
 chrome.commands.onCommand.addListener(command => {
