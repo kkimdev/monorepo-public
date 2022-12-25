@@ -5,6 +5,7 @@ interface Point {
     y: number;
 }
 
+// TODO: Use this structure.
 interface ScaledWindowBoundsInterface {
     left: number;
     top: number;
@@ -12,20 +13,12 @@ interface ScaledWindowBoundsInterface {
     height: number;
 }
 
-// let displayConfigVersion: number = 0;
-// let scaledWindowBounds = {}
-// let chromeSystemDisplayGetInfoCache = undefined;
-
-let isDisplayConfigVersionUpdateInProgress = false;
-
 class AsyncTaskQueue {
     #taskQueue: (() => Promise<void>)[] = [];
     #resolve: (value: unknown) => void;
     #promise = new Promise((resolve, reject) => {
         this.#resolve = resolve;
     });
-
-
 
     constructor() {
         this.taskRunLoop();
@@ -68,30 +61,21 @@ async function chromeStorageSessionGet(key: string) {
     return (await chrome.storage.session.get([key]))[key];
 }
 
-
-async function getdisplayConfigVersion() {
-    return chromeStorageSessionGet('displayConfigVersion');
-}
-
-async function setdisplayConfigVersion(value) {
-    chromeStorageSessionSet('displayConfigVersion', value);
-}
-
 async function getscaledWindowBounds() {
     return chromeStorageSessionGet('scaledWindowBounds');
 }
 
-async function setscaledWindowBounds(value) {
+async function setscaledWindowBounds(value: {}) {
     chromeStorageSessionSet('scaledWindowBounds', value);
 }
 
 
-function logger(...msgs) {
+function logger(...msgs: any) {
     // TODO: console.debug is not working for some reason so using console.log for now.
     console.log('\t'.repeat(Error().stack.split('\n').length - 2), ...msgs);
 }
 
-function computeCenter(box): Point {
+function computeCenter(box: chrome.system.display.Bounds): Point {
     return {
         x: box.left + box.width / 2,
         y: box.top + box.height / 2
@@ -102,14 +86,12 @@ function computeDistance(point1: Point, point2: Point): number {
     return (point2.x - point1.x) ** 2 + (point2.y - point1.y) ** 2;
 }
 
-async function getClosestDisplay(window) {
+async function getClosestDisplay(window: chrome.windows.Window) {
     const chromeSystemDisplayGetInfoCache = await chrome.system.display.getInfo();
     if (chromeSystemDisplayGetInfoCache.length === 1)
         return chromeSystemDisplayGetInfoCache[0];
 
-    const windowCenter = computeCenter(window);
-    // logger(displayInfos);
-    // logger('windowCenter', windowCenter);
+    const windowCenter = computeCenter(window as chrome.system.display.Bounds);
 
     // TODO: minimum distance logic might not be the best algorithm.
     let minDistance = Infinity;
@@ -139,7 +121,6 @@ async function addAllWindows(): Promise<void> {
 async function addWindow(window: chrome.windows.Window): Promise<void> {
     const closestDisplay = await getClosestDisplay(window);
     const newScaledWindowBound = {
-        displayConfigVersion: await getdisplayConfigVersion(),
         left: window.left / closestDisplay.workArea.width,
         width: window.width / closestDisplay.workArea.width,
         top: window.top / closestDisplay.workArea.height,
@@ -153,12 +134,6 @@ async function addWindow(window: chrome.windows.Window): Promise<void> {
 
 async function updateWindow(window: chrome.windows.Window): Promise<void> {
     logger("updateWindow", window);
-    // const scaledWindowBounds = await getscaledWindowBounds();
-    // const displayConfigVersion = await getdisplayConfigVersion();
-    // if (scaledWindowBounds[window.id]['displayConfigVersion'] < displayConfigVersion) {
-    //     logger("updateWindow ignored because displayConfigVersion is lower", scaledWindowBounds[window.id]['displayConfigVersion'], "<", displayConfigVersion);
-    //     return;
-    // }
     await addWindow(window);
 }
 
@@ -172,21 +147,14 @@ async function removeWindow(windowId: number) {
     await setscaledWindowBounds(scaledWindowBounds);
 }
 
-async function repositionWindows(version: number) {
-    logger("repositionWindows start, version:", version, "displayInfos:", await chrome.system.display.getInfo());
-    const displayConfigVersion = await getdisplayConfigVersion();
+async function repositionWindows() {
+    logger("repositionWindows start, displayInfos:", await chrome.system.display.getInfo());
     const scaledWindowBounds = await getscaledWindowBounds();
 
     for (const [windowId, value] of Object.entries(scaledWindowBounds)) {
-        // await new Promise(r => setTimeout(r, 100));
         const scaledBound = scaledWindowBounds[windowId];
         const window = await chrome.windows.get(parseInt(windowId));
         const closestDisplay = await getClosestDisplay(window);
-
-        if (version < displayConfigVersion)
-            break;
-
-        console.assert(scaledBound['displayConfigVersion'] < displayConfigVersion)
 
         const newBound = {
             left: Math.round(scaledBound.left * closestDisplay.workArea.width),
@@ -198,22 +166,18 @@ async function repositionWindows(version: number) {
 
         logger("repositionWindows update window from", window, "to", newBound, "by", scaledBound);
         chrome.windows.update(window.id, newBound);
-        // await addWindow(window);
     }
-    logger("repositionWindows end, version:", version);
+    logger("repositionWindows end");
 }
 
 function addListeners() {
-    chrome.system.display.onDisplayChanged.addListener(
-        () => {
-            logger("chrome.system.display.onDisplayChanged");
+    chrome.windows.onCreated.addListener(
+        (window) => {
+            logger("chrome.windows.onCreated", window);
             asyncTaskQueue.push(async () => {
-                let version = await getdisplayConfigVersion();
-                version += 1;
-                await setdisplayConfigVersion(version);
-
-                await repositionWindows(version);
+                await addWindow(window);
             });
+
         }
     );
 
@@ -226,16 +190,6 @@ function addListeners() {
         }
     );
 
-    chrome.windows.onCreated.addListener(
-        (window) => {
-            logger("chrome.windows.onCreated", window);
-            asyncTaskQueue.push(async () => {
-                await addWindow(window);
-            });
-
-        }
-    );
-
     chrome.windows.onRemoved.addListener(
         (windowId) => {
             logger("chrome.windows.onRemoved", windowId);
@@ -244,15 +198,22 @@ function addListeners() {
             });
         }
     );
+
+    chrome.system.display.onDisplayChanged.addListener(
+        () => {
+            logger("chrome.system.display.onDisplayChanged");
+            asyncTaskQueue.push(async () => {
+                await repositionWindows();
+            });
+        }
+    );
 }
-addListeners();
 
 asyncTaskQueue.push(async () => {
-    if (await getdisplayConfigVersion())
-        return;
-
-    await setdisplayConfigVersion(1);
-    await setscaledWindowBounds({});
-    await addAllWindows()
+    if (!await getscaledWindowBounds()) {
+        await setscaledWindowBounds({});
+        await addAllWindows()
+    }
 });
 
+addListeners();
