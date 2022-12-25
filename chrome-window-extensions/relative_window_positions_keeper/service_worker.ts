@@ -153,12 +153,12 @@ async function addWindow(window: chrome.windows.Window): Promise<void> {
 
 async function updateWindow(window: chrome.windows.Window): Promise<void> {
     logger("updateWindow", window);
-    const scaledWindowBounds = await getscaledWindowBounds();
-    const displayConfigVersion = await getdisplayConfigVersion();
-    if (scaledWindowBounds[window.id]['displayConfigVersion'] < displayConfigVersion) {
-        logger("updateWindow ignored because displayConfigVersion is lower", scaledWindowBounds[window.id]['displayConfigVersion'], "<", displayConfigVersion);
-        return;
-    }
+    // const scaledWindowBounds = await getscaledWindowBounds();
+    // const displayConfigVersion = await getdisplayConfigVersion();
+    // if (scaledWindowBounds[window.id]['displayConfigVersion'] < displayConfigVersion) {
+    //     logger("updateWindow ignored because displayConfigVersion is lower", scaledWindowBounds[window.id]['displayConfigVersion'], "<", displayConfigVersion);
+    //     return;
+    // }
     await addWindow(window);
 }
 
@@ -173,11 +173,12 @@ async function removeWindow(windowId: number) {
 }
 
 async function repositionWindows(version: number) {
-    logger("repositionWindows start, version:", version);
+    logger("repositionWindows start, version:", version, "displayInfos:", await chrome.system.display.getInfo());
     const displayConfigVersion = await getdisplayConfigVersion();
     const scaledWindowBounds = await getscaledWindowBounds();
 
     for (const [windowId, value] of Object.entries(scaledWindowBounds)) {
+        // await new Promise(r => setTimeout(r, 100));
         const scaledBound = scaledWindowBounds[windowId];
         const window = await chrome.windows.get(parseInt(windowId));
         const closestDisplay = await getClosestDisplay(window);
@@ -195,9 +196,9 @@ async function repositionWindows(version: number) {
             state: "normal"
         } as const;
 
-        logger("repositionWindows update window:", window, "from", scaledBound, "to", newBound);
+        logger("repositionWindows update window from", window, "to", newBound, "by", scaledBound);
         chrome.windows.update(window.id, newBound);
-        await addWindow(window);
+        // await addWindow(window);
     }
     logger("repositionWindows end, version:", version);
 }
@@ -210,6 +211,7 @@ function addListeners() {
                 let version = await getdisplayConfigVersion();
                 version += 1;
                 await setdisplayConfigVersion(version);
+
                 await repositionWindows(version);
             });
         }
