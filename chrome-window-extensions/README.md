@@ -8,3 +8,6 @@ make build
 
 ## Relative Window Positions Keeper (Chrome OS)
 - Chrome web store Pending review
+
+## Note
+- https://chrome.google.com/webstore/devconsole/
