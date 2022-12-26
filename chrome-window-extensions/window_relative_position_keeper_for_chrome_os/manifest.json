@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
-    "name": "Relative Window Positions Keeper (Chrome OS)",
-    "description": "Relative Window Positions Keeper (Chrome OS)",
+    "name": "Window Relative Position Keeper (Chrome OS)",
+    "description": "Window Relative Position Keeper (Chrome OS)",
     "version": "0.1",
     "icons": {
       "128": "icon-128.png"
