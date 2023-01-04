@@ -2,7 +2,7 @@
     "manifest_version": 3,
     "name": "Window Shortcut Placer (Chrome OS)",
     "description": "Window Shortcut Placer (Chrome OS)",
-    "version": "0.13",
+    "version": "0.14",
     "icons": {
       "128": "icon-128.png"
     },
