@@ -65,6 +65,7 @@ async function place(positionNumber: number): Promise<chrome.windows.Window> {
         left: Math.round(left),
         width: Math.round(width),
         height: Math.round(height),
+        state: "normal",
     } as const;
 
     console.log("Placing window", focusedWindow, "to", placingBounds);
