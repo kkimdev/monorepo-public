@@ -60,15 +60,6 @@ async function place(positionNumber: number): Promise<chrome.windows.Window> {
     if ([7, 8, 9, 1, 2, 3].includes(positionNumber))
         height = display.workArea.height / 2;
 
-    // Avoid exact left or right half by offsetting the top pixel.
-    // Exact left or right half size is recognized by Chrome OS and treated
-    // differently.  For example, Chrome OS can change its size when the other
-    // half window is gone arbitrarily.
-    if ([4, 5, 6, 7, 8, 9].includes(positionNumber)) {
-        top += 1;
-        height -= 1;
-    }
-
     const placingBounds: chrome.windows.UpdateInfo = {
         top: Math.round(top),
         left: Math.round(left),
