@@ -157,7 +157,7 @@ async function repositionWindows() {
         const closestDisplay = await getClosestDisplay(window);
         if (window.state !== "normal") {
             logger("repositionWindows skip update window", window, "because the `window.state`", window.state, "is not `normal`.");
-            continue
+            continue;
         }
 
         const newBound = {
