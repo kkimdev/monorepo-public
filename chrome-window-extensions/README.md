@@ -9,7 +9,7 @@ make build
 
 
 ## Relative Window Positions Keeper (Chrome OS)
-- Chrome web store Pending review
+- Chrome web store https://chrome.google.com/webstore/detail/window-relative-position/bkddeedcnaejmjmadijljckjoddhnnfk?hl=en&authuser=0
 - Build
 ```bash
 cd ./window_relative_position_keeper_for_chrome_os
