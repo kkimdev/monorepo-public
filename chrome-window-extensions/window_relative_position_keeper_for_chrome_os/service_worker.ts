@@ -155,6 +155,10 @@ async function repositionWindows() {
         const scaledBound = scaledWindowBounds[windowId];
         const window = await chrome.windows.get(parseInt(windowId));
         const closestDisplay = await getClosestDisplay(window);
+        if (window.state !== "normal") {
+            logger("repositionWindows skip update window", window, "because the `window.state`", window.state, "is not `normal`.");
+            continue
+        }
 
         const newBound = {
             left: Math.round(scaledBound.left * closestDisplay.workArea.width),
