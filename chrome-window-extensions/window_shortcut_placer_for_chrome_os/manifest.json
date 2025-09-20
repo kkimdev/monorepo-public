@@ -2,13 +2,14 @@
     "manifest_version": 3,
     "name": "Window Shortcut Placer (Chrome OS)",
     "description": "Window Shortcut Placer (Chrome OS)",
-    "version": "0.16",
+    "version": "0.17",
     "icons": {
       "128": "icon-128.png"
     },
-  
+
     "permissions": [
-      "system.display"
+      "system.display",
+      "storage"
     ],
 
     "options_ui": {
@@ -19,7 +20,7 @@
     "background" : {
       "service_worker": "service_worker.js"
     },
-  
+
     "commands": {
       "place-1": {"description": "1"},
       "place-2": {"description": "2"},
@@ -32,4 +33,3 @@
       "place-9": {"description": "9"}
     }
   }
-  
