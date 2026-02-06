@@ -91,6 +91,21 @@ append_if_not_exist 'export EDITOR="code --wait --new-window"' ~/.bashrc
 # TODO: https://yazi-rs.github.io/docs/quick-start
 nix profile install nixpkgs#yazi
 
+if ! grep -qF "function y() {" ~/.bashrc; then
+cat << 'EOF' >> ~/.bashrc
+function y() {
+	local tmp="$(mktemp -t "yazi-cwd.XXXXXX")" cwd
+	command yazi "$@" --cwd-file="$tmp"
+	IFS= read -r -d '' cwd < "$tmp"
+	[ "$cwd" != "$PWD" ] && [ -d "$cwd" ] && builtin cd -- "$cwd"
+	rm -f -- "$tmp"
+}
+EOF
+    echo "Added y() function to ~/.bashrc"
+else
+    echo "y() function already exists in ~/.bashrc"
+fi
+
 # zellij
 # TODO: .bashrc setup
 # https://zellij.dev/documentation/integration
