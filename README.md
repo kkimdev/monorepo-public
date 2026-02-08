@@ -61,6 +61,9 @@ curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix 
 . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
 # https://nixos.org/manual/nix/stable/command-ref/conf-file.html
 
+mkdir -p ~/.config/nixpkgs
+echo "{ allowUnfree = true; }" > ~/.config/nixpkgs/config.nix
+
 # TODO: No longer needed as DeterminateSystems' Nix installer has this config at `/etc/nix/nix.conf` ?
 # mkdir -p ~/.config/nix/
 # echo "experimental-features = nix-command flakes" > ~/.config/nix/nix.conf
