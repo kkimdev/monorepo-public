@@ -63,6 +63,7 @@ curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix 
 
 mkdir -p ~/.config/nixpkgs
 echo "{ allowUnfree = true; }" > ~/.config/nixpkgs/config.nix
+append_if_not_exist 'export NIXPKGS_ALLOW_UNFREE=1' ~/.bashrc
 
 # TODO: No longer needed as DeterminateSystems' Nix installer has this config at `/etc/nix/nix.conf` ?
 # mkdir -p ~/.config/nix/
