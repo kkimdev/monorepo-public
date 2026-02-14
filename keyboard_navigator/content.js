@@ -102,9 +102,37 @@
         const scrollX = window.scrollX;
         const scrollY = window.scrollY;
 
-        // Update/create hints for visible elements
+        // De-duplication: Track URL -> last rect for same refresh cycle
+        const seenUrls = new Map();
+
         visibleTargets.forEach(el => {
             let code = labelMap.get(el);
+
+            // Check for duplicate links
+            if (el.tagName === 'A' && el.href) {
+                const url = el.href;
+                const rect = el.getBoundingClientRect();
+                const existingRect = seenUrls.get(url);
+
+                if (existingRect) {
+                    // Calculate distance
+                    const dx = rect.left - existingRect.left;
+                    const dy = rect.top - existingRect.top;
+                    const bdist = Math.sqrt(dx*dx + dy*dy);
+
+                    if (bdist < 200) {
+                        // Skip duplicate nearby link
+                        const existingSpan = elementToHintMap.get(el);
+                        if (existingSpan) {
+                            existingSpan.remove();
+                            elementToHintMap.delete(el);
+                        }
+                        return;
+                    }
+                }
+                seenUrls.set(url, rect);
+            }
+
             if (!code) {
                 code = getLabel(nextLabelIndex++, currentLabelLength);
                 labelMap.set(el, code);

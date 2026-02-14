@@ -1,17 +1,17 @@
 .kb-nav-hint {
     position: absolute;
+    padding: 2px 4px;
     background: #ffd700;
     color: #000;
-    font-weight: 900;
-    padding: 2px 6px;
+    font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace;
+    font-size: 14px;
+    font-weight: bold;
     border: 1px solid #000;
-    border-radius: 4px;
     z-index: 2147483647;
-    font-family: monospace;
-    font-size: 12px;
-    line-height: 1;
     pointer-events: none;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    line-height: normal;
+    text-transform: uppercase;
+    box-shadow: 2px 2px 0px rgba(0,0,0,0.3);
 }
 
 #kb-nav-container {
