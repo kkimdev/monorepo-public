@@ -31,6 +31,7 @@
         return label;
     };
 
+    let activationMode = 'SAME_TAB'; // 'SAME_TAB' or 'NEW_TAB'
     let labelMap = new WeakMap();
     let elementToHintMap = new Map(); // Element -> Span
     let motionState = new WeakMap(); // Element -> { lastTop, lastScrollY, mode: 'unknown' | 'scrolling' | 'fixed' }
@@ -299,9 +300,10 @@
         typingBuffer = "";
     }
 
-    function activateHints() {
+    function activateHints(mode = 'SAME_TAB') {
         tryInit();
         hintsActive = true;
+        activationMode = mode;
         typingBuffer = "";
         updateTargets();
         refreshVisibleHints();
@@ -361,12 +363,16 @@
                     const targetEl = hintMap[typingBuffer];
                     // Only click if it's currently visible
                     if (targetEl && elementToHintMap.has(targetEl)) {
-                        targetEl.click();
-                        const focusTags = ['INPUT', 'TEXTAREA', 'SELECT'];
-                        if (focusTags.includes(targetEl.tagName) ||
-                            targetEl.contentEditable === 'true' ||
-                            targetEl.getAttribute('role') === 'textbox') {
-                            targetEl.focus();
+                        if (activationMode === 'NEW_TAB' && targetEl.tagName === 'A' && targetEl.href) {
+                            window.open(targetEl.href, '_blank');
+                        } else {
+                            targetEl.click();
+                            const focusTags = ['INPUT', 'TEXTAREA', 'SELECT'];
+                            if (focusTags.includes(targetEl.tagName) ||
+                                targetEl.contentEditable === 'true' ||
+                                targetEl.getAttribute('role') === 'textbox') {
+                                targetEl.focus();
+                            }
                         }
                     }
                     deactivateHints();
@@ -405,7 +411,8 @@
                 if (hintsActive) {
                     deactivateHints();
                 } else {
-                    activateHints();
+                    const mode = (e.code === 'ShiftRight') ? 'NEW_TAB' : 'SAME_TAB';
+                    activateHints(mode);
                 }
             }
             otherKeyPressed = false;
