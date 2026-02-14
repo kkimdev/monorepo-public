@@ -11,7 +11,10 @@ async function capture() {
   const css = readFileSync("content.css", "utf-8");
   const js = readFileSync("content.js", "utf-8");
 
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({
+    headless: true,
+    executablePath: process.env.CHROMIUM_PATH
+  });
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 
   // Navigate to real website

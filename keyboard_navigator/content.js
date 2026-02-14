@@ -54,17 +54,8 @@
         let found = Array.from(document.querySelectorAll('a, button, input, textarea, select, [role="button"], [role="link"], [role="checkbox"], [role="menuitem"], [onclick], [tabindex="0"], [contenteditable="true"], [role="textbox"]'));
 
         // Filter out targets that are descendants of other targets to avoid redundant hints
-        // e.g. a link containing a span with text. Only the outer link should be tagged.
-        found = found.filter(el => {
-            let p = el.parentElement;
-            while (p) {
-                if (p.tagName === 'A' || p.tagName === 'BUTTON' || p.getAttribute('role') === 'button' || p.getAttribute('role') === 'link') {
-                    return false;
-                }
-                p = p.parentElement;
-            }
-            return true;
-        });
+        const selector = 'a, button, [role="button"], [role="link"]';
+        found = found.filter(el => !el.parentElement || !el.parentElement.closest(selector));
 
         found.forEach(el => {
             if (!targets.has(el)) {
@@ -91,10 +82,14 @@
         updateTimeout = setTimeout(updateTargets, 200);
     };
 
-    let refreshTimeout;
+    let refreshRequested = false;
     const debouncedRefresh = () => {
-        clearTimeout(refreshTimeout);
-        refreshTimeout = setTimeout(refreshVisibleHints, 16); // Faster for detection
+        if (!hintsActive || refreshRequested) return;
+        refreshRequested = true;
+        requestAnimationFrame(() => {
+            refreshRequested = false;
+            refreshVisibleHints();
+        });
     };
 
     const mutationObserver = new MutationObserver(debouncedUpdate);
@@ -107,6 +102,8 @@
     }
 
     let isShiftDown = false;
+    let lastMouseX = 0;
+    let lastMouseY = 0;
 
     function prepareHints() {
         // Clear previous session data if not active
@@ -122,6 +119,11 @@
             let length = 1;
             while (Math.pow(26, length) < totalCount) length++;
             currentLabelLength = length;
+
+            // Pre-prepare targets and hints in the background
+            hintContainer.style.display = 'none';
+            updateTargets();
+            refreshVisibleHints();
         }
     }
 
@@ -132,7 +134,7 @@
             let path = url.origin + url.pathname;
             // GitHub specific: Treat /blob/, /edit/, /tree/, /raw/ as the same for de-duplication
             path = path.replace(/\/(blob|edit|tree|raw|blame)\/[^/]+\//, '/.../');
-            return path;
+            return path + url.search + url.hash;
         } catch (e) {
             return urlStr;
         }
@@ -144,40 +146,54 @@
         const scrollX = window.scrollX;
         const scrollY = window.scrollY;
 
-        // De-duplication: Track Normalized URL -> Primary Element
-        const seenUrls = new Map();
+        // --- READ PHASE ---
+        // Batch getBoundingClientRect and textContent to avoid layout thrashing
+        const rects = new Map();
+        const textCache = new Map();
+        const targetsToProcess = Array.from(visibleTargets);
 
-        // Sort visibleTargets:
-        // 1. Prefer those WITHOUT text content (icons) to avoid covering text labels
-        // 2. Prefer those with shorter labels if they already exist
-        // 3. Prefer those higher up in the document
-        const sortedTargets = Array.from(visibleTargets).sort((a, b) => {
-            const aText = a.innerText.trim();
-            const bText = b.innerText.trim();
+        targetsToProcess.forEach(el => {
+            rects.set(el, el.getBoundingClientRect());
+            textCache.set(el, el.textContent.trim());
+        });
+
+        // --- PROCESSING PHASE ---
+        const seenUrls = new Map();
+        const sortedTargets = targetsToProcess.sort((a, b) => {
+            const aText = textCache.get(a);
+            const bText = textCache.get(b);
             if (aText && !bText) return 1;
             if (!aText && bText) return -1;
             return 0;
         });
 
+        // --- WRITE PHASE ---
         sortedTargets.forEach(el => {
             let code = labelMap.get(el);
+            const rect = rects.get(el);
+
+            if (rect.width === 0 || rect.height === 0) {
+                const existing = elementToHintMap.get(el);
+                if (existing) {
+                    existing.remove();
+                    elementToHintMap.delete(el);
+                }
+                return;
+            };
 
             // Advanced de-duplication for links
             const href = el.href || el.getAttribute('href');
             if ((el.tagName === 'A' || el.getAttribute('role') === 'link') && href) {
                 const normalized = normalizeUrl(href);
-                const rect = el.getBoundingClientRect();
                 const existing = seenUrls.get(normalized);
 
                 if (existing) {
-                    const eRect = existing.getBoundingClientRect();
+                    const eRect = rects.get(existing);
                     const dx = rect.left - eRect.left;
                     const dy = rect.top - eRect.top;
                     const dist = Math.sqrt(dx*dx + dy*dy);
 
-                    // Increased threshold (300px) and vertical proximity check
                     if (dist < 300 || Math.abs(dy) < 20) {
-                        // Skip duplicate link
                         const existingSpan = elementToHintMap.get(el);
                         if (existingSpan) {
                             existingSpan.remove();
@@ -195,58 +211,33 @@
                 hintMap[code] = el;
             }
 
-            const rect = el.getBoundingClientRect();
-            if (rect.width === 0 || rect.height === 0) {
-                // Remove if hidden
-                const existing = elementToHintMap.get(el);
-                if (existing) {
-                    existing.remove();
-                    elementToHintMap.delete(el);
-                }
-                return;
-            };
-
             let span = elementToHintMap.get(el);
             let state = motionState.get(el);
-
-            const targetTop = rect.top + rect.height / 2;
-            const targetLeft = rect.left + rect.width / 2;
+            const targetTop = rect.top;
+            const targetLeft = rect.left;
 
             if (!span) {
                 span = document.createElement('span');
                 span.className = 'kb-nav-hint';
                 span.dataset.code = code;
                 span.innerText = code;
-
-                // Initial state: assume unknown, use absolute
-                state = {
-                    lastTop: targetTop,
-                    lastScrollY: scrollY,
-                    mode: 'unknown'
-                };
+                state = { lastTop: targetTop, lastScrollY: scrollY, mode: 'unknown' };
                 motionState.set(el, state);
-
                 span.style.position = 'absolute';
                 span.style.top = (targetTop + scrollY) + 'px';
                 span.style.left = (targetLeft + scrollX) + 'px';
-
                 elementToHintMap.set(el, span);
                 hintContainer.appendChild(span);
             } else {
-                // Continuous Motion Re-evaluation
                 const deltaScroll = scrollY - state.lastScrollY;
                 if (Math.abs(deltaScroll) > 2) {
                     const deltaTop = targetTop - state.lastTop;
-
-                    // Detect current behavior
                     let currentBehavior = 'unknown';
                     if (Math.abs(deltaTop) < 1) {
                         currentBehavior = 'fixed';
                     } else if (Math.abs(deltaTop + deltaScroll) < 2) {
                         currentBehavior = 'scrolling';
                     }
-
-                    // Handle behavior transitions
                     if (currentBehavior !== 'unknown' && currentBehavior !== state.mode) {
                         state.mode = currentBehavior;
                     }
@@ -260,13 +251,11 @@
                         span.style.top = (targetTop + scrollY) + 'px';
                         span.style.left = (targetLeft + scrollX) + 'px';
                     }
-
                     state.lastTop = targetTop;
                     state.lastScrollY = scrollY;
                 }
             }
 
-            // Restore matching visuals if buffer exists
             if (typingBuffer && code.startsWith(typingBuffer)) {
                 const matched = code.slice(0, typingBuffer.length);
                 const remaining = code.slice(typingBuffer.length);
@@ -282,17 +271,18 @@
             }
         });
 
-        // Remove hints for elements no longer in visibleTargets
+        // Cleanup
         elementToHintMap.forEach((span, el) => {
             if (!visibleTargets.has(el)) {
                 span.remove();
                 elementToHintMap.delete(el);
-                motionState.delete(el); // Clean up motion state
+                motionState.delete(el);
             }
         });
     }
 
     function deactivateHints() {
+        hintContainer.style.display = 'none';
         hintContainer.innerHTML = '';
         hintsActive = false;
         hintMap = {};
@@ -301,12 +291,13 @@
     }
 
     function activateHints(mode = 'SAME_TAB') {
-        tryInit();
         hintsActive = true;
         activationMode = mode;
         typingBuffer = "";
-        updateTargets();
-        refreshVisibleHints();
+
+        // Show pre-prepared hints
+        hintContainer.style.display = 'block';
+        refreshVisibleHints(); // Re-sync positions just in case
     }
 
     const allowedNavigationKeys = new Set([
@@ -330,8 +321,13 @@
         if (e.key === 'Shift') {
             if (!isShiftDown) {
                 isShiftDown = true;
-                otherKeyPressed = false;
-                prepareHints();
+                if (hintsActive) {
+                    deactivateHints();
+                    otherKeyPressed = true; // Prevent re-activation on keyup
+                } else {
+                    otherKeyPressed = false;
+                    prepareHints();
+                }
             }
             return;
         }
@@ -418,6 +414,32 @@
             otherKeyPressed = false;
         }
     });
+
+    window.addEventListener('blur', () => {
+        isShiftDown = false;
+        otherKeyPressed = false;
+        if (hintsActive) deactivateHints();
+    });
+
+    // Prevent accidental trigger during Shift+Mouse/Touch actions (selection, drag, scroll, etc.)
+    ['mousedown', 'wheel', 'touchstart', 'touchmove'].forEach(type => {
+        window.addEventListener(type, () => {
+            if (isShiftDown) otherKeyPressed = true;
+        }, { passive: true });
+    });
+
+    window.addEventListener('mousemove', (e) => {
+        if (isShiftDown && !otherKeyPressed) {
+            const dx = Math.abs(e.screenX - lastMouseX);
+            const dy = Math.abs(e.screenY - lastMouseY);
+            // Threshold (3px) to avoid suppression by minor mouse jitter
+            if (dx > 3 || dy > 3) {
+                otherKeyPressed = true;
+            }
+        }
+        lastMouseX = e.screenX;
+        lastMouseY = e.screenY;
+    }, { passive: true });
 
     console.log("Keyboard Navigator Prefix-Free: Tap 'Shift' to steer.");
 })();
