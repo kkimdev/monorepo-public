@@ -41,7 +41,21 @@
     }, { threshold: 0.1 });
 
     const updateTargets = () => {
-        const found = document.querySelectorAll('a, button, input, [role="button"], [onclick], [tabindex="0"]');
+        let found = Array.from(document.querySelectorAll('a, button, input, textarea, select, [role="button"], [role="link"], [role="checkbox"], [role="menuitem"], [onclick], [tabindex="0"]'));
+
+        // Filter out targets that are descendants of other targets to avoid redundant hints
+        // e.g. a link containing a span with text. Only the outer link should be tagged.
+        found = found.filter(el => {
+            let p = el.parentElement;
+            while (p) {
+                if (p.tagName === 'A' || p.tagName === 'BUTTON' || p.getAttribute('role') === 'button' || p.getAttribute('role') === 'link') {
+                    return false;
+                }
+                p = p.parentElement;
+            }
+            return true;
+        });
+
         found.forEach(el => {
             if (!targets.has(el)) {
                 targets.add(el);
@@ -56,6 +70,7 @@
                 visibleTargets.delete(el);
                 observer.unobserve(el);
                 elementToHintMap.delete(el);
+                motionState.delete(el);
             }
         }
     };
@@ -105,22 +120,37 @@
         // De-duplication: Track URL -> last rect for same refresh cycle
         const seenUrls = new Map();
 
-        visibleTargets.forEach(el => {
+        // Sort visibleTargets to prefer elements with text content (more likely to be primary)
+        const sortedTargets = Array.from(visibleTargets).sort((a, b) => {
+            const aText = a.innerText.trim();
+            const bText = b.innerText.trim();
+            if (aText && !bText) return -1;
+            if (!aText && bText) return 1;
+            return 0;
+        });
+
+        sortedTargets.forEach(el => {
             let code = labelMap.get(el);
 
-            // Check for duplicate links
-            if (el.tagName === 'A' && el.href) {
-                const url = el.href;
+            // Check for duplicate links (advanced de-duplication)
+            if ((el.tagName === 'A' || el.getAttribute('role') === 'link') && (el.href || el.getAttribute('href'))) {
+                const urlStr = el.href || el.getAttribute('href');
+                let normalized = urlStr;
+                try {
+                    const url = new URL(urlStr, window.location.origin);
+                    normalized = url.origin + url.pathname;
+                } catch (e) {}
+
                 const rect = el.getBoundingClientRect();
-                const existingRect = seenUrls.get(url);
+                const existing = seenUrls.get(normalized);
 
-                if (existingRect) {
-                    // Calculate distance
-                    const dx = rect.left - existingRect.left;
-                    const dy = rect.top - existingRect.top;
-                    const bdist = Math.sqrt(dx*dx + dy*dy);
+                if (existing) {
+                    const eRect = existing.getBoundingClientRect();
+                    const dx = rect.left - eRect.left;
+                    const dy = rect.top - eRect.top;
+                    const dist = Math.sqrt(dx*dx + dy*dy);
 
-                    if (bdist < 200) {
+                    if (dist < 200) {
                         // Skip duplicate nearby link
                         const existingSpan = elementToHintMap.get(el);
                         if (existingSpan) {
@@ -130,7 +160,7 @@
                         return;
                     }
                 }
-                seenUrls.set(url, rect);
+                seenUrls.set(normalized, el);
             }
 
             if (!code) {
