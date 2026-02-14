@@ -116,6 +116,11 @@
         }
     }
 
+    const allowedNavigationKeys = new Set([
+        'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+        'PageUp', 'PageDown', 'Home', 'End', ' ', 'Tab'
+    ]);
+
     window.addEventListener('keydown', (e) => {
         if (e.key === 'Shift') {
             if (!isShiftDown) {
@@ -127,6 +132,11 @@
         }
 
         if (hintsActive) {
+            // Allow navigation keys to pass through
+            if (allowedNavigationKeys.has(e.key)) {
+                return;
+            }
+
             if (e.key === 'Escape') {
                 deactivateHints();
             } else if (e.key === 'Backspace') {
@@ -145,6 +155,10 @@
                     }
                     deactivateHints();
                 }
+            } else {
+                // Any other key dismisses mode immediatly
+                deactivateHints();
+                return; // Let native behavior happen
             }
             e.preventDefault();
             e.stopPropagation();
