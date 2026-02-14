@@ -261,6 +261,7 @@
                 const remaining = code.slice(typingBuffer.length);
                 span.innerHTML = `<span class="kb-nav-hint-match">${matched}</span>${remaining}`;
                 span.classList.remove('kb-nav-hint-filtered');
+                el.classList.add('kb-nav-target-highlight');
             } else {
                 span.innerText = code;
                 if (typingBuffer) {
@@ -268,6 +269,7 @@
                 } else {
                     span.classList.remove('kb-nav-hint-filtered');
                 }
+                el.classList.remove('kb-nav-target-highlight');
             }
         });
 
@@ -286,6 +288,9 @@
         hintContainer.innerHTML = '';
         hintsActive = false;
         hintMap = {};
+        elementToHintMap.forEach((span, el) => {
+            el.classList.remove('kb-nav-target-highlight');
+        });
         elementToHintMap.clear();
         typingBuffer = "";
     }
@@ -389,13 +394,22 @@
         const hints = hintContainer.querySelectorAll('.kb-nav-hint');
         hints.forEach(hint => {
             const code = hint.dataset.code;
+            const el = hintMap[code];
             if (code.startsWith(typingBuffer)) {
                 hint.classList.remove('kb-nav-hint-filtered');
                 const matched = code.slice(0, typingBuffer.length);
                 const remaining = code.slice(typingBuffer.length);
                 hint.innerHTML = `<span class="kb-nav-hint-match">${matched}</span>${remaining}`;
+                if (typingBuffer && el) {
+                    el.classList.add('kb-nav-target-highlight');
+                } else if (el) {
+                    el.classList.remove('kb-nav-target-highlight');
+                }
             } else {
                 hint.classList.add('kb-nav-hint-filtered');
+                if (el) {
+                    el.classList.remove('kb-nav-target-highlight');
+                }
             }
         });
     }

@@ -29,3 +29,9 @@
 .kb-nav-hint-match {
     visibility: hidden;
 }
+
+.kb-nav-target-highlight {
+    outline: 2px solid #ffd700 !important;
+    outline-offset: 2px !important;
+    box-shadow: 0 0 4px 2px rgba(255, 215, 0, 0.5) !important;
+}
