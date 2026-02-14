@@ -25,6 +25,7 @@
             pkgs.resvg
             pkgs.xvfb-run
             pkgs.chromium
+            pkgs.ffmpeg-full
           ];
 
           buildPhase = ''
@@ -37,6 +38,7 @@
 
             # Bundle extension JS
             bun build ./content.js --outfile=content.js --minify
+            bun build ./options.js --outfile=options.js --minify
 
             # Parallel tasks: Asset generation and Screenshot capture
             (
@@ -95,6 +97,8 @@ EOF
             cp promo_small.png $out/
             cp promo_marquee.png $out/
             cp screenshot1.png $out/
+            cp options.html $out/
+            cp options.js $out/
             (cd $out && zip -r keyboard-navigator.zip .)
           '';
         };
@@ -102,7 +106,20 @@ EOF
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
             bun
+            ffmpeg-full
+            chromium
+            xvfb-run
+            xdotool
+            matchbox
+            xorg.xclock
+            dbus
+            libva
+            xorg.libxcb
           ];
+          shellHook = ''
+            export CHROMIUM_PATH=${pkgs.chromium}/bin/chromium
+            export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${pkgs.lib.makeLibraryPath [ pkgs.xorg.libxcb pkgs.libva pkgs.wayland ]}
+          '';
         };
       });
 }

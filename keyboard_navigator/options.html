@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Keyboard Navigator Options</title>
+    <style>
+        :root {
+            --bg: #f8f9fa;
+            --text: #202124;
+            --card-bg: #ffffff;
+            --primary: #ffd700;
+        }
+
+        body {
+            font-family: 'Inter', system-ui, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            padding: 40px;
+            display: flex;
+            justify-content: center;
+        }
+
+        .container {
+            background: var(--card-bg);
+            padding: 32px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+            width: 100%;
+            max-width: 400px;
+        }
+
+        h1 {
+            font-size: 24px;
+            margin-bottom: 24px;
+            font-weight: 700;
+        }
+
+        .option-group {
+            margin-bottom: 24px;
+        }
+
+        label {
+            display: block;
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #5f6368;
+        }
+
+        .picker-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        input[type="color"] {
+            border: none;
+            width: 40px;
+            height: 40px;
+            padding: 0;
+            cursor: pointer;
+            background: none;
+        }
+
+        input[type="text"] {
+            padding: 8px 12px;
+            border: 1px solid #dadce0;
+            border-radius: 6px;
+            font-family: monospace;
+            width: 100px;
+        }
+
+        .buttons {
+            display: flex;
+            gap: 12px;
+            margin-top: 32px;
+        }
+
+        button {
+            padding: 10px 24px;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+            border: none;
+            transition: all 0.2s;
+        }
+
+        #save {
+            background: var(--primary);
+            color: #000;
+        }
+
+        #save:hover {
+            box-shadow: 0 2px 8px rgba(255, 215, 0, 0.4);
+        }
+
+        #reset {
+            background: #f1f3f4;
+            color: #3c4043;
+        }
+
+        #status {
+            margin-top: 16px;
+            font-size: 13px;
+            color: #1e8e3e;
+            height: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Settings</h1>
+
+        <div class="option-group">
+            <label>Hint Background Color</label>
+            <div class="picker-row">
+                <input type="color" id="bgColor">
+                <input type="text" id="bgText" readonly>
+            </div>
+        </div>
+
+        <div class="option-group">
+            <label>Accent Color (Highlight/Flash)</label>
+            <div class="picker-row">
+                <input type="color" id="accentColor">
+                <input type="text" id="accentText" readonly>
+            </div>
+        </div>
+
+        <div class="buttons">
+            <button id="save">Save Settings</button>
+            <button id="reset">Reset to Defaults</button>
+        </div>
+
+        <div id="status"></div>
+    </div>
+    <script src="options.js"></script>
+</body>
+</html>

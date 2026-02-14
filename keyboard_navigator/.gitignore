@@ -10,3 +10,10 @@ dist/
 
 # Dependencies
 node_modules/
+
+# Demo build artifacts
+demo_raw.webm
+offset.txt
+videos/
+*.log
+debug_*

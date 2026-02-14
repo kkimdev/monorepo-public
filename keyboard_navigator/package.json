@@ -5,6 +5,9 @@
   "main": "content.js",
   "module": "content.js",
   "type": "module",
+  "scripts": {
+    "build-demo-gif": "xvfb-run -s \"-screen 0 1280x720x24\" bun run capture_demo.ts && OFFSET=$(cat offset.txt) && ffmpeg -y -ss $OFFSET -i demo_raw.webm -vf \"fps=30,scale=1280:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse\" -loop 0 demo.gif"
+  },
   "devDependencies": {
     "bun-types": "latest",
     "playwright": "latest",
