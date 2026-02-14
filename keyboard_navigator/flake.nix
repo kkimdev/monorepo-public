@@ -1,5 +1,5 @@
 {
-  description: "Keyboard Navigator Chrome Extension";
+  description = "Keyboard Navigator Chrome Extension";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
