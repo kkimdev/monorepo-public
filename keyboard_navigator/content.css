@@ -23,6 +23,11 @@
     pointer-events: none;
     z-index: 2147483647;
 }
-.kb-nav-hint-dim {
-    opacity: 0.2;
+.kb-nav-hint-filtered {
+    display: none;
+}
+
+.kb-nav-hint-match {
+    color: #ff0000;
+    text-decoration: underline;
 }

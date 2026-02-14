@@ -156,10 +156,14 @@
     function updateHintFiltering() {
         const hints = hintContainer.querySelectorAll('.kb-nav-hint');
         hints.forEach(hint => {
-            if (hint.dataset.code.startsWith(typingBuffer)) {
-                hint.classList.remove('kb-nav-hint-dim');
+            const code = hint.dataset.code;
+            if (code.startsWith(typingBuffer)) {
+                hint.classList.remove('kb-nav-hint-filtered');
+                const matched = code.slice(0, typingBuffer.length);
+                const remaining = code.slice(typingBuffer.length);
+                hint.innerHTML = `<span class="kb-nav-hint-match">${matched}</span>${remaining}`;
             } else {
-                hint.classList.add('kb-nav-hint-dim');
+                hint.classList.add('kb-nav-hint-filtered');
             }
         });
     }
