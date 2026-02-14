@@ -60,21 +60,18 @@
     const mutationObserver = new MutationObserver(debouncedUpdate);
     mutationObserver.observe(document.body, { childList: true, subtree: true });
 
-    function toggleNav() {
-        if (hintsActive) {
-            hintContainer.innerHTML = '';
-            hintsActive = false;
-            return;
-        }
+    let precomputedFragment = null;
+    let precomputedHintMap = {};
+    let isShiftDown = false;
 
-        hintMap = {};
-        const fragment = document.createDocumentFragment();
+    function prepareHints() {
+        precomputedHintMap = {};
+        precomputedFragment = document.createDocumentFragment();
         let hintCount = 0;
 
         const scrollX = window.scrollX;
         const scrollY = window.scrollY;
 
-        // visibleTargets is already populated by IntersectionObserver
         visibleTargets.forEach(el => {
             const rect = el.getBoundingClientRect();
             if (rect.width === 0 || rect.height === 0) return;
@@ -86,16 +83,36 @@
             span.style.top = (rect.top + scrollY) + 'px';
             span.style.left = (rect.left + scrollX) + 'px';
 
-            fragment.appendChild(span);
-            hintMap[code] = el;
+            precomputedFragment.appendChild(span);
+            precomputedHintMap[code] = el;
         });
+    }
 
-        hintContainer.appendChild(fragment);
-        hintsActive = true;
+    function deactivateHints() {
+        hintContainer.innerHTML = '';
+        hintsActive = false;
+        hintMap = {};
+    }
+
+    function activateHints() {
+        if (precomputedFragment) {
+            hintMap = precomputedHintMap;
+            hintContainer.appendChild(precomputedFragment);
+            hintsActive = true;
+            precomputedFragment = null;
+            precomputedHintMap = {};
+        }
     }
 
     window.addEventListener('keydown', (e) => {
-        if (e.key === 'Shift') return;
+        if (e.key === 'Shift') {
+            if (!isShiftDown) {
+                isShiftDown = true;
+                if (!hintsActive) prepareHints();
+            }
+            return;
+        }
+
         if (hintsActive) {
             const char = e.key.toUpperCase();
             if (hintMap[char]) {
@@ -103,9 +120,9 @@
                 if (hintMap[char].tagName === 'INPUT') {
                     hintMap[char].focus();
                 }
-                toggleNav();
+                deactivateHints();
             } else if (e.key === 'Escape') {
-                toggleNav();
+                deactivateHints();
             }
             e.preventDefault();
             e.stopPropagation();
@@ -115,8 +132,17 @@
     }, true);
 
     window.addEventListener('keyup', (e) => {
-        if (e.key === 'Shift' && !otherKeyPressed) toggleNav();
-        if (e.key === 'Shift') otherKeyPressed = false;
+        if (e.key === 'Shift') {
+            isShiftDown = false;
+            if (!otherKeyPressed) {
+                if (hintsActive) {
+                    deactivateHints();
+                } else {
+                    activateHints();
+                }
+            }
+            otherKeyPressed = false;
+        }
     });
 
     console.log("Keyboard Navigator Optimized: Tap 'Shift' to steer.");
