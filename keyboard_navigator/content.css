@@ -27,6 +27,5 @@
 }
 
 .kb-nav-hint-match {
-    color: #ff0000;
-    text-decoration: underline;
+    visibility: hidden;
 }
