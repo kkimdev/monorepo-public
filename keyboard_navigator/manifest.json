@@ -3,6 +3,10 @@
   "name": "Keyboard Navigator",
   "version": "1.0.0",
   "description": "Navigate web pages using keyboard hints. Tap 'Shift' to activate.",
+  "action": {},
+  "icons": {
+    "128": "icon128.png"
+  },
   "permissions": ["activeTab", "scripting"],
   "content_scripts": [
     {
