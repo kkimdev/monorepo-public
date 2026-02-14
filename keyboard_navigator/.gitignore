@@ -1,0 +1,12 @@
+# Nix build results
+result
+result-*
+
+# direnv state
+.direnv/
+
+# Legacy build directory
+dist/
+
+# Dependencies
+node_modules/
