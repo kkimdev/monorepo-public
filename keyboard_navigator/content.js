@@ -50,7 +50,7 @@
 
     const updateTargets = () => {
         if (!document.body) return;
-        let found = Array.from(document.querySelectorAll('a, button, input, textarea, select, [role="button"], [role="link"], [role="checkbox"], [role="menuitem"], [onclick], [tabindex="0"]'));
+        let found = Array.from(document.querySelectorAll('a, button, input, textarea, select, [role="button"], [role="link"], [role="checkbox"], [role="menuitem"], [onclick], [tabindex="0"], [contenteditable="true"], [role="textbox"]'));
 
         // Filter out targets that are descendants of other targets to avoid redundant hints
         // e.g. a link containing a span with text. Only the outer link should be tagged.
@@ -363,7 +363,9 @@
                     if (targetEl && elementToHintMap.has(targetEl)) {
                         targetEl.click();
                         const focusTags = ['INPUT', 'TEXTAREA', 'SELECT'];
-                        if (focusTags.includes(targetEl.tagName)) {
+                        if (focusTags.includes(targetEl.tagName) ||
+                            targetEl.contentEditable === 'true' ||
+                            targetEl.getAttribute('role') === 'textbox') {
                             targetEl.focus();
                         }
                     }
