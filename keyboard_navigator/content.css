@@ -11,6 +11,7 @@
     line-height: normal;
     text-transform: uppercase;
     box-shadow: 2px 2px 0px rgba(0,0,0,0.3);
+    transform: translate(-50%, -50%);
 }
 
 #kb-nav-container {

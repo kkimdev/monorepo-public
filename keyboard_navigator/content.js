@@ -208,6 +208,9 @@
             let span = elementToHintMap.get(el);
             let state = motionState.get(el);
 
+            const targetTop = rect.top + rect.height / 2;
+            const targetLeft = rect.left + rect.width / 2;
+
             if (!span) {
                 span = document.createElement('span');
                 span.className = 'kb-nav-hint';
@@ -216,15 +219,15 @@
 
                 // Initial state: assume unknown, use absolute
                 state = {
-                    lastTop: rect.top,
+                    lastTop: targetTop,
                     lastScrollY: scrollY,
                     mode: 'unknown'
                 };
                 motionState.set(el, state);
 
                 span.style.position = 'absolute';
-                span.style.top = (rect.top + scrollY) + 'px';
-                span.style.left = (rect.left + scrollX) + 'px';
+                span.style.top = (targetTop + scrollY) + 'px';
+                span.style.left = (targetLeft + scrollX) + 'px';
 
                 elementToHintMap.set(el, span);
                 hintContainer.appendChild(span);
@@ -232,7 +235,7 @@
                 // Continuous Motion Re-evaluation
                 const deltaScroll = scrollY - state.lastScrollY;
                 if (Math.abs(deltaScroll) > 2) {
-                    const deltaTop = rect.top - state.lastTop;
+                    const deltaTop = targetTop - state.lastTop;
 
                     // Detect current behavior
                     let currentBehavior = 'unknown';
@@ -249,15 +252,15 @@
 
                     if (state.mode === 'fixed') {
                         span.style.position = 'fixed';
-                        span.style.top = rect.top + 'px';
-                        span.style.left = rect.left + 'px';
+                        span.style.top = targetTop + 'px';
+                        span.style.left = targetLeft + 'px';
                     } else {
                         span.style.position = 'absolute';
-                        span.style.top = (rect.top + scrollY) + 'px';
-                        span.style.left = (rect.left + scrollX) + 'px';
+                        span.style.top = (targetTop + scrollY) + 'px';
+                        span.style.left = (targetLeft + scrollX) + 'px';
                     }
 
-                    state.lastTop = rect.top;
+                    state.lastTop = targetTop;
                     state.lastScrollY = scrollY;
                 }
             }
