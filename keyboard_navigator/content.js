@@ -25,6 +25,7 @@
 
     let labelMap = new WeakMap();
     let elementToHintMap = new Map(); // Element -> Span
+    let motionState = new WeakMap(); // Element -> { initialTop, initialScrollY, mode: 'unknown' | 'scrolling' | 'fixed' }
     let nextLabelIndex = 0;
 
     // Track visibility of elements
@@ -68,7 +69,7 @@
     let refreshTimeout;
     const debouncedRefresh = () => {
         clearTimeout(refreshTimeout);
-        refreshTimeout = setTimeout(refreshVisibleHints, 50);
+        refreshTimeout = setTimeout(refreshVisibleHints, 16); // Faster for detection
     };
 
     // Initial scan and MutationObserver for dynamic content
@@ -83,6 +84,7 @@
         if (!hintsActive) {
             labelMap = new WeakMap();
             elementToHintMap.clear();
+            motionState = new WeakMap();
             nextLabelIndex = 0;
             hintMap = {};
 
@@ -121,17 +123,49 @@
             };
 
             let span = elementToHintMap.get(el);
+            let state = motionState.get(el);
+
             if (!span) {
                 span = document.createElement('span');
                 span.className = 'kb-nav-hint';
                 span.dataset.code = code;
+                span.innerText = code;
+
+                // Initial state: assume scrolling (absolute)
+                state = { initialTop: rect.top, initialScrollY: scrollY, mode: 'unknown' };
+                motionState.set(el, state);
+
+                span.style.position = 'absolute';
+                span.style.top = (rect.top + scrollY) + 'px';
+                span.style.left = (rect.left + scrollX) + 'px';
+
                 elementToHintMap.set(el, span);
                 hintContainer.appendChild(span);
             }
 
-            // Update position (critical for fixed/sticky/scroll)
-            span.style.top = (rect.top + scrollY) + 'px';
-            span.style.left = (rect.left + scrollX) + 'px';
+            // Update position only if mode is still unknown
+            if (state.mode === 'unknown') {
+                span.style.top = (rect.top + scrollY) + 'px';
+                span.style.left = (rect.left + scrollX) + 'px';
+
+                // Dynamic Motion Detection
+                const deltaScroll = scrollY - state.initialScrollY;
+                if (Math.abs(deltaScroll) > 10) { // Increased threshold for reliable detection
+                    const deltaTop = rect.top - state.initialTop;
+
+                    if (Math.abs(deltaTop) < 2) {
+                        // Viewport position hasn't changed despite scroll -> Fixed/Sticky
+                        state.mode = 'fixed';
+                        span.style.position = 'fixed';
+                        span.style.top = rect.top + 'px';
+                        span.style.left = rect.left + 'px';
+                    } else if (Math.abs(deltaTop + deltaScroll) < 5) {
+                        // Document position is stable -> confirmed Scrolling
+                        state.mode = 'scrolling';
+                        // Position is already correct for absolute
+                    }
+                }
+            }
 
             // Restore matching visuals if buffer exists
             if (typingBuffer && code.startsWith(typingBuffer)) {
@@ -154,6 +188,7 @@
             if (!visibleTargets.has(el)) {
                 span.remove();
                 elementToHintMap.delete(el);
+                motionState.delete(el); // Clean up motion state
             }
         });
     }
