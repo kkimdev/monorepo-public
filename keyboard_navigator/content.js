@@ -108,6 +108,7 @@
         if (e.key === 'Shift') {
             if (!isShiftDown) {
                 isShiftDown = true;
+                otherKeyPressed = false; // Reset on Shift down to ensure clean state
                 if (!hintsActive) prepareHints();
             }
             return;
@@ -126,7 +127,8 @@
             }
             e.preventDefault();
             e.stopPropagation();
-        } else {
+        } else if (isShiftDown) {
+            // Only set otherKeyPressed if Shift is active (blocking activation for chords)
             otherKeyPressed = true;
         }
     }, true);
