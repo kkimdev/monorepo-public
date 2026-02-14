@@ -4,7 +4,15 @@
     let hintMap = {};
     const hintContainer = document.createElement('div');
     hintContainer.id = 'kb-nav-container';
-    document.body.appendChild(hintContainer);
+
+    let initialized = false;
+    function tryInit() {
+        if (initialized || !document.body) return;
+        document.body.appendChild(hintContainer);
+        mutationObserver.observe(document.body, { childList: true, subtree: true });
+        updateTargets();
+        initialized = true;
+    }
 
     // Optimized state tracking
     const targets = new Set();
@@ -25,7 +33,7 @@
 
     let labelMap = new WeakMap();
     let elementToHintMap = new Map(); // Element -> Span
-    let motionState = new WeakMap(); // Element -> { initialTop, initialScrollY, mode: 'unknown' | 'scrolling' | 'fixed' }
+    let motionState = new WeakMap(); // Element -> { lastTop, lastScrollY, mode: 'unknown' | 'scrolling' | 'fixed' }
     let nextLabelIndex = 0;
 
     // Track visibility of elements
@@ -41,6 +49,7 @@
     }, { threshold: 0.1 });
 
     const updateTargets = () => {
+        if (!document.body) return;
         let found = Array.from(document.querySelectorAll('a, button, input, textarea, select, [role="button"], [role="link"], [role="checkbox"], [role="menuitem"], [onclick], [tabindex="0"]'));
 
         // Filter out targets that are descendants of other targets to avoid redundant hints
@@ -87,10 +96,14 @@
         refreshTimeout = setTimeout(refreshVisibleHints, 16); // Faster for detection
     };
 
-    // Initial scan and MutationObserver for dynamic content
-    updateTargets();
     const mutationObserver = new MutationObserver(debouncedUpdate);
-    mutationObserver.observe(document.body, { childList: true, subtree: true });
+
+    // Attempt init as early as possible
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', tryInit);
+    } else {
+        tryInit();
+    }
 
     let isShiftDown = false;
 
@@ -287,8 +300,10 @@
     }
 
     function activateHints() {
+        tryInit();
         hintsActive = true;
         typingBuffer = "";
+        updateTargets();
         refreshVisibleHints();
     }
 
