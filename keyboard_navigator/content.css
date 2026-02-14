@@ -23,3 +23,6 @@
     pointer-events: none;
     z-index: 2147483647;
 }
+.kb-nav-hint-dim {
+    opacity: 0.2;
+}

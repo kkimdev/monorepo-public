@@ -10,13 +10,17 @@
     const targets = new Set();
     const visibleTargets = new Set();
 
-    const getLabel = (i) => {
+    let typingBuffer = "";
+    let currentLabelLength = 1;
+
+    const getLabel = (i, length) => {
         let label = "";
-        while (i >= 0) {
-            label = String.fromCharCode((i % 26) + 97) + label;
-            i = Math.floor(i / 26) - 1;
+        let temp = i;
+        for (let j = 0; j < length; j++) {
+            label = String.fromCharCode((temp % 26) + 65) + label;
+            temp = Math.floor(temp / 26);
         }
-        return label.toUpperCase();
+        return label;
     };
 
     // Track visibility of elements
@@ -67,18 +71,24 @@
     function prepareHints() {
         precomputedHintMap = {};
         precomputedFragment = document.createDocumentFragment();
-        let hintCount = 0;
+
+        const count = visibleTargets.size;
+        let length = 1;
+        while (Math.pow(26, length) < count) length++;
+        currentLabelLength = length;
 
         const scrollX = window.scrollX;
         const scrollY = window.scrollY;
 
+        let hintCount = 0;
         visibleTargets.forEach(el => {
             const rect = el.getBoundingClientRect();
             if (rect.width === 0 || rect.height === 0) return;
 
-            const code = getLabel(hintCount++);
+            const code = getLabel(hintCount++, currentLabelLength);
             const span = document.createElement('span');
             span.className = 'kb-nav-hint';
+            span.dataset.code = code;
             span.innerText = code;
             span.style.top = (rect.top + scrollY) + 'px';
             span.style.left = (rect.left + scrollX) + 'px';
@@ -92,6 +102,7 @@
         hintContainer.innerHTML = '';
         hintsActive = false;
         hintMap = {};
+        typingBuffer = "";
     }
 
     function activateHints() {
@@ -101,6 +112,7 @@
             hintsActive = true;
             precomputedFragment = null;
             precomputedHintMap = {};
+            typingBuffer = "";
         }
     }
 
@@ -108,30 +120,49 @@
         if (e.key === 'Shift') {
             if (!isShiftDown) {
                 isShiftDown = true;
-                otherKeyPressed = false; // Reset on Shift down to ensure clean state
+                otherKeyPressed = false;
                 if (!hintsActive) prepareHints();
             }
             return;
         }
 
         if (hintsActive) {
-            const char = e.key.toUpperCase();
-            if (hintMap[char]) {
-                hintMap[char].click();
-                if (hintMap[char].tagName === 'INPUT') {
-                    hintMap[char].focus();
+            if (e.key === 'Escape') {
+                deactivateHints();
+            } else if (e.key === 'Backspace') {
+                typingBuffer = typingBuffer.slice(0, -1);
+                updateHintFiltering();
+            } else if (e.key.length === 1 && /^[a-zA-Z]$/.test(e.key)) {
+                typingBuffer += e.key.toUpperCase();
+                updateHintFiltering();
+
+                if (typingBuffer.length === currentLabelLength) {
+                    if (hintMap[typingBuffer]) {
+                        hintMap[typingBuffer].click();
+                        if (hintMap[typingBuffer].tagName === 'INPUT') {
+                            hintMap[typingBuffer].focus();
+                        }
+                    }
+                    deactivateHints();
                 }
-                deactivateHints();
-            } else if (e.key === 'Escape') {
-                deactivateHints();
             }
             e.preventDefault();
             e.stopPropagation();
         } else if (isShiftDown) {
-            // Only set otherKeyPressed if Shift is active (blocking activation for chords)
             otherKeyPressed = true;
         }
     }, true);
+
+    function updateHintFiltering() {
+        const hints = hintContainer.querySelectorAll('.kb-nav-hint');
+        hints.forEach(hint => {
+            if (hint.dataset.code.startsWith(typingBuffer)) {
+                hint.classList.remove('kb-nav-hint-dim');
+            } else {
+                hint.classList.add('kb-nav-hint-dim');
+            }
+        });
+    }
 
     window.addEventListener('keyup', (e) => {
         if (e.key === 'Shift') {
@@ -147,5 +178,5 @@
         }
     });
 
-    console.log("Keyboard Navigator Optimized: Tap 'Shift' to steer.");
+    console.log("Keyboard Navigator Prefix-Free: Tap 'Shift' to steer.");
 })();
