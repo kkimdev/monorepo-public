@@ -362,7 +362,8 @@
                     // Only click if it's currently visible
                     if (targetEl && elementToHintMap.has(targetEl)) {
                         targetEl.click();
-                        if (targetEl.tagName === 'INPUT') {
+                        const focusTags = ['INPUT', 'TEXTAREA', 'SELECT'];
+                        if (focusTags.includes(targetEl.tagName)) {
                             targetEl.focus();
                         }
                     }
