@@ -131,8 +131,12 @@
                 span.dataset.code = code;
                 span.innerText = code;
 
-                // Initial state: assume scrolling (absolute)
-                state = { initialTop: rect.top, initialScrollY: scrollY, mode: 'unknown' };
+                // Initial state: assume unknown, use absolute
+                state = {
+                    lastTop: rect.top,
+                    lastScrollY: scrollY,
+                    mode: 'unknown'
+                };
                 motionState.set(el, state);
 
                 span.style.position = 'absolute';
@@ -141,29 +145,40 @@
 
                 elementToHintMap.set(el, span);
                 hintContainer.appendChild(span);
-            }
+            } else {
+                // Continuous Motion Re-evaluation
+                const deltaScroll = scrollY - state.lastScrollY;
+                if (Math.abs(deltaScroll) > 2) { // Threshold for significant movement
+                    const deltaTop = rect.top - state.lastTop;
 
-            // Update position only if mode is still unknown
-            if (state.mode === 'unknown') {
-                span.style.top = (rect.top + scrollY) + 'px';
-                span.style.left = (rect.left + scrollX) + 'px';
+                    // Detect current behavior
+                    let currentBehavior = 'unknown';
+                    if (Math.abs(deltaTop) < 1) {
+                        currentBehavior = 'fixed'; // Viewport stable -> fixed/sticky
+                    } else if (Math.abs(deltaTop + deltaScroll) < 2) {
+                        currentBehavior = 'scrolling'; // Document stable -> scrolling
+                    }
 
-                // Dynamic Motion Detection
-                const deltaScroll = scrollY - state.initialScrollY;
-                if (Math.abs(deltaScroll) > 10) { // Increased threshold for reliable detection
-                    const deltaTop = rect.top - state.initialTop;
-
-                    if (Math.abs(deltaTop) < 2) {
-                        // Viewport position hasn't changed despite scroll -> Fixed/Sticky
-                        state.mode = 'fixed';
-                        span.style.position = 'fixed';
+                    // Handle behavior transitions
+                    if (currentBehavior !== 'unknown' && currentBehavior !== state.mode) {
+                        state.mode = currentBehavior;
+                        if (state.mode === 'fixed') {
+                            span.style.position = 'fixed';
+                            span.style.top = rect.top + 'px';
+                            span.style.left = rect.left + 'px';
+                        } else {
+                            span.style.position = 'absolute';
+                            span.style.top = (rect.top + scrollY) + 'px';
+                            span.style.left = (rect.left + scrollX) + 'px';
+                        }
+                    } else if (state.mode === 'fixed') {
+                        // Keep fixed hints updated to viewport if they move slightly (e.g. horizontal scroll)
                         span.style.top = rect.top + 'px';
                         span.style.left = rect.left + 'px';
-                    } else if (Math.abs(deltaTop + deltaScroll) < 5) {
-                        // Document position is stable -> confirmed Scrolling
-                        state.mode = 'scrolling';
-                        // Position is already correct for absolute
                     }
+
+                    state.lastTop = rect.top;
+                    state.lastScrollY = scrollY;
                 }
             }
 
