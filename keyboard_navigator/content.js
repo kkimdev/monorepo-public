@@ -208,19 +208,6 @@
             let span = elementToHintMap.get(el);
             let state = motionState.get(el);
 
-            // Positioning Logic
-            const hasText = el.innerText.trim().length > 0;
-            let targetLeft = rect.left;
-            let targetTop = rect.top;
-
-            if (hasText) {
-                // Approximate hint width (chars * 10 + padding)
-                const hintWidth = code.length * 10 + 10;
-                if (rect.left > hintWidth + 10) {
-                    targetLeft = rect.left - hintWidth - 5;
-                }
-            }
-
             if (!span) {
                 span = document.createElement('span');
                 span.className = 'kb-nav-hint';
@@ -236,8 +223,8 @@
                 motionState.set(el, state);
 
                 span.style.position = 'absolute';
-                span.style.top = (targetTop + scrollY) + 'px';
-                span.style.left = (targetLeft + scrollX) + 'px';
+                span.style.top = (rect.top + scrollY) + 'px';
+                span.style.left = (rect.left + scrollX) + 'px';
 
                 elementToHintMap.set(el, span);
                 hintContainer.appendChild(span);
@@ -262,12 +249,12 @@
 
                     if (state.mode === 'fixed') {
                         span.style.position = 'fixed';
-                        span.style.top = targetTop + 'px';
-                        span.style.left = targetLeft + 'px';
+                        span.style.top = rect.top + 'px';
+                        span.style.left = rect.left + 'px';
                     } else {
                         span.style.position = 'absolute';
-                        span.style.top = (targetTop + scrollY) + 'px';
-                        span.style.left = (targetLeft + scrollX) + 'px';
+                        span.style.top = (rect.top + scrollY) + 'px';
+                        span.style.left = (rect.left + scrollX) + 'px';
                     }
 
                     state.lastTop = rect.top;
