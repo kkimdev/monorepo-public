@@ -23,6 +23,10 @@
         return label;
     };
 
+    let labelMap = new WeakMap();
+    let elementToHintMap = new Map(); // Element -> Span
+    let nextLabelIndex = 0;
+
     // Track visibility of elements
     const observer = new IntersectionObserver((entries) => {
         entries.forEach(entry => {
@@ -32,6 +36,7 @@
                 visibleTargets.delete(entry.target);
             }
         });
+        if (hintsActive) debouncedRefresh();
     }, { threshold: 0.1 });
 
     const updateTargets = () => {
@@ -49,6 +54,7 @@
                 targets.delete(el);
                 visibleTargets.delete(el);
                 observer.unobserve(el);
+                elementToHintMap.delete(el);
             }
         }
     };
@@ -59,42 +65,81 @@
         updateTimeout = setTimeout(updateTargets, 200);
     };
 
+    let refreshTimeout;
+    const debouncedRefresh = () => {
+        clearTimeout(refreshTimeout);
+        refreshTimeout = setTimeout(refreshVisibleHints, 50);
+    };
+
     // Initial scan and MutationObserver for dynamic content
     updateTargets();
     const mutationObserver = new MutationObserver(debouncedUpdate);
     mutationObserver.observe(document.body, { childList: true, subtree: true });
 
-    let precomputedFragment = null;
-    let precomputedHintMap = {};
     let isShiftDown = false;
 
     function prepareHints() {
-        precomputedHintMap = {};
-        precomputedFragment = document.createDocumentFragment();
+        // Clear previous session data if not active
+        if (!hintsActive) {
+            labelMap = new WeakMap();
+            elementToHintMap.clear();
+            nextLabelIndex = 0;
+            hintMap = {};
 
-        const count = visibleTargets.size;
-        let length = 1;
-        while (Math.pow(26, length) < count) length++;
-        currentLabelLength = length;
+            // Stable length based on total potential targets
+            const totalCount = targets.size;
+            let length = 1;
+            while (Math.pow(26, length) < totalCount) length++;
+            currentLabelLength = length;
+        }
+    }
+
+    function refreshVisibleHints() {
+        if (!hintsActive) return;
 
         const scrollX = window.scrollX;
         const scrollY = window.scrollY;
 
-        let hintCount = 0;
+        // Add/update hints for visible elements
         visibleTargets.forEach(el => {
-            const rect = el.getBoundingClientRect();
-            if (rect.width === 0 || rect.height === 0) return;
+            if (!elementToHintMap.has(el)) {
+                let code = labelMap.get(el);
+                if (!code) {
+                    code = getLabel(nextLabelIndex++, currentLabelLength);
+                    labelMap.set(el, code);
+                    hintMap[code] = el;
+                }
 
-            const code = getLabel(hintCount++, currentLabelLength);
-            const span = document.createElement('span');
-            span.className = 'kb-nav-hint';
-            span.dataset.code = code;
-            span.innerText = code;
-            span.style.top = (rect.top + scrollY) + 'px';
-            span.style.left = (rect.left + scrollX) + 'px';
+                const rect = el.getBoundingClientRect();
+                if (rect.width === 0 || rect.height === 0) return;
 
-            precomputedFragment.appendChild(span);
-            precomputedHintMap[code] = el;
+                const span = document.createElement('span');
+                span.className = 'kb-nav-hint';
+                span.dataset.code = code;
+                span.style.top = (rect.top + scrollY) + 'px';
+                span.style.left = (rect.left + scrollX) + 'px';
+
+                // Restore matching visuals if buffer exists
+                if (typingBuffer && code.startsWith(typingBuffer)) {
+                    const matched = code.slice(0, typingBuffer.length);
+                    const remaining = code.slice(typingBuffer.length);
+                    span.innerHTML = `<span class="kb-nav-hint-match">${matched}</span>${remaining}`;
+                } else {
+                    span.innerText = code;
+                    if (typingBuffer) span.classList.add('kb-nav-hint-filtered');
+                }
+
+                hintContainer.appendChild(span);
+                elementToHintMap.set(el, span);
+            }
+        });
+
+        // Hide hints for elements no longer visible
+        elementToHintMap.forEach((span, el) => {
+            if (!visibleTargets.has(el)) {
+                span.remove();
+                elementToHintMap.delete(el);
+            }
         });
     }
 
@@ -102,18 +147,14 @@
         hintContainer.innerHTML = '';
         hintsActive = false;
         hintMap = {};
+        elementToHintMap.clear();
         typingBuffer = "";
     }
 
     function activateHints() {
-        if (precomputedFragment) {
-            hintMap = precomputedHintMap;
-            hintContainer.appendChild(precomputedFragment);
-            hintsActive = true;
-            precomputedFragment = null;
-            precomputedHintMap = {};
-            typingBuffer = "";
-        }
+        hintsActive = true;
+        typingBuffer = "";
+        refreshVisibleHints();
     }
 
     const allowedNavigationKeys = new Set([
@@ -126,7 +167,7 @@
             if (!isShiftDown) {
                 isShiftDown = true;
                 otherKeyPressed = false;
-                if (!hintsActive) prepareHints();
+                prepareHints();
             }
             return;
         }
