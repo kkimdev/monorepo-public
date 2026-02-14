@@ -111,16 +111,32 @@
         }
     }
 
+    function normalizeUrl(urlStr) {
+        if (!urlStr) return "";
+        try {
+            const url = new URL(urlStr, window.location.origin);
+            let path = url.origin + url.pathname;
+            // GitHub specific: Treat /blob/, /edit/, /tree/, /raw/ as the same for de-duplication
+            path = path.replace(/\/(blob|edit|tree|raw|blame)\/[^/]+\//, '/.../');
+            return path;
+        } catch (e) {
+            return urlStr;
+        }
+    }
+
     function refreshVisibleHints() {
         if (!hintsActive) return;
 
         const scrollX = window.scrollX;
         const scrollY = window.scrollY;
 
-        // De-duplication: Track URL -> last rect for same refresh cycle
+        // De-duplication: Track Normalized URL -> Primary Element
         const seenUrls = new Map();
 
-        // Sort visibleTargets to prefer elements with text content (more likely to be primary)
+        // Sort visibleTargets:
+        // 1. Prefer those with text content
+        // 2. Prefer those with shorter labels if they already exist
+        // 3. Prefer those higher up in the document
         const sortedTargets = Array.from(visibleTargets).sort((a, b) => {
             const aText = a.innerText.trim();
             const bText = b.innerText.trim();
@@ -132,15 +148,10 @@
         sortedTargets.forEach(el => {
             let code = labelMap.get(el);
 
-            // Check for duplicate links (advanced de-duplication)
-            if ((el.tagName === 'A' || el.getAttribute('role') === 'link') && (el.href || el.getAttribute('href'))) {
-                const urlStr = el.href || el.getAttribute('href');
-                let normalized = urlStr;
-                try {
-                    const url = new URL(urlStr, window.location.origin);
-                    normalized = url.origin + url.pathname;
-                } catch (e) {}
-
+            // Advanced de-duplication for links
+            const href = el.href || el.getAttribute('href');
+            if ((el.tagName === 'A' || el.getAttribute('role') === 'link') && href) {
+                const normalized = normalizeUrl(href);
                 const rect = el.getBoundingClientRect();
                 const existing = seenUrls.get(normalized);
 
@@ -150,8 +161,9 @@
                     const dy = rect.top - eRect.top;
                     const dist = Math.sqrt(dx*dx + dy*dy);
 
-                    if (dist < 200) {
-                        // Skip duplicate nearby link
+                    // Increased threshold (300px) and vertical proximity check
+                    if (dist < 300 || Math.abs(dy) < 20) {
+                        // Skip duplicate link
                         const existingSpan = elementToHintMap.get(el);
                         if (existingSpan) {
                             existingSpan.remove();
