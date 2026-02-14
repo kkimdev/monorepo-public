@@ -6,6 +6,8 @@
   "module": "content.js",
   "type": "module",
   "devDependencies": {
-    "bun-types": "latest"
+    "bun-types": "latest",
+    "playwright": "latest",
+    "tsx": "latest"
   }
 }

@@ -12,15 +12,40 @@
         pkgs = nixpkgs.legacyPackages.${system};
       in
       {
-        packages.default = pkgs.stdenv.mkDerivation {
+        packages.default = pkgs.stdenv.mkDerivation rec {
           name = "keyboard-navigator";
           src = ./.;
 
-          nativeBuildInputs = [ pkgs.bun pkgs.zip pkgs.resvg ];
+          # Allow network access for Playwright browser install
+          __noChroot = true;
+
+          nativeBuildInputs = [
+            pkgs.bun
+            pkgs.zip
+            pkgs.resvg
+            pkgs.xvfb-run
+            pkgs.nodejs
+            pkgs.cacert
+          ];
 
           buildPhase = ''
             export HOME=$TMPDIR
+            export PLAYWRIGHT_BROWSERS_PATH=$TMPDIR/pw-browsers
+            export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1
+            export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+            export NODE_EXTRA_CA_CERTS=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+
+            # Install npm deps
+            bun install --frozen-lockfile
+
+            # Install Playwright Chromium browser (no --with-deps, no sudo)
+            npx playwright install chromium
+
+            # Bundle extension JS
             bun build ./content.js --outfile=content.js --minify
+
+            # Generate Real Screenshot (1280x800) via Playwright
+            xvfb-run npx tsx ./capture_screenshot.ts
 
             # Generate Icon (128x128)
             cat <<EOF > icon.svg
@@ -54,34 +79,6 @@
             </svg>
             EOF
             resvg promo_marquee.svg promo_marquee.png
-
-            # Generate Screenhost (1280x800)
-            cat <<EOF > screenshot.svg
-            <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800">
-              <rect width="1280" height="800" fill="#f0f0f0" />
-              <rect width="1280" height="60" fill="#333" />
-              <circle cx="20" cy="30" r="10" fill="#ff5f56" />
-              <circle cx="50" cy="30" r="10" fill="#ffbd2e" />
-              <circle cx="80" cy="30" r="10" fill="#27c93f" />
-
-              <rect x="100" y="150" width="300" height="40" rx="4" fill="#ddd" />
-              <rect x="100" y="210" width="250" height="40" rx="4" fill="#ddd" />
-              <rect x="100" y="270" width="400" height="40" rx="4" fill="#ddd" />
-
-              <!-- Hints -->
-              <rect x="100" y="150" width="30" height="24" fill="#ffd700" stroke="#000" stroke-width="1" />
-              <text x="115" y="167" text-anchor="middle" font-family="monospace" font-weight="bold" font-size="16" fill="#000">A</text>
-
-              <rect x="100" y="210" width="30" height="24" fill="#ffd700" stroke="#000" stroke-width="1" />
-              <text x="115" y="227" text-anchor="middle" font-family="monospace" font-weight="bold" font-size="16" fill="#000">S</text>
-
-              <rect x="100" y="270" width="30" height="24" fill="#ffd700" stroke="#000" stroke-width="1" />
-              <text x="115" y="287" text-anchor="middle" font-family="monospace" font-weight="bold" font-size="16" fill="#000">D</text>
-
-              <text x="50%" y="750" text-anchor="middle" font-family="monospace" font-weight="bold" font-size="40" fill="#333">Navigate with speed.</text>
-            </svg>
-            EOF
-            resvg screenshot.svg screenshot1.png
           '';
 
           installPhase = ''
