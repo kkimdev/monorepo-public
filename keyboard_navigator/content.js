@@ -216,6 +216,14 @@
         if (hintsActive) debouncedRefresh();
     }, { passive: true });
 
+    function isAnyVisibleHintMatching(prefix) {
+        for (const el of elementToHintMap.keys()) {
+            const code = labelMap.get(el);
+            if (code && code.startsWith(prefix)) return true;
+        }
+        return false;
+    }
+
     window.addEventListener('keydown', (e) => {
         if (e.key === 'Shift') {
             if (!isShiftDown) {
@@ -238,14 +246,24 @@
                 typingBuffer = typingBuffer.slice(0, -1);
                 updateHintFiltering();
             } else if (e.key.length === 1 && /^[a-zA-Z]$/.test(e.key)) {
-                typingBuffer += e.key.toUpperCase();
+                const newBuffer = typingBuffer + e.key.toUpperCase();
+
+                // Validate against visible hints
+                if (!isAnyVisibleHintMatching(newBuffer)) {
+                    deactivateHints();
+                    return; // Dismiss and allow native key behavior
+                }
+
+                typingBuffer = newBuffer;
                 updateHintFiltering();
 
                 if (typingBuffer.length === currentLabelLength) {
-                    if (hintMap[typingBuffer]) {
-                        hintMap[typingBuffer].click();
-                        if (hintMap[typingBuffer].tagName === 'INPUT') {
-                            hintMap[typingBuffer].focus();
+                    const targetEl = hintMap[typingBuffer];
+                    // Only click if it's currently visible
+                    if (targetEl && elementToHintMap.has(targetEl)) {
+                        targetEl.click();
+                        if (targetEl.tagName === 'INPUT') {
+                            targetEl.focus();
                         }
                     }
                     deactivateHints();
