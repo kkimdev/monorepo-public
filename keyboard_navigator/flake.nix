@@ -16,7 +16,7 @@
           name = "keyboard-navigator";
           src = ./.;
 
-          nativeBuildInputs = [ pkgs.bun ];
+          nativeBuildInputs = [ pkgs.bun pkgs.zip ];
 
           buildPhase = ''
             export HOME=$TMPDIR
@@ -28,6 +28,7 @@
             cp content.js $out/
             cp content.css $out/
             cp manifest.json $out/
+            (cd $out && zip -r keyboard-navigator.zip .)
           '';
         };
 
