@@ -100,41 +100,56 @@
         const scrollX = window.scrollX;
         const scrollY = window.scrollY;
 
-        // Add/update hints for visible elements
+        // Update/create hints for visible elements
         visibleTargets.forEach(el => {
-            if (!elementToHintMap.has(el)) {
-                let code = labelMap.get(el);
-                if (!code) {
-                    code = getLabel(nextLabelIndex++, currentLabelLength);
-                    labelMap.set(el, code);
-                    hintMap[code] = el;
+            let code = labelMap.get(el);
+            if (!code) {
+                code = getLabel(nextLabelIndex++, currentLabelLength);
+                labelMap.set(el, code);
+                hintMap[code] = el;
+            }
+
+            const rect = el.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) {
+                // Remove if hidden
+                const existing = elementToHintMap.get(el);
+                if (existing) {
+                    existing.remove();
+                    elementToHintMap.delete(el);
                 }
+                return;
+            };
 
-                const rect = el.getBoundingClientRect();
-                if (rect.width === 0 || rect.height === 0) return;
-
-                const span = document.createElement('span');
+            let span = elementToHintMap.get(el);
+            if (!span) {
+                span = document.createElement('span');
                 span.className = 'kb-nav-hint';
                 span.dataset.code = code;
-                span.style.top = (rect.top + scrollY) + 'px';
-                span.style.left = (rect.left + scrollX) + 'px';
-
-                // Restore matching visuals if buffer exists
-                if (typingBuffer && code.startsWith(typingBuffer)) {
-                    const matched = code.slice(0, typingBuffer.length);
-                    const remaining = code.slice(typingBuffer.length);
-                    span.innerHTML = `<span class="kb-nav-hint-match">${matched}</span>${remaining}`;
-                } else {
-                    span.innerText = code;
-                    if (typingBuffer) span.classList.add('kb-nav-hint-filtered');
-                }
-
-                hintContainer.appendChild(span);
                 elementToHintMap.set(el, span);
+                hintContainer.appendChild(span);
+            }
+
+            // Update position (critical for fixed/sticky/scroll)
+            span.style.top = (rect.top + scrollY) + 'px';
+            span.style.left = (rect.left + scrollX) + 'px';
+
+            // Restore matching visuals if buffer exists
+            if (typingBuffer && code.startsWith(typingBuffer)) {
+                const matched = code.slice(0, typingBuffer.length);
+                const remaining = code.slice(typingBuffer.length);
+                span.innerHTML = `<span class="kb-nav-hint-match">${matched}</span>${remaining}`;
+                span.classList.remove('kb-nav-hint-filtered');
+            } else {
+                span.innerText = code;
+                if (typingBuffer) {
+                    span.classList.add('kb-nav-hint-filtered');
+                } else {
+                    span.classList.remove('kb-nav-hint-filtered');
+                }
             }
         });
 
-        // Hide hints for elements no longer visible
+        // Remove hints for elements no longer in visibleTargets
         elementToHintMap.forEach((span, el) => {
             if (!visibleTargets.has(el)) {
                 span.remove();
@@ -161,6 +176,10 @@
         'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
         'PageUp', 'PageDown', 'Home', 'End', ' ', 'Tab'
     ]);
+
+    window.addEventListener('scroll', () => {
+        if (hintsActive) debouncedRefresh();
+    }, { passive: true });
 
     window.addEventListener('keydown', (e) => {
         if (e.key === 'Shift') {
