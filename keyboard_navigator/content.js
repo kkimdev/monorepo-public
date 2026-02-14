@@ -134,14 +134,14 @@
         const seenUrls = new Map();
 
         // Sort visibleTargets:
-        // 1. Prefer those with text content
+        // 1. Prefer those WITHOUT text content (icons) to avoid covering text labels
         // 2. Prefer those with shorter labels if they already exist
         // 3. Prefer those higher up in the document
         const sortedTargets = Array.from(visibleTargets).sort((a, b) => {
             const aText = a.innerText.trim();
             const bText = b.innerText.trim();
-            if (aText && !bText) return -1;
-            if (!aText && bText) return 1;
+            if (aText && !bText) return 1;
+            if (!aText && bText) return -1;
             return 0;
         });
 
