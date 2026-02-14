@@ -208,6 +208,19 @@
             let span = elementToHintMap.get(el);
             let state = motionState.get(el);
 
+            // Positioning Logic
+            const hasText = el.innerText.trim().length > 0;
+            let targetLeft = rect.left;
+            let targetTop = rect.top;
+
+            if (hasText) {
+                // Approximate hint width (chars * 10 + padding)
+                const hintWidth = code.length * 10 + 10;
+                if (rect.left > hintWidth + 10) {
+                    targetLeft = rect.left - hintWidth - 5;
+                }
+            }
+
             if (!span) {
                 span = document.createElement('span');
                 span.className = 'kb-nav-hint';
@@ -223,41 +236,38 @@
                 motionState.set(el, state);
 
                 span.style.position = 'absolute';
-                span.style.top = (rect.top + scrollY) + 'px';
-                span.style.left = (rect.left + scrollX) + 'px';
+                span.style.top = (targetTop + scrollY) + 'px';
+                span.style.left = (targetLeft + scrollX) + 'px';
 
                 elementToHintMap.set(el, span);
                 hintContainer.appendChild(span);
             } else {
                 // Continuous Motion Re-evaluation
                 const deltaScroll = scrollY - state.lastScrollY;
-                if (Math.abs(deltaScroll) > 2) { // Threshold for significant movement
+                if (Math.abs(deltaScroll) > 2) {
                     const deltaTop = rect.top - state.lastTop;
 
                     // Detect current behavior
                     let currentBehavior = 'unknown';
                     if (Math.abs(deltaTop) < 1) {
-                        currentBehavior = 'fixed'; // Viewport stable -> fixed/sticky
+                        currentBehavior = 'fixed';
                     } else if (Math.abs(deltaTop + deltaScroll) < 2) {
-                        currentBehavior = 'scrolling'; // Document stable -> scrolling
+                        currentBehavior = 'scrolling';
                     }
 
                     // Handle behavior transitions
                     if (currentBehavior !== 'unknown' && currentBehavior !== state.mode) {
                         state.mode = currentBehavior;
-                        if (state.mode === 'fixed') {
-                            span.style.position = 'fixed';
-                            span.style.top = rect.top + 'px';
-                            span.style.left = rect.left + 'px';
-                        } else {
-                            span.style.position = 'absolute';
-                            span.style.top = (rect.top + scrollY) + 'px';
-                            span.style.left = (rect.left + scrollX) + 'px';
-                        }
-                    } else if (state.mode === 'fixed') {
-                        // Keep fixed hints updated to viewport if they move slightly (e.g. horizontal scroll)
-                        span.style.top = rect.top + 'px';
-                        span.style.left = rect.left + 'px';
+                    }
+
+                    if (state.mode === 'fixed') {
+                        span.style.position = 'fixed';
+                        span.style.top = targetTop + 'px';
+                        span.style.left = targetLeft + 'px';
+                    } else {
+                        span.style.position = 'absolute';
+                        span.style.top = (targetTop + scrollY) + 'px';
+                        span.style.left = (targetLeft + scrollX) + 'px';
                     }
 
                     state.lastTop = rect.top;
