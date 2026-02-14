@@ -1,0 +1,11 @@
+{
+  "name": "keyboard-navigator",
+  "version": "1.0.0",
+  "description": "Chrome extension for keyboard navigation",
+  "main": "content.js",
+  "module": "content.js",
+  "type": "module",
+  "devDependencies": {
+    "bun-types": "latest"
+  }
+}
