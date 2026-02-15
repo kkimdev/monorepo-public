@@ -67,10 +67,17 @@
 }
 
 .kb-nav-target-highlight {
+    position: absolute;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+    z-index: 2147483646; /* Just below hints */
     outline: 2px solid var(--kb-nav-accent) !important;
-    outline-offset: 2px !important;
+    outline-offset: -2px !important;
     box-shadow: 0 0 0 2px rgba(255, 215, 0, 0.2), 0 0 8px 4px rgba(255, 215, 0, 0.4) !important;
     transition: opacity 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+    opacity: 0;
+    pointer-events: none;
 }
 
 @keyframes kb-nav-click-flash {

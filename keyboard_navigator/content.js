@@ -207,11 +207,14 @@
     let activationMode = 'SAME_TAB'; // 'SAME_TAB' or 'NEW_TAB'
     let labelMap = new WeakMap();
     let elementToHintMap = new Map(); // Element -> Span
+    let elementToHighlightMap = new Map(); // Element -> Div
     let motionState = new WeakMap(); // Element -> { lastTop, lastScrollY, mode: 'unknown' | 'scrolling' | 'fixed' }
     let nextLabelIndex = 0;
 
     // Object Pooling for performance
     const spanPool = [];
+    const overlayPool = [];
+
     function getSpanFromPool() {
         const span = spanPool.pop() || document.createElement('span');
         span.className = 'kb-nav-hint';
@@ -219,11 +222,32 @@
         span.style.animation = ''; // Allow CSS animation to trigger
         return span;
     }
+
+    function getOverlayFromPool() {
+        const div = overlayPool.pop() || document.createElement('div');
+        div.className = 'kb-nav-target-highlight';
+        div.style.display = 'block';
+        div.style.opacity = '0';
+        return div;
+    }
     function releaseSpanToPool(span) {
         span.style.display = 'none';
         span.style.animation = 'none'; // Reset animation
         span.innerHTML = '';
+        delete span.dataset.code;
+        if (span.parentNode) {
+            span.parentNode.removeChild(span);
+        }
         spanPool.push(span);
+    }
+
+    function releaseOverlayToPool(div) {
+        div.style.display = 'none';
+        div.style.opacity = '0';
+        if (div.parentNode) {
+            div.parentNode.removeChild(div);
+        }
+        overlayPool.push(div);
     }
 
     // Track visibility of elements
@@ -292,6 +316,7 @@
                 visibleTargets.delete(el);
                 observer.unobserve(el);
                 elementToHintMap.delete(el);
+                elementToHighlightMap.delete(el);
                 motionState.delete(el);
             }
         }
@@ -312,7 +337,9 @@
             hintMap = {};
             nextLabelIndex = 0;
             elementToHintMap.forEach((span) => releaseSpanToPool(span));
+            elementToHighlightMap.forEach((div) => releaseOverlayToPool(div));
             elementToHintMap.clear();
+            elementToHighlightMap.clear();
         }
     }
 
@@ -378,6 +405,7 @@
         hintPreparationHandle = null;
         labelMap = new WeakMap();
         elementToHintMap.clear();
+        elementToHighlightMap.clear();
         motionState = new WeakMap();
         nextLabelIndex = 0;
         hintMap = {};
@@ -465,12 +493,17 @@
 
         measurements.forEach(({ el, rect, isVisible }) => {
             let span = elementToHintMap.get(el);
+            let highlight = elementToHighlightMap.get(el);
             let state = motionState.get(el);
 
             if (!isVisible) {
                 if (span) {
                     releaseSpanToPool(span);
                     elementToHintMap.delete(el);
+                }
+                if (highlight) {
+                    releaseOverlayToPool(highlight);
+                    elementToHighlightMap.delete(el);
                 }
                 return;
             }
@@ -487,6 +520,10 @@
                         if (span) {
                             releaseSpanToPool(span);
                             elementToHintMap.delete(el);
+                        }
+                        if (highlight) {
+                            releaseOverlayToPool(highlight);
+                            elementToHighlightMap.delete(el);
                         }
                         return;
                     }
@@ -526,6 +563,13 @@
 
                 elementToHintMap.set(el, span);
                 fragment.appendChild(span);
+
+                highlight = getOverlayFromPool();
+                highlight.style.width = `${Math.round(rect.width)}px`;
+                highlight.style.height = `${Math.round(rect.height)}px`;
+                highlight.style.translate = `${Math.round(docLeft)}px ${Math.round(docTop)}px`;
+                elementToHighlightMap.set(el, highlight);
+                fragment.appendChild(highlight);
             } else {
                 // ... update logic
                 const deltaScroll = scrollY - state.lastScrollY;
@@ -551,6 +595,10 @@
                         span.style.translate = `${Math.round(safeLeft)}px ${Math.round(safeTop)}px`;
                     }
 
+                    if (highlight && state.mode !== 'static') {
+                        highlight.style.translate = `${Math.round(docLeft)}px ${Math.round(docTop)}px`;
+                    }
+
                     state.lastTop = rect.top;
                     state.lastScrollY = scrollY;
                 }
@@ -563,10 +611,11 @@
                 span.classList.remove('kb-nav-hint-filtered');
                 if (typingBuffer) {
                     span.classList.add('kb-nav-hint-active'); // For scaling
+                    if (highlight) highlight.style.opacity = '1';
                 } else {
                     span.classList.remove('kb-nav-hint-active');
+                    if (highlight) highlight.style.opacity = '0';
                 }
-                el.classList.add('kb-nav-target-highlight');
             } else {
                 span.innerText = code;
                 span.classList.remove('kb-nav-hint-active');
@@ -575,7 +624,7 @@
                 } else {
                     span.classList.remove('kb-nav-hint-filtered');
                 }
-                el.classList.remove('kb-nav-target-highlight');
+                if (highlight) highlight.style.opacity = '0';
             }
         });
 
@@ -588,6 +637,11 @@
             if (!visibleTargets.has(el)) {
                 releaseSpanToPool(span);
                 elementToHintMap.delete(el);
+                const highlight = elementToHighlightMap.get(el);
+                if (highlight) {
+                    releaseOverlayToPool(highlight);
+                    elementToHighlightMap.delete(el);
+                }
                 motionState.delete(el);
             }
         });
@@ -607,23 +661,25 @@
 
     function deactivateHints() {
         if (!hintsActive) return;
+        hintsActive = false; // Set immediately to allow new activation cycles
 
         hintContainer.classList.add('kb-nav-closing');
 
         // Wait for exit animation (150ms) before actual removal
         setTimeout(() => {
             hintContainer.style.display = 'none';
-            // Recycle all spans instead of clearing innerHTML
             // Recycle all spans and cleanup targets
             elementToHintMap.forEach((span, el) => {
                 releaseSpanToPool(span);
-                el.classList.remove('kb-nav-target-highlight');
                 el.classList.remove('kb-nav-clicked');
             });
+            elementToHighlightMap.forEach((div) => {
+                releaseOverlayToPool(div);
+            });
             hintContainer.classList.remove('kb-nav-closing');
-            hintsActive = false;
             hintMap = {};
             elementToHintMap.clear();
+            elementToHighlightMap.clear();
             typingBuffer = "";
         }, 150);
     }
@@ -669,7 +725,8 @@
 
     const allowedNavigationKeys = new Set([
         'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
-        'PageUp', 'PageDown', 'Home', 'End', ' ', 'Tab'
+        'PageUp', 'PageDown', 'Home', 'End', ' ', 'Tab',
+        'CapsLock', 'NumLock', 'ScrollLock'
     ]);
 
     window.addEventListener('scroll', () => {
@@ -757,37 +814,36 @@
             }
             e.preventDefault();
             e.stopPropagation();
-        } else if (isShiftDown) {
+        } else if (isShiftDown && !['CapsLock', 'NumLock', 'ScrollLock'].includes(e.key)) {
             otherKeyPressed = true;
         }
     }, true);
 
     function updateHintFiltering() {
-        const hints = hintContainer.querySelectorAll('.kb-nav-hint');
+        const hints = shadowRoot.querySelectorAll('.kb-nav-hint');
         hints.forEach(hint => {
             const code = hint.dataset.code;
+            if (!code) return; // Pooled span skip
+
             const el = hintMap[code];
+            const highlight = elementToHighlightMap.get(el);
+
             if (code.startsWith(typingBuffer)) {
                 hint.classList.remove('kb-nav-hint-filtered');
                 if (typingBuffer) {
-                    hint.classList.add('kb-nav-hint-active'); // Only scale if actually filtering
+                    hint.classList.add('kb-nav-hint-active');
+                    if (highlight) highlight.style.opacity = '1';
                 } else {
                     hint.classList.remove('kb-nav-hint-active');
+                    if (highlight) highlight.style.opacity = '0';
                 }
                 const matched = code.slice(0, typingBuffer.length);
                 const remaining = code.slice(typingBuffer.length);
                 hint.innerHTML = `<span class="kb-nav-hint-match">${matched}</span>${remaining}`;
-                if (typingBuffer && el) {
-                    el.classList.add('kb-nav-target-highlight');
-                } else if (el) {
-                    el.classList.remove('kb-nav-target-highlight');
-                }
             } else {
                 hint.classList.add('kb-nav-hint-filtered');
                 hint.classList.remove('kb-nav-hint-active');
-                if (el) {
-                    el.classList.remove('kb-nav-target-highlight');
-                }
+                if (highlight) highlight.style.opacity = '0';
             }
         });
     }
