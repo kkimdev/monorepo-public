@@ -54,7 +54,7 @@
                 <path fill="#000" d="M19 7H5c-1.1 0-2 .9-2 2v6c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V9c0-1.1-.9-2-2-2zm0 8H5V9h14v6zM7 10h2v2H7v-2zm0 3h2v2H7v-2zm3-3h2v2h-2v-2zm0 3h4v2h-4v-2zm5-3h2v2h-2v-2zm0 3h2v2h-2v-2zm-3-3h2v2h-2v-2z"/>
               </svg>
 EOF
-              resvg icon.svg icon128.png --width 128 --height 128
+              resvg icon.svg icon128.local.png --width 128 --height 128
             ) &
 
             (
@@ -93,7 +93,7 @@ EOF
             cp content.js $out/
             cp content.css $out/
             cp manifest.json $out/
-            cp icon128.png $out/
+            cp icon128.local.png $out/
             cp promo_small.png $out/
             cp promo_marquee.png $out/
             cp screenshot1.png $out/

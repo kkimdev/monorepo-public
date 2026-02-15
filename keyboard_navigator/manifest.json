@@ -5,7 +5,7 @@
   "description": "Navigate web pages using keyboard hints. Tap 'Shift' to activate.",
   "action": {},
   "icons": {
-    "128": "icon128.png"
+    "128": "icon128.local.png"
   },
   "permissions": [
     "activeTab",
@@ -24,5 +24,11 @@
       "run_at": "document_start"
     }
   ],
-  "host_permissions": ["<all_urls>"]
+  "host_permissions": ["<all_urls>"],
+  "web_accessible_resources": [
+    {
+      "resources": ["content.css"],
+      "matches": ["<all_urls>"]
+    }
+  ]
 }

@@ -7,8 +7,16 @@
     };
 
     const applyColors = (bgColor, accentColor) => {
-        document.documentElement.style.setProperty('--kb-nav-bg', hexToRgba(bgColor, 0.85));
+        const bg = hexToRgba(bgColor, 0.85);
+        document.documentElement.style.setProperty('--kb-nav-bg', bg);
         document.documentElement.style.setProperty('--kb-nav-accent', accentColor);
+
+        // Also apply to Shadow Host if it exists
+        const host = document.getElementById('kb-nav-host');
+        if (host) {
+            host.style.setProperty('--kb-nav-bg', bg);
+            host.style.setProperty('--kb-nav-accent', accentColor);
+        }
     };
 
     // Load initial colors
@@ -36,9 +44,77 @@
     hintContainer.id = 'kb-nav-container';
 
     let initialized = false;
+    let shadowRoot = null;
     function tryInit() {
         if (initialized || !document.body) return;
-        document.body.appendChild(hintContainer);
+
+        const host = document.createElement('div');
+        host.id = 'kb-nav-host';
+        // Explicitly style the host to be document-relative and ignore site CSS
+        host.style.cssText = 'position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 100% !important; pointer-events: none !important; z-index: 2147483647 !important; display: block !important; border: none !important; padding: 0 !important; margin: 0 !important;';
+        document.body.appendChild(host);
+
+        // Use closed shadow root for isolation
+        shadowRoot = host.attachShadow({ mode: 'closed' });
+
+        // Inject CSS via fetch + style tag (more reliable for CSP on many sites)
+        if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL) {
+            fetch(chrome.runtime.getURL('content.css'))
+                .then(res => res.text())
+                .then(css => {
+                    const sheet = document.createElement('style');
+                    sheet.id = 'kb-nav-styles';
+                    sheet.textContent = css;
+                    shadowRoot.appendChild(sheet);
+
+                    // Re-apply colors to sync with manifest defaults
+                    chrome.storage.local.get(['bgColor', 'accentColor'], (result) => {
+                        applyColors(result.bgColor || '#fff176', result.accentColor || '#ffd700');
+                    });
+                })
+                .catch(err => {
+                    console.warn("Keyboard Navigator: fetch failed, using fallback", err);
+                    injectFallbackStyles();
+                });
+        } else {
+            injectFallbackStyles();
+        }
+
+        function injectFallbackStyles() {
+            // Check if already injected
+            if (shadowRoot.querySelector('#kb-nav-styles-fallback')) return;
+
+            const style = document.createElement('style');
+            style.id = 'kb-nav-styles-fallback';
+            const styleTags = Array.from(document.querySelectorAll('style, link[rel="stylesheet"]'));
+            let cssText = '';
+
+            // Try to find the content.css content if it was injected by manifest
+            styleTags.forEach(st => {
+                try {
+                    if (st.tagName === 'STYLE' && st.textContent.includes('kb-nav-hint')) {
+                        cssText += st.textContent;
+                    } else if (st.tagName === 'LINK' && st.sheet) {
+                        // For links, we might be able to read the rules if same-origin or CORS
+                        Array.from(st.sheet.cssRules).forEach(rule => {
+                            if (rule.cssText.includes('kb-nav-hint')) {
+                                cssText += rule.cssText;
+                            }
+                        });
+                    }
+                } catch (e) {
+                    // Ignore CORS restricted sheets
+                }
+            });
+
+            if (cssText) {
+                style.textContent = cssText;
+                shadowRoot.appendChild(style);
+            }
+        }
+
+        shadowRoot.appendChild(hintContainer);
+
         mutationObserver.observe(document.body, { childList: true, subtree: true });
         updateTargets();
         initialized = true;
@@ -241,127 +317,91 @@
         const scrollY = window.scrollY;
 
         // --- READ PHASE ---
-        // Batch getBoundingClientRect and textContent to avoid layout thrashing
-        const rects = new Map();
-        const textCache = new Map();
+        const measurements = [];
         const targetsToProcess = Array.from(visibleTargets);
 
         targetsToProcess.forEach(el => {
             let state = motionState.get(el);
-
-            // Optimization: Skip DOM reads for static elements during scroll
             if (isScrolling && state && state.mode === 'static') return;
 
             const rect = el.getBoundingClientRect();
-
-            // Performance: During scroll, we trust the cached visibility from updateTargets or initial render
-            // to avoid layout thrashing. We only re-check if we don't have a state yet.
             const isVisible = (state && typeof state.isVisible !== 'undefined') ? state.isVisible : isElementVisible(el);
 
             if (rect.width > 0 && rect.height > 0 && isVisible) {
-                rects.set(el, rect);
-                if (!isScrolling) textCache.set(el, el.textContent.trim());
-                if (state) state.isVisible = true;
+                measurements.push({
+                    el,
+                    rect,
+                    isVisible: true,
+                    code: labelMap.get(el) || getLabel(nextLabelIndex++, currentLabelLength)
+                });
             } else {
-                rects.set(el, null);
-                if (state) state.isVisible = false;
+                measurements.push({ el, isVisible: false });
             }
         });
 
-        // --- PROCESSING PHASE ---
-        const seenUrls = new Map();
-        let sortedTargets = targetsToProcess;
-        if (!isScrolling) {
-            sortedTargets = targetsToProcess.sort((a, b) => {
-                const aText = textCache.get(a);
-                const bText = textCache.get(b);
-                if (aText && !bText) return 1;
-                if (!aText && bText) return -1;
-                return 0;
-            });
-        }
-
         // --- WRITE PHASE ---
-        sortedTargets.forEach(el => {
+        const seenUrls = new Map();
+
+        measurements.forEach(({ el, rect, isVisible, code }) => {
             let span = elementToHintMap.get(el);
             let state = motionState.get(el);
 
-            // Skip ALL logic for static elements during scroll
-            if (isScrolling && span && state && state.mode === 'static') return;
-
-            let code = labelMap.get(el);
-            const rect = rects.get(el);
-
-            if (!rect || rect.width === 0 || rect.height === 0) {
-                const existing = elementToHintMap.get(el);
-                if (existing) {
-                    releaseSpanToPool(existing);
-                    elementToHintMap.delete(el);
-                }
-                return;
-            };
-
-            // Advanced de-duplication for links
-            const href = el.href || el.getAttribute('href');
-            if ((el.tagName === 'A' || el.getAttribute('role') === 'link') && href) {
-                const normalized = normalizeUrl(href);
-                const existing = seenUrls.get(normalized);
-
-                if (existing) {
-                    const eRect = rects.get(existing);
-                    if (eRect) {
-                        const dx = rect.left - eRect.left;
-                        const dy = rect.top - eRect.top;
-                        const dist = Math.sqrt(dx*dx + dy*dy);
-
-                        if (dist < 300 || Math.abs(dy) < 20) {
-                            if (span) {
-                                releaseSpanToPool(span);
-                                elementToHintMap.delete(el);
-                            }
-                            return;
-                        }
-                    }
-                }
-                seenUrls.set(normalized, el);
-            }
-
-            if (!code) {
-                code = getLabel(nextLabelIndex++, currentLabelLength);
-                labelMap.set(el, code);
-                hintMap[code] = el;
-            }
-
-            // Span/state already defined at top of loop
-            if (!rect || rect.width === 0 || rect.height === 0) {
+            if (!isVisible) {
                 if (span) {
                     releaseSpanToPool(span);
                     elementToHintMap.delete(el);
                 }
                 return;
-            };
+            }
 
-            const targetTop = rect.top;
-            const targetLeft = rect.left;
-            const docTop = targetTop + scrollY;
-            const docLeft = targetLeft + scrollX;
+            // Update label maps if new
+            if (!labelMap.has(el)) {
+                labelMap.set(el, code);
+                hintMap[code] = el;
+            }
+
+            // Link de-duplication
+            const href = el.href || el.getAttribute('href');
+            if ((el.tagName === 'A' || el.getAttribute('role') === 'link') && href) {
+                const normalized = normalizeUrl(href);
+                const existing = seenUrls.get(normalized);
+                if (existing) {
+                    const eRect = existing.getBoundingClientRect(); // Small read here is OK as it's infrequent
+                    const dist = Math.sqrt(Math.pow(rect.left - eRect.left, 2) + Math.pow(rect.top - eRect.top, 2));
+                    if (dist < 300 || Math.abs(rect.top - eRect.top) < 20) {
+                        if (span) {
+                            releaseSpanToPool(span);
+                            elementToHintMap.delete(el);
+                        }
+                        return;
+                    }
+                }
+                seenUrls.set(normalized, el);
+            }
+
+            const docTop = rect.top + scrollY;
+            const docLeft = rect.left + scrollX;
 
             if (!span) {
                 span = getSpanFromPool();
                 span.dataset.code = code;
                 span.innerText = code;
-                // Assume static by default for immediate anchoring
-                state = { docTop, docLeft, lastTop: targetTop, lastScrollY: scrollY, mode: 'static' };
+                state = { docTop, docLeft, lastTop: rect.top, lastScrollY: scrollY, mode: 'static' };
                 motionState.set(el, state);
-                span.style.display = 'inline-block';
-                span.style.left = Math.round(docLeft) + 'px';
-                span.style.top = Math.round(docTop) + 'px';
+
+                // Use translate instead of transform to avoid animation collision
+                // Compatibility: Ensure translate is applied with units
+                span.style.translate = `${Math.round(docLeft)}px ${Math.round(docTop)}px`;
+                span.style.position = 'absolute'; // Explicitly ensure absolute
+                span.style.left = '0';
+                span.style.top = '0';
+
                 elementToHintMap.set(el, span);
                 hintContainer.appendChild(span);
             } else {
                 const deltaScroll = scrollY - state.lastScrollY;
-                if (Math.abs(deltaScroll) > 1) { // Only check if scroll actually moved
-                    const deltaTop = targetTop - state.lastTop;
+                if (Math.abs(deltaScroll) > 1) {
+                    const deltaTop = rect.top - state.lastTop;
                     let currentBehavior = 'unknown';
 
                     if (Math.abs(deltaTop) < 0.1) {
@@ -371,18 +411,14 @@
                     }
 
                     if (currentBehavior !== 'unknown') {
-                        // If behavior changed, update mode
                         state.mode = currentBehavior;
                     }
 
-                    // If it's fixed or we are unsure, we MUST update to stay in sync.
-                    // If it's static, the loop-start optimization (line 292) handles skipping it.
                     if (state.mode !== 'static') {
-                        span.style.left = Math.round(docLeft) + 'px';
-                        span.style.top = Math.round(docTop) + 'px';
+                        span.style.translate = `${Math.round(docLeft)}px ${Math.round(docTop)}px`;
                     }
 
-                    state.lastTop = targetTop;
+                    state.lastTop = rect.top;
                     state.lastScrollY = scrollY;
                 }
             }
@@ -392,9 +428,11 @@
                 const remaining = code.slice(typingBuffer.length);
                 span.innerHTML = `<span class="kb-nav-hint-match">${matched}</span>${remaining}`;
                 span.classList.remove('kb-nav-hint-filtered');
+                span.classList.add('kb-nav-hint-active'); // For scaling
                 el.classList.add('kb-nav-target-highlight');
             } else {
                 span.innerText = code;
+                span.classList.remove('kb-nav-hint-active');
                 if (typingBuffer) {
                     span.classList.add('kb-nav-hint-filtered');
                 } else {
@@ -412,6 +450,18 @@
                 motionState.delete(el);
             }
         });
+    }
+
+    function finalizeSelection(targetEl, span) {
+        // Inject checkmark SVG
+        const checkmark = document.createElement('span');
+        checkmark.className = 'kb-nav-checkmark';
+        checkmark.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
+        span.innerHTML = '';
+        span.appendChild(checkmark);
+        span.classList.add('kb-nav-hint-finalized');
+
+        targetEl.classList.add('kb-nav-clicked');
     }
 
     function deactivateHints() {
@@ -504,21 +554,26 @@
 
                 if (typingBuffer.length === currentLabelLength) {
                     const targetEl = hintMap[typingBuffer];
-                    if (targetEl && elementToHintMap.has(targetEl)) {
-                        targetEl.classList.add('kb-nav-clicked');
+                    const span = elementToHintMap.get(targetEl);
+                    if (targetEl && span) {
+                        finalizeSelection(targetEl, span);
 
-                        setTimeout(() => {
-                            if (activationMode === 'NEW_TAB' && targetEl.tagName === 'A' && targetEl.href) {
-                                window.open(targetEl.href, '_blank');
-                            } else {
-                                targetEl.click();
-                                const focusTags = ['INPUT', 'TEXTAREA', 'SELECT'];
-                                if (focusTags.includes(targetEl.tagName) ||
-                                    targetEl.contentEditable === 'true' ||
-                                    targetEl.getAttribute('role') === 'textbox') {
-                                    targetEl.focus();
-                                }
+                        // Trigger action instantly
+                        if (activationMode === 'NEW_TAB' && targetEl.tagName === 'A' && targetEl.href) {
+                            window.open(targetEl.href, '_blank');
+                        } else {
+                            targetEl.click();
+                            const focusTags = ['INPUT', 'TEXTAREA', 'SELECT'];
+                            if (focusTags.includes(targetEl.tagName) ||
+                                targetEl.contentEditable === 'true' ||
+                                targetEl.getAttribute('role') === 'textbox') {
+                                targetEl.focus();
                             }
+                        }
+
+                        // Just wait a moment for the user to see the "success" state
+                        // while the browser processes the action.
+                        setTimeout(() => {
                             deactivateHints();
                         }, 200);
                     } else {
@@ -544,6 +599,7 @@
             const el = hintMap[code];
             if (code.startsWith(typingBuffer)) {
                 hint.classList.remove('kb-nav-hint-filtered');
+                hint.classList.add('kb-nav-hint-active'); // For scaling
                 const matched = code.slice(0, typingBuffer.length);
                 const remaining = code.slice(typingBuffer.length);
                 hint.innerHTML = `<span class="kb-nav-hint-match">${matched}</span>${remaining}`;
@@ -554,6 +610,7 @@
                 }
             } else {
                 hint.classList.add('kb-nav-hint-filtered');
+                hint.classList.remove('kb-nav-hint-active');
                 if (el) {
                     el.classList.remove('kb-nav-target-highlight');
                 }
