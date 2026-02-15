@@ -127,14 +127,81 @@
     let typingBuffer = "";
     let currentLabelLength = 1;
 
-    const getLabel = (i, length) => {
-        let label = "";
-        let temp = i;
-        for (let j = 0; j < length; j++) {
-            label = String.fromCharCode((temp % 26) + 65) + label;
-            temp = Math.floor(temp / 26);
+    const charData = {
+        'A': { h: 'L', r: 1 }, 'S': { h: 'L', r: 1 }, 'D': { h: 'L', r: 1 }, 'F': { h: 'L', r: 1 }, 'G': { h: 'L', r: 1 },
+        'J': { h: 'R', r: 1 }, 'K': { h: 'R', r: 1 }, 'L': { h: 'R', r: 1 }, 'H': { h: 'R', r: 1 },
+        'Q': { h: 'L', r: 0 }, 'W': { h: 'L', r: 0 }, 'E': { h: 'L', r: 0 }, 'R': { h: 'L', r: 0 }, 'T': { h: 'L', r: 0 },
+        'Y': { h: 'R', r: 0 }, 'U': { h: 'R', r: 0 }, 'I': { h: 'R', r: 0 }, 'O': { h: 'R', r: 0 }, 'P': { h: 'R', r: 0 },
+        'Z': { h: 'L', r: 2 }, 'X': { h: 'L', r: 2 }, 'C': { h: 'L', r: 2 }, 'V': { h: 'L', r: 2 }, 'B': { h: 'L', r: 2 },
+        'N': { h: 'R', r: 2 }, 'M': { h: 'R', r: 2 }
+    };
+
+    const alphabet = Object.keys(charData);
+
+    const calculateCost = (label) => {
+        let cost = 0;
+        for (let i = 0; i < label.length; i++) {
+            const char = label[i];
+            const data = charData[char];
+            // Lower row index (home=1) is better
+            cost += (data.r === 1 ? 0 : data.r === 0 ? 1 : 2);
+
+            if (i > 0) {
+                const prev = charData[label[i-1]];
+                // Hand alternation is great
+                if (data.h === prev.h) cost += 1.5;
+                else cost -= 0.5;
+
+                // Penalty for same key repetition
+                if (char === label[i-1]) cost += 3.0;
+
+                // Penalty for large row jumps
+                cost += Math.abs(data.r - prev.r) * 0.5;
+            }
         }
-        return label;
+        return cost;
+    };
+
+    const sortedLabels = {};
+    const getSortedLabels = (length) => {
+        if (sortedLabels[length]) return sortedLabels[length];
+
+        let results = [];
+        const chars = alphabet;
+
+        if (length === 1) {
+            results = chars;
+        } else if (length === 2) {
+            for (const a1 of chars) {
+                for (const a2 of chars) {
+                    results.push(a1 + a2);
+                }
+            }
+        } else {
+            // Fallback for long rare labels: just sequential
+            for (let i = 0; i < Math.pow(26, length); i++) {
+                let l = "";
+                let t = i;
+                for (let j = 0; j < length; j++) {
+                    l = String.fromCharCode((t % 26) + 65) + l;
+                    t = Math.floor(t / 26);
+                }
+                results.push(l);
+            }
+            return results;
+        }
+
+        results.sort((a, b) => calculateCost(a) - calculateCost(b));
+        sortedLabels[length] = results;
+        return results;
+    };
+
+    const getLabel = (i, length) => {
+        const labels = getSortedLabels(length);
+        if (i < labels.length) return labels[i];
+
+        // Final fallback
+        return labels[i % labels.length] + Math.floor(i / labels.length);
     };
 
     let activationMode = 'SAME_TAB'; // 'SAME_TAB' or 'NEW_TAB'
