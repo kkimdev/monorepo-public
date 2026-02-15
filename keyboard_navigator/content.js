@@ -171,19 +171,39 @@
         if (hintsActive) debouncedRefresh();
     }, { threshold: 0, rootMargin: '200px' });
 
+    const selectors = 'a, button, input, textarea, select, label, summary, [role="button"], [role="link"], [role="checkbox"], [role="menuitem"], [onclick], [tabindex="0"], [contenteditable="true"], [role="textbox"], [hx-get], [hx-post], [hx-put], [hx-delete], [hx-patch]';
     const updateTargets = () => {
         if (!document.body) return;
-        const selectors = 'a, button, input, textarea, select, label, summary, [role="button"], [role="link"], [role="checkbox"], [role="menuitem"], [onclick], [tabindex="0"], [contenteditable="true"], [role="textbox"], [hx-get], [hx-post], [hx-put], [hx-delete], [hx-patch]';
-        let found = Array.from(document.querySelectorAll(selectors));
+        const shadowRoots = new Set();
+        const scanShadowDOMs = (root) => {
+            if (shadowRoots.has(root)) return [];
+            shadowRoots.add(root);
 
-        // Optimized filtering: Only check parents for specific wrapper types
+            let elements = Array.from(root.querySelectorAll(selectors));
+
+            const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
+                acceptNode: (node) => node.shadowRoot ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP
+            });
+
+            let host;
+            while (host = walker.nextNode()) {
+                elements = elements.concat(scanShadowDOMs(host.shadowRoot));
+            }
+            return elements;
+        };
+
+        let found = scanShadowDOMs(document);
+
+        // FASTER FILTERING: Use native .closest()
         const wrapperSelector = 'a, button, label, [role="button"], [role="link"]';
         found = found.filter(el => {
-            let parent = el.parentElement;
-            while (parent && parent !== document.body) {
-                if (parent.matches(wrapperSelector)) return false;
-                parent = parent.parentElement;
-            }
+            // Check if this element is already inside another valid target
+            if (el.parentElement && el.parentElement.closest(wrapperSelector)) return false;
+
+            // Handle Shadow DOM boundary
+            const root = el.getRootNode();
+            if (root !== document && root.host && root.host.closest(wrapperSelector)) return false;
+
             return true;
         });
 
@@ -192,21 +212,21 @@
                 targets.add(el);
                 observer.observe(el);
             }
+            // Ensure every target has a label in the current map
+            if (!labelMap.has(el)) {
+                const code = getLabel(nextLabelIndex++, currentLabelLength);
+                labelMap.set(el, code);
+                hintMap[code] = el;
+            }
         });
 
-        // Periodic visibility cleanup for active hints
-        if (hintsActive) {
-            targets.forEach(el => {
-                const state = motionState.get(el);
-                if (state) state.isVisible = isElementVisible(el);
-            });
-        }
+        // REMOVED manual visibility check loop. Relying on IntersectionObserver.
 
         ensureLabelCapacity();
 
-        // Cleanup elements no longer in DOM
+        // Cleanup elements no longer in DOM - FAST connected check
         for (const el of targets) {
-            if (!document.body.contains(el)) {
+            if (!el.isConnected) {
                 targets.delete(el);
                 visibleTargets.delete(el);
                 observer.unobserve(el);
@@ -233,10 +253,21 @@
         }
     }
 
-    let updateTimeout;
+    let updateIdleHandle;
     const debouncedUpdate = () => {
-        clearTimeout(updateTimeout);
-        updateTimeout = setTimeout(updateTargets, 200);
+        if (hintsActive) {
+            clearTimeout(updateTimeout);
+            updateTimeout = setTimeout(updateTargets, 50);
+        } else {
+            // Non-active: Use idle callback to avoid blocking
+            if (window.requestIdleCallback) {
+                if (updateIdleHandle) cancelIdleCallback(updateIdleHandle);
+                updateIdleHandle = requestIdleCallback(() => updateTargets(), { timeout: 1000 });
+            } else {
+                clearTimeout(updateTimeout);
+                updateTimeout = setTimeout(updateTargets, 500);
+            }
+        }
     };
 
     let refreshRequested = false;
@@ -252,15 +283,14 @@
     const mutationObserver = new MutationObserver(debouncedUpdate);
 
     function isElementVisible(el) {
-        // Modern API check (Chrome 105+)
+        // FAST PATH: Check basic visibility first
+        if (el.offsetWidth === 0 || el.offsetHeight === 0) return false;
+
+        // Modern API check (Chrome 105+) - very fast
         if (typeof el.checkVisibility === 'function') {
-            return el.checkVisibility({
-                checkOpacity: true,
-                checkVisibilityCSS: true
-            });
+            return el.checkVisibility();
         }
 
-        // Fallback for older browsers or specific edge cases
         const style = window.getComputedStyle(el);
         return style.display !== 'none' &&
                style.visibility !== 'hidden' &&
@@ -279,22 +309,31 @@
     let lastMouseX = 0;
     let lastMouseY = 0;
 
+    let lastPrepareTime = 0;
+    let hintPreparationHandle;
+    const runPrepare = () => {
+        hintPreparationHandle = null;
+        labelMap = new WeakMap();
+        elementToHintMap.clear();
+        motionState = new WeakMap();
+        nextLabelIndex = 0;
+        hintMap = {};
+
+        hintContainer.style.display = 'none';
+        updateTargets();
+        ensureLabelCapacity();
+        refreshVisibleHints(true);
+    };
+
     function prepareHints() {
-        // Clear previous session data if not active
-        if (!hintsActive) {
-            labelMap = new WeakMap();
-            elementToHintMap.clear();
-            motionState = new WeakMap();
-            nextLabelIndex = 0;
-            hintMap = {};
+        if (hintsActive) return;
 
-            // Pre-prepare targets and hints in the background
-            hintContainer.style.display = 'none';
-            updateTargets();
-            ensureLabelCapacity();
+        const now = Date.now();
+        if (now - lastPrepareTime < 500) return;
+        lastPrepareTime = now;
 
-            refreshVisibleHints(true);
-        }
+        if (hintPreparationHandle) cancelAnimationFrame(hintPreparationHandle);
+        hintPreparationHandle = requestAnimationFrame(runPrepare);
     }
 
     function normalizeUrl(urlStr) {
@@ -310,8 +349,14 @@
         }
     }
 
+    let lastRefreshTime = 0;
     function refreshVisibleHints(force = false, isScrolling = false) {
         if (!hintsActive && !force) return;
+
+        const now = Date.now();
+        // If we recently refreshed (within 16ms), skip unless forced
+        if (!force && !isScrolling && now - lastRefreshTime < 16) return;
+        lastRefreshTime = now;
 
         const scrollX = window.scrollX;
         const scrollY = window.scrollY;
@@ -328,12 +373,10 @@
             const isVisible = (state && typeof state.isVisible !== 'undefined') ? state.isVisible : isElementVisible(el);
 
             if (rect.width > 0 && rect.height > 0 && isVisible) {
-                measurements.push({
-                    el,
-                    rect,
-                    isVisible: true,
-                    code: labelMap.get(el) || getLabel(nextLabelIndex++, currentLabelLength)
-                });
+                const code = labelMap.get(el);
+                if (code) {
+                    measurements.push({ el, rect, isVisible: true, code });
+                }
             } else {
                 measurements.push({ el, isVisible: false });
             }
@@ -341,6 +384,7 @@
 
         // --- WRITE PHASE ---
         const seenUrls = new Map();
+        const fragment = document.createDocumentFragment();
 
         measurements.forEach(({ el, rect, isVisible, code }) => {
             let span = elementToHintMap.get(el);
@@ -354,21 +398,15 @@
                 return;
             }
 
-            // Update label maps if new
-            if (!labelMap.has(el)) {
-                labelMap.set(el, code);
-                hintMap[code] = el;
-            }
-
-            // Link de-duplication
+            // Link de-duplication - Optimized: Avoid extra getBoundingClientRect
             const href = el.href || el.getAttribute('href');
             if ((el.tagName === 'A' || el.getAttribute('role') === 'link') && href) {
                 const normalized = normalizeUrl(href);
                 const existing = seenUrls.get(normalized);
                 if (existing) {
-                    const eRect = existing.getBoundingClientRect(); // Small read here is OK as it's infrequent
-                    const dist = Math.sqrt(Math.pow(rect.left - eRect.left, 2) + Math.pow(rect.top - eRect.top, 2));
-                    if (dist < 300 || Math.abs(rect.top - eRect.top) < 20) {
+                    // Approximate distance check using current rects
+                    const eRect = existing.getBoundingClientRect(); // Still needed for now, but we'll minimize
+                    if (Math.abs(rect.left - eRect.left) < 300 && Math.abs(rect.top - eRect.top) < 20) {
                         if (span) {
                             releaseSpanToPool(span);
                             elementToHintMap.delete(el);
@@ -389,16 +427,15 @@
                 state = { docTop, docLeft, lastTop: rect.top, lastScrollY: scrollY, mode: 'static' };
                 motionState.set(el, state);
 
-                // Use translate instead of transform to avoid animation collision
-                // Compatibility: Ensure translate is applied with units
                 span.style.translate = `${Math.round(docLeft)}px ${Math.round(docTop)}px`;
-                span.style.position = 'absolute'; // Explicitly ensure absolute
+                span.style.position = 'absolute';
                 span.style.left = '0';
                 span.style.top = '0';
 
                 elementToHintMap.set(el, span);
-                hintContainer.appendChild(span);
+                fragment.appendChild(span);
             } else {
+                // ... update logic
                 const deltaScroll = scrollY - state.lastScrollY;
                 if (Math.abs(deltaScroll) > 1) {
                     const deltaTop = rect.top - state.lastTop;
@@ -428,7 +465,11 @@
                 const remaining = code.slice(typingBuffer.length);
                 span.innerHTML = `<span class="kb-nav-hint-match">${matched}</span>${remaining}`;
                 span.classList.remove('kb-nav-hint-filtered');
-                span.classList.add('kb-nav-hint-active'); // For scaling
+                if (typingBuffer) {
+                    span.classList.add('kb-nav-hint-active'); // For scaling
+                } else {
+                    span.classList.remove('kb-nav-hint-active');
+                }
                 el.classList.add('kb-nav-target-highlight');
             } else {
                 span.innerText = code;
@@ -441,6 +482,10 @@
                 el.classList.remove('kb-nav-target-highlight');
             }
         });
+
+        if (fragment.childNodes.length > 0) {
+            hintContainer.appendChild(fragment);
+        }
 
         // Cleanup
         elementToHintMap.forEach((span, el) => {
@@ -491,10 +536,39 @@
         hintsActive = true;
         activationMode = mode;
         typingBuffer = "";
+        otherKeyPressed = false;
 
-        // Show pre-prepared hints
+        // If preparation is still deferred, force it now
+        if (hintPreparationHandle) {
+            cancelAnimationFrame(hintPreparationHandle);
+            runPrepare();
+        }
+
+        // Show prepared hints
         hintContainer.style.display = 'block';
-        refreshVisibleHints(); // Re-sync positions just in case
+        refreshVisibleHints();
+
+        // Add a temporary fast poll to catch elements that load just after activation
+        let ticks = 0;
+        const interval = setInterval(() => {
+            updateTargets();
+            debouncedRefresh(); // Refresh UI for any new elements
+            ticks++;
+            if (!hintsActive || ticks > 10) {
+                clearInterval(interval);
+                // Switch to a slower background poll if still active
+                if (hintsActive) {
+                    const slowInterval = setInterval(() => {
+                        if (!hintsActive) {
+                            clearInterval(slowInterval);
+                            return;
+                        }
+                        updateTargets();
+                        debouncedRefresh();
+                    }, 2000);
+                }
+            }
+        }, 300);
     }
 
     const allowedNavigationKeys = new Set([
@@ -599,7 +673,11 @@
             const el = hintMap[code];
             if (code.startsWith(typingBuffer)) {
                 hint.classList.remove('kb-nav-hint-filtered');
-                hint.classList.add('kb-nav-hint-active'); // For scaling
+                if (typingBuffer) {
+                    hint.classList.add('kb-nav-hint-active'); // Only scale if actually filtering
+                } else {
+                    hint.classList.remove('kb-nav-hint-active');
+                }
                 const matched = code.slice(0, typingBuffer.length);
                 const remaining = code.slice(typingBuffer.length);
                 hint.innerHTML = `<span class="kb-nav-hint-match">${matched}</span>${remaining}`;

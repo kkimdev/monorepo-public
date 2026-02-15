@@ -20,8 +20,13 @@
     border: 1px solid rgba(255, 215, 0, 0.4);
     box-shadow: 0 4px 12px rgba(0,0,0,0.15), 0 2px 4px rgba(0,0,0,0.1);
     transform-origin: center;
+    /* Explicit defaults and independent scale property for smooth transitions */
+    scale: 1;
+    opacity: 1;
     will-change: transform, opacity, scale;
-    transition: scale 0.1s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: opacity 0.15s cubic-bezier(0.4, 0, 0.2, 1),
+                scale 0.15s cubic-bezier(0.4, 0, 0.2, 1),
+                background-color 0.15s ease;
     animation: kb-nav-pop-in 0.03s cubic-bezier(0, 0, 0.2, 1);
 }
 
@@ -54,7 +59,7 @@
 
 .kb-nav-hint-filtered {
     opacity: 0 !important;
-    transform: scale(0.6) !important;
+    scale: 0.6 !important;
     pointer-events: none !important;
 }
 

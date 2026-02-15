@@ -11,9 +11,11 @@ dist/
 # Dependencies
 node_modules/
 
-# Demo build artifacts
-demo_raw.webm
-offset.txt
-videos/
-*.log
-debug_*
+# Build artifacts
+icon128.local.png
+promo_small.png
+promo_marquee.png
+screenshot1.png
+icon.svg
+promo_small.svg
+promo_marquee.svg
