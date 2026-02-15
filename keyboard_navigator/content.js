@@ -262,7 +262,7 @@
         if (hintsActive) debouncedRefresh();
     }, { threshold: 0, rootMargin: '200px' });
 
-    const selectors = 'a, button, input, textarea, select, label, summary, [role="button"], [role="link"], [role="checkbox"], [role="menuitem"], [onclick], [tabindex="0"], [contenteditable="true"], [role="textbox"], [hx-get], [hx-post], [hx-put], [hx-delete], [hx-patch]';
+    const selectors = 'a, button, input, textarea, select, label, summary, [role="button"], [role="link"], [role="checkbox"], [role="menuitem"], [role="tab"], [role="option"], [role="radio"], [role="switch"], [role="menuitemcheckbox"], [role="menuitemradio"], [onclick], [tabindex="0"], [contenteditable="true"], [role="textbox"], [hx-get], [hx-post], [hx-put], [hx-delete], [hx-patch]';
     const updateTargets = () => {
         if (!document.body) return;
         const shadowRoots = new Set();
@@ -290,7 +290,13 @@
         found = found.filter(el => {
             // Check if this element is already inside another valid target
             // Use a more general approach than wrapperSelector to catch all nestings
-            if (el.parentElement && el.parentElement.closest(selectors)) return false;
+            const parentTarget = el.parentElement ? el.parentElement.closest(selectors) : null;
+            if (parentTarget) {
+                // If the element has an explicit semantic role, don't merge it into the parent
+                // This ensures tabs, options, etc. are uniquely targetable even if the container is also targetable
+                const hasRole = el.hasAttribute('role') || el.tagName === 'YT-TAB-SHAPE';
+                if (!hasRole) return false;
+            }
 
             // Handle Shadow DOM boundary
             const root = el.getRootNode();
@@ -817,6 +823,8 @@
                             const focusTags = ['INPUT', 'TEXTAREA', 'SELECT'];
                             if (focusTags.includes(targetEl.tagName) ||
                                 targetEl.contentEditable === 'true' ||
+                                targetEl.tagName === 'YT-TAB-SHAPE' ||
+                                targetEl.getAttribute('role') === 'tab' ||
                                 targetEl.getAttribute('role') === 'textbox') {
                                 targetEl.focus();
                             }
