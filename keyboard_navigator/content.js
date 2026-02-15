@@ -279,12 +279,6 @@
                 targets.add(el);
                 observer.observe(el);
             }
-            // Ensure every target has a label in the current map
-            if (!labelMap.has(el)) {
-                const code = getLabel(nextLabelIndex++, currentLabelLength);
-                labelMap.set(el, code);
-                hintMap[code] = el;
-            }
         });
 
         // REMOVED manual visibility check loop. Relying on IntersectionObserver.
@@ -437,23 +431,33 @@
             if (isScrolling && state && state.mode === 'static') return;
 
             const rect = el.getBoundingClientRect();
+            // Stricter viewport check: must be in bounding client rect + some margin
             const isVisible = (state && typeof state.isVisible !== 'undefined') ? state.isVisible : isElementVisible(el);
 
             if (rect.width > 0 && rect.height > 0 && isVisible) {
-                const code = labelMap.get(el);
-                if (code) {
-                    measurements.push({ el, rect, isVisible: true, code });
-                }
+                measurements.push({ el, rect, isVisible: true });
             } else {
                 measurements.push({ el, isVisible: false });
             }
+        });
+
+        // SPATIAL SORT: Prioritize top-to-bottom, then left-to-right
+        measurements.sort((a, b) => {
+            if (!a.isVisible && !b.isVisible) return 0;
+            if (!a.isVisible) return 1;
+            if (!b.isVisible) return -1;
+
+            // Allow 5px jitter in vertical alignment to keep rows together
+            const verticalDiff = a.rect.top - b.rect.top;
+            if (Math.abs(verticalDiff) > 5) return verticalDiff;
+            return a.rect.left - b.rect.left;
         });
 
         // --- WRITE PHASE ---
         const seenUrls = new Map();
         const fragment = document.createDocumentFragment();
 
-        measurements.forEach(({ el, rect, isVisible, code }) => {
+        measurements.forEach(({ el, rect, isVisible }) => {
             let span = elementToHintMap.get(el);
             let state = motionState.get(el);
 
@@ -465,7 +469,15 @@
                 return;
             }
 
-            // Link de-duplication - Optimized: Avoid extra getBoundingClientRect
+            // ASSIGN LABEL: Dynamic priority based on sorted order
+            if (!labelMap.has(el)) {
+                const code = getLabel(nextLabelIndex++, currentLabelLength);
+                labelMap.set(el, code);
+                hintMap[code] = el;
+            }
+            const code = labelMap.get(el);
+
+            // Link de-duplication
             const href = el.href || el.getAttribute('href');
             if ((el.tagName === 'A' || el.getAttribute('role') === 'link') && href) {
                 const normalized = normalizeUrl(href);
