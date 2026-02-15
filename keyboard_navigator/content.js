@@ -300,10 +300,12 @@
     function ensureLabelCapacity() {
         if (hintsActive) return;
 
-        const totalCount = targets.size;
+        // Use visible count for length, but with a small buffer
+        const totalCount = Math.max(visibleTargets.size, 1);
         let length = 1;
         while (Math.pow(26, length) < totalCount) length++;
 
+        // Cap at 3 for stability, but prioritize 1 and 2
         if (length !== currentLabelLength) {
             currentLabelLength = length;
             labelMap = new WeakMap();
@@ -469,22 +471,14 @@
                 return;
             }
 
-            // ASSIGN LABEL: Dynamic priority based on sorted order
-            if (!labelMap.has(el)) {
-                const code = getLabel(nextLabelIndex++, currentLabelLength);
-                labelMap.set(el, code);
-                hintMap[code] = el;
-            }
-            const code = labelMap.get(el);
-
-            // Link de-duplication
+            // Link de-duplication - MUST happen before labeling
             const href = el.href || el.getAttribute('href');
             if ((el.tagName === 'A' || el.getAttribute('role') === 'link') && href) {
                 const normalized = normalizeUrl(href);
                 const existing = seenUrls.get(normalized);
                 if (existing) {
-                    // Approximate distance check using current rects
-                    const eRect = existing.getBoundingClientRect(); // Still needed for now, but we'll minimize
+                    const eRect = existing.getBoundingClientRect();
+                    // If extremely close, skip this element entirely
                     if (Math.abs(rect.left - eRect.left) < 300 && Math.abs(rect.top - eRect.top) < 20) {
                         if (span) {
                             releaseSpanToPool(span);
@@ -495,6 +489,14 @@
                 }
                 seenUrls.set(normalized, el);
             }
+
+            // ASSIGN LABEL: Dynamic priority based on sorted order
+            if (!labelMap.has(el)) {
+                const code = getLabel(nextLabelIndex++, currentLabelLength);
+                labelMap.set(el, code);
+                hintMap[code] = el;
+            }
+            const code = labelMap.get(el);
 
             const docTop = rect.top + scrollY;
             const docLeft = rect.left + scrollX;
