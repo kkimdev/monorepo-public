@@ -351,7 +351,7 @@
 
         // Modern API check (Chrome 105+) - very fast
         if (typeof el.checkVisibility === 'function') {
-            return el.checkVisibility();
+            return el.checkVisibility({ opacityProperty: true });
         }
 
         const style = window.getComputedStyle(el);
@@ -433,10 +433,14 @@
             if (isScrolling && state && state.mode === 'static') return;
 
             const rect = el.getBoundingClientRect();
-            // Stricter viewport check: must be in bounding client rect + some margin
+            // Strict viewport intersection check (ignore IntersectionObserver's rootMargin here)
+            const inViewport = rect.bottom > 0 && rect.top < window.innerHeight &&
+                               rect.right > 0 && rect.left < window.innerWidth;
+
+            // Stricter visibility check
             const isVisible = (state && typeof state.isVisible !== 'undefined') ? state.isVisible : isElementVisible(el);
 
-            if (rect.width > 0 && rect.height > 0 && isVisible) {
+            if (rect.width > 0 && rect.height > 0 && isVisible && inViewport) {
                 measurements.push({ el, rect, isVisible: true });
             } else {
                 measurements.push({ el, isVisible: false });
