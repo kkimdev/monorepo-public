@@ -73,10 +73,12 @@
         const span = spanPool.pop() || document.createElement('span');
         span.className = 'kb-nav-hint';
         span.style.display = 'inline-block';
+        span.style.animation = ''; // Allow CSS animation to trigger
         return span;
     }
     function releaseSpanToPool(span) {
         span.style.display = 'none';
+        span.style.animation = 'none'; // Reset animation
         span.innerHTML = '';
         spanPool.push(span);
     }
@@ -352,7 +354,8 @@
                 state = { docTop, docLeft, lastTop: targetTop, lastScrollY: scrollY, mode: 'static' };
                 motionState.set(el, state);
                 span.style.display = 'inline-block';
-                span.style.transform = `translate3d(${Math.round(docLeft)}px, ${Math.round(docTop)}px, 0)`;
+                span.style.left = Math.round(docLeft) + 'px';
+                span.style.top = Math.round(docTop) + 'px';
                 elementToHintMap.set(el, span);
                 hintContainer.appendChild(span);
             } else {
@@ -375,7 +378,8 @@
                     // If it's fixed or we are unsure, we MUST update to stay in sync.
                     // If it's static, the loop-start optimization (line 292) handles skipping it.
                     if (state.mode !== 'static') {
-                        span.style.transform = `translate3d(${Math.round(docLeft)}px, ${Math.round(docTop)}px, 0)`;
+                        span.style.left = Math.round(docLeft) + 'px';
+                        span.style.top = Math.round(docTop) + 'px';
                     }
 
                     state.lastTop = targetTop;
