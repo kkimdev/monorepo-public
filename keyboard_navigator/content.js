@@ -508,7 +508,14 @@
                 state = { docTop, docLeft, lastTop: rect.top, lastScrollY: scrollY, mode: 'static' };
                 motionState.set(el, state);
 
-                span.style.translate = `${Math.round(docLeft)}px ${Math.round(docTop)}px`;
+                // Position Clamp: Ensure hints don't bleed off screen edges
+                // Use fixed estimates for hint size to avoid O(N) offsetWidth reflows
+                const vRight = window.innerWidth + scrollX;
+                const vBottom = window.innerHeight + scrollY;
+                const safeTop = Math.max(scrollY + 2, Math.min(docTop, vBottom - 25));
+                const safeLeft = Math.max(scrollX + 2, Math.min(docLeft, vRight - 40));
+
+                span.style.translate = `${Math.round(safeLeft)}px ${Math.round(safeTop)}px`;
                 span.style.position = 'absolute';
                 span.style.left = '0';
                 span.style.top = '0';
@@ -533,7 +540,11 @@
                     }
 
                     if (state.mode !== 'static') {
-                        span.style.translate = `${Math.round(docLeft)}px ${Math.round(docTop)}px`;
+                        const vRight = window.innerWidth + scrollX;
+                        const vBottom = window.innerHeight + scrollY;
+                        const safeTop = Math.max(scrollY + 2, Math.min(docTop, vBottom - 25));
+                        const safeLeft = Math.max(scrollX + 2, Math.min(docLeft, vRight - 40));
+                        span.style.translate = `${Math.round(safeLeft)}px ${Math.round(safeTop)}px`;
                     }
 
                     state.lastTop = rect.top;
