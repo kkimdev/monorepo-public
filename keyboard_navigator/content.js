@@ -289,11 +289,12 @@
         const wrapperSelector = 'a, button, label, [role="button"], [role="link"]';
         found = found.filter(el => {
             // Check if this element is already inside another valid target
-            if (el.parentElement && el.parentElement.closest(wrapperSelector)) return false;
+            // Use a more general approach than wrapperSelector to catch all nestings
+            if (el.parentElement && el.parentElement.closest(selectors)) return false;
 
             // Handle Shadow DOM boundary
             const root = el.getRootNode();
-            if (root !== document && root.host && root.host.closest(wrapperSelector)) return false;
+            if (root !== document && root.host && root.host.closest(selectors)) return false;
 
             return true;
         });
@@ -489,6 +490,7 @@
 
         // --- WRITE PHASE ---
         const seenUrls = new Map();
+        const seenLocations = []; // Array of { rect, el } for general spatial de-duplication
         const fragment = document.createDocumentFragment();
 
         measurements.forEach(({ el, rect, isVisible }) => {
@@ -508,23 +510,36 @@
                 return;
             }
 
-            // Link de-duplication - MUST happen before labeling
+            // General spatial de-duplication: Skip if another element is at nearly the same location
+            // This catches overlapping siblings like carousel buttons or custom controls.
+            const isDuplicateLocation = seenLocations.some(pos => {
+                return Math.abs(rect.left - pos.rect.left) < 5 &&
+                       Math.abs(rect.top - pos.rect.top) < 5 &&
+                       Math.abs(rect.width - pos.rect.width) < 5 &&
+                       Math.abs(rect.height - pos.rect.height) < 5;
+            });
+
+            if (isDuplicateLocation) {
+                if (span) releaseSpanToPool(span);
+                elementToHintMap.delete(el);
+                if (highlight) releaseOverlayToPool(highlight);
+                elementToHighlightMap.delete(el);
+                return;
+            }
+            seenLocations.push({ rect, el });
+
+            // Link de-duplication - Additional logic for identical URLs in close proximity
             const href = el.href || el.getAttribute('href');
             if ((el.tagName === 'A' || el.getAttribute('role') === 'link') && href) {
                 const normalized = normalizeUrl(href);
                 const existing = seenUrls.get(normalized);
                 if (existing) {
                     const eRect = existing.getBoundingClientRect();
-                    // If extremely close, skip this element entirely
                     if (Math.abs(rect.left - eRect.left) < 300 && Math.abs(rect.top - eRect.top) < 20) {
-                        if (span) {
-                            releaseSpanToPool(span);
-                            elementToHintMap.delete(el);
-                        }
-                        if (highlight) {
-                            releaseOverlayToPool(highlight);
-                            elementToHighlightMap.delete(el);
-                        }
+                        if (span) releaseSpanToPool(span);
+                        elementToHintMap.delete(el);
+                        if (highlight) releaseOverlayToPool(highlight);
+                        elementToHighlightMap.delete(el);
                         return;
                     }
                 }
@@ -535,9 +550,9 @@
             if (!labelMap.has(el)) {
                 const code = getLabel(nextLabelIndex++, currentLabelLength);
                 labelMap.set(el, code);
-                hintMap[code] = el;
             }
             const code = labelMap.get(el);
+            hintMap[code] = el;
 
             const docTop = rect.top + scrollY;
             const docLeft = rect.left + scrollX;
@@ -659,16 +674,19 @@
         targetEl.classList.add('kb-nav-clicked');
     }
 
+    let deactivateTimeout = null;
     function deactivateHints() {
         if (!hintsActive) return;
-        hintsActive = false; // Set immediately to allow new activation cycles
+        hintsActive = false;
 
         hintContainer.classList.add('kb-nav-closing');
 
-        // Wait for exit animation (150ms) before actual removal
-        setTimeout(() => {
+        if (deactivateTimeout) clearTimeout(deactivateTimeout);
+        deactivateTimeout = setTimeout(() => {
+            deactivateTimeout = null;
+            if (hintsActive) return; // Abort if reactivated during fadeout
+
             hintContainer.style.display = 'none';
-            // Recycle all spans and cleanup targets
             elementToHintMap.forEach((span, el) => {
                 releaseSpanToPool(span);
                 el.classList.remove('kb-nav-clicked');
@@ -685,6 +703,12 @@
     }
 
     function activateHints(mode = 'SAME_TAB') {
+        if (deactivateTimeout) {
+            clearTimeout(deactivateTimeout);
+            deactivateTimeout = null;
+            hintContainer.classList.remove('kb-nav-closing');
+        }
+
         hintsActive = true;
         activationMode = mode;
         typingBuffer = "";
