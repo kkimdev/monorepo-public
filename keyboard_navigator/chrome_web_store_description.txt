@@ -1,0 +1,31 @@
+Navigate any webpage with lightning speed — no mouse required.
+
+Keyboard Navigator is a high-performance, ergonomically optimized browser extension that overlays letter hints on Every clickable element. Tap Shift, type the letters, and you're there.
+
+### Why Keyboard Navigator?
+
+Most keyboard navigators are slow or break on modern sites. We built this to be different:
+
+- **Ergonomic by Design**: Our label generator prioritizes home-row keys and hand alternation. Typing "AS" or "JK" is faster than hunting for random letters.
+- **Deep Web Support**: Works where others fail. Full support for Shadow DOM, ARIA roles, and custom web components. If it's clickable, we'll find it.
+- **Ultra-Lightweight**: Built with a custom object pooling engine. Zero-lag even on massive pages with thousands of links.
+- **Smart Spatial Logic**: Hints track elements perfectly as you scroll, even on sticky headers and sidebars. Overlapping elements are automatically de-duplicated for a clean UI.
+
+### Key Features:
+
+- **Zero Configuration**: Works instantly on every website out of the box.
+- **New Tab Support**: Press Right Shift to open links in a new tab effortlessly.
+- **Refined UI**: Hints scale as you type, with success animations when an element is triggered.
+- **Privacy First**: No tracking, no data collection, and absolutely no background processes. Only runs when you need it.
+
+### How to Use:
+
+1. **Active**: Tap Left Shift to reveal hints.
+2. **Navigate**: Type the hint letters (e.g., "AF") to click.
+3. **New Tab**: Use Right Shift to open a link in a new background tab.
+4. **Dismiss**: Press Escape or click anywhere to hide hints.
+
+Perfect for developers, power users, and anyone looking for a more accessible, mouse-free browsing experience.
+
+Open source. No ads. Just speed.
+https://github.com/kkimdev/monorepo-public/tree/main/keyboard_navigator
