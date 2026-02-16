@@ -1,4 +1,7 @@
 (function() {
+    'use strict';
+
+    // --- UTILS ---
     const hexToRgba = (hex, opacity) => {
         let r = parseInt(hex.slice(1, 3), 16);
         let g = parseInt(hex.slice(3, 5), 16);
@@ -6,962 +9,492 @@
         return `rgba(${r}, ${g}, ${b}, ${opacity})`;
     };
 
-    const applyColors = (bgColor, accentColor) => {
-        const bg = hexToRgba(bgColor, 0.85);
-        document.documentElement.style.setProperty('--kb-nav-bg', bg);
-        document.documentElement.style.setProperty('--kb-nav-accent', accentColor);
+    const normalizeUrl = (u) => {
+        try {
+            const url = new URL(u, window.location.href);
+            return url.origin + url.pathname + url.search;
+        } catch (e) { return u; }
+    };
 
-        // Also apply to Shadow Host if it exists
-        const host = document.getElementById('kb-nav-host');
-        if (host) {
-            host.style.setProperty('--kb-nav-bg', bg);
-            host.style.setProperty('--kb-nav-accent', accentColor);
+    // --- CONFIG & STATE ---
+    const CONFIG = {
+        selectors: 'a, button, input, textarea, select, label, summary, [role="button"], [role="link"], [role="checkbox"], [role="menuitem"], [role="tab"], [role="option"], [role="radio"], [role="switch"], [role="menuitemcheckbox"], [role="menuitemradio"], [onclick], [tabindex="0"], [contenteditable="true"], [role="textbox"], [hx-get], [hx-post], [hx-put], [hx-delete], [hx-patch]',
+        focusTags: ['INPUT', 'TEXTAREA', 'SELECT'],
+        charData: {
+            'A': { h: 'L', r: 1 }, 'S': { h: 'L', r: 1 }, 'D': { h: 'L', r: 1 }, 'F': { h: 'L', r: 1 }, 'G': { h: 'L', r: 1 },
+            'J': { h: 'R', r: 1 }, 'K': { h: 'R', r: 1 }, 'L': { h: 'R', r: 1 }, 'H': { h: 'R', r: 1 },
+            'Q': { h: 'L', r: 0 }, 'W': { h: 'L', r: 0 }, 'E': { h: 'L', r: 0 }, 'R': { h: 'L', r: 0 }, 'T': { h: 'L', r: 0 },
+            'Y': { h: 'R', r: 0 }, 'U': { h: 'R', r: 0 }, 'I': { h: 'R', r: 0 }, 'O': { h: 'R', r: 0 }, 'P': { h: 'R', r: 0 },
+            'Z': { h: 'L', r: 2 }, 'X': { h: 'L', r: 2 }, 'C': { h: 'L', r: 2 }, 'V': { h: 'L', r: 2 }, 'B': { h: 'L', r: 2 },
+            'N': { h: 'R', r: 2 }, 'M': { h: 'R', r: 2 }
         }
     };
 
-    // Load initial colors
-    if (typeof chrome !== 'undefined' && chrome.storage) {
-        chrome.storage.local.get(['bgColor', 'accentColor'], (result) => {
-            const bg = result.bgColor || '#fff176';
-            const accent = result.accentColor || '#ffd700';
-            applyColors(bg, accent);
-        });
+    const state = {
+        active: false,
+        closing: false,
+        mode: 'SAME_TAB',
+        buffer: "",
+        labelLen: 1,
+        shiftDown: false,
+        otherKeyPressed: false,
+        lastMouse: { x: 0, y: 0 },
+        initialized: false
+    };
 
-        // Listen for changes
-        chrome.storage.onChanged.addListener(() => {
-            chrome.storage.local.get(['bgColor', 'accentColor'], (result) => {
-                const bg = result.bgColor || '#fff176';
-                const accent = result.accentColor || '#ffd700';
-                applyColors(bg, accent);
-            });
-        });
-    }
+    // --- NAVIGATOR MODULES ---
 
-    let hintsActive = false;
-    let otherKeyPressed = false;
-    let hintMap = {};
-    const hintContainer = document.createElement('div');
-    hintContainer.id = 'kb-nav-container';
-
-    let initialized = false;
-    let shadowRoot = null;
-    function tryInit() {
-        if (initialized) return;
-        if (!document.body) {
-            // Fallback for document_start: wait until body is available
-            const checkBody = setInterval(() => {
-                if (document.body) {
-                    clearInterval(checkBody);
-                    tryInit();
+    const Labeler = {
+        alphabet: Object.keys(CONFIG.charData),
+        cache: {},
+        calculateCost(label) {
+            let cost = 0;
+            for (let i = 0; i < label.length; i++) {
+                const char = label[i];
+                const data = CONFIG.charData[char];
+                cost += (data.r === 1 ? 0 : data.r === 0 ? 1 : 2);
+                if (i > 0) {
+                    const prev = CONFIG.charData[label[i-1]];
+                    if (data.h === prev.h) cost += 1.5; else cost -= 0.5;
+                    if (char === label[i-1]) cost += 3.0;
+                    cost += Math.abs(data.r - prev.r) * 0.5;
                 }
-            }, 50);
-            return;
+            }
+            return cost;
+        },
+        getSorted(length) {
+            if (this.cache[length]) return this.cache[length];
+            let res = [];
+            if (length === 1) res = this.alphabet;
+            else if (length === 2) {
+                for (const a1 of this.alphabet) for (const a2 of this.alphabet) res.push(a1 + a2);
+            } else {
+                // Generative fallback for 3+ characters: sequential letter-only combinations
+                const count = Math.pow(26, length);
+                // For memory/perf safety, cap at a reasonable number for high-density pages
+                for (let i = 0; i < Math.min(count, 5000); i++) {
+                    let l = ""; let t = i;
+                    for (let j = 0; j < length; j++) { l = String.fromCharCode((t % 26) + 65) + l; t = Math.floor(t/26); }
+                    res.push(l);
+                }
+                return res;
+            }
+            res.sort((a, b) => this.calculateCost(a) - this.calculateCost(b));
+            return this.cache[length] = res;
+        },
+        get(i, len) {
+            const list = this.getSorted(len);
+            if (i < list.length) return list[i];
+            // If we run out of labels of this length, increase length instead of using numbers
+            return this.get(i - list.length, len + 1);
         }
+    };
 
-        const host = document.createElement('div');
-        host.id = 'kb-nav-host';
-        // Explicitly style the host to be document-relative and ignore site CSS
-        host.style.cssText = 'position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 100% !important; pointer-events: none !important; z-index: 2147483647 !important; display: block !important; border: none !important; padding: 0 !important; margin: 0 !important;';
-        document.body.appendChild(host);
+    const Renderer = {
+        host: null,
+        shadow: null,
+        container: null,
+        pools: { span: [], div: [] },
 
-        // Use closed shadow root for isolation
-        shadowRoot = host.attachShadow({ mode: 'closed' });
+        init() {
+            this.container = document.createElement('div');
+            this.container.id = 'kb-nav-container';
+            this.ensureHost();
+            this.initColors();
+        },
 
-        // Try standard fetch first
-        if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL) {
-            fetch(chrome.runtime.getURL('content.css'))
-                .then(res => res.text())
-                .then(css => {
-                    const sheet = document.createElement('style');
-                    sheet.id = 'kb-nav-styles';
-                    sheet.textContent = css;
-                    shadowRoot.appendChild(sheet);
+        ensureHost() {
+            if (this.host && this.host.isConnected) return;
+            if (this.host) this.host.remove();
+            this.host = document.createElement('div');
+            this.host.id = 'kb-nav-host';
+            this.host.style.cssText = 'position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 100% !important; pointer-events: none !important; z-index: 2147483647 !important; display: block !important; border: none !important; padding: 0 !important; margin: 0 !important;';
+            document.body.appendChild(this.host);
+            this.shadow = this.host.attachShadow({ mode: 'closed' });
+            this.shadow.appendChild(this.container);
+            this.injectStyles();
+            Scanner.observe();
+        },
 
-                    // Re-apply colors to sync with manifest defaults
-                    chrome.storage.local.get(['bgColor', 'accentColor'], (result) => {
-                        applyColors(result.bgColor || '#fff176', result.accentColor || '#ffd700');
-                    });
-                })
-                .catch(err => {
-                    console.warn("Keyboard Navigator: fetch failed, trying <link> fallback", err);
-                    const link = document.createElement('link');
-                    link.rel = 'stylesheet';
-                    link.id = 'kb-nav-styles-link';
-                    link.href = chrome.runtime.getURL('content.css');
-                    shadowRoot.appendChild(link);
+        injectStyles() {
+            if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL) {
+                fetch(chrome.runtime.getURL('content.css'))
+                    .then(r => r.text())
+                    .then(css => {
+                        const s = document.createElement('style'); s.textContent = css; this.shadow.appendChild(s);
+                        this.syncColors();
+                    }).catch(() => this.fallbackStyles());
+            } else this.fallbackStyles();
+        },
 
-                    // Also try fallback styles just in case <link> is also blocked
-                    injectFallbackStyles();
+        fallbackStyles() {
+            if (this.shadow.querySelector('#kb-fallback')) return;
+            const s = document.createElement('style'); s.id = 'kb-fallback';
+            s.textContent = `
+                .kb-nav-hint { position: absolute; padding: 3px 6px; background: rgba(255, 241, 118, 0.9); color: #000; font-family: sans-serif; font-size: 14px; font-weight: 700; z-index: 2147483647; pointer-events: none; border-radius: 4px; border: 1px solid rgba(0,0,0,0.2); transition: opacity 0.15s ease-out, transform 0.15s cubic-bezier(0.2, 0, 0, 1); }
+                .kb-nav-target-highlight { position: absolute; border: 2px solid #ffd700; pointer-events: none; z-index: 2147483646; transition: opacity 0.15s ease-out; }
+                .kb-nav-hint-filtered { display: none !important; }
+                .kb-nav-hint-active { transform: scale(1.1); }
+                #kb-nav-container.kb-nav-closing .kb-nav-hint,
+                #kb-nav-container.kb-nav-closing .kb-nav-target-highlight { opacity: 0 !important; }
+            `;
+            this.shadow.appendChild(s);
+            this.syncColors();
+        },
 
-                    chrome.storage.local.get(['bgColor', 'accentColor'], (result) => {
-                        applyColors(result.bgColor || '#fff176', result.accentColor || '#ffd700');
-                    });
+        initColors() {
+            if (typeof chrome !== 'undefined' && chrome.storage) {
+                chrome.storage.onChanged.addListener(() => this.syncColors());
+                this.syncColors();
+            }
+        },
+
+        syncColors() {
+            if (typeof chrome === 'undefined' || !chrome.storage) return;
+            chrome.storage.local.get(['bgColor', 'accentColor'], (res) => {
+                const bg = hexToRgba(res.bgColor || '#fff176', 0.85);
+                const accent = res.accentColor || '#ffd700';
+                document.documentElement.style.setProperty('--kb-nav-bg', bg);
+                document.documentElement.style.setProperty('--kb-nav-accent', accent);
+                if (this.host) {
+                    this.host.style.setProperty('--kb-nav-bg', bg);
+                    this.host.style.setProperty('--kb-nav-accent', accent);
+                }
+            });
+        },
+
+        getSpan() {
+            const s = this.pools.span.pop() || document.createElement('span');
+            s.className = 'kb-nav-hint'; s.style.display = 'inline-block'; s.style.opacity = '1'; return s;
+        },
+        getDiv() {
+            const d = this.pools.div.pop() || document.createElement('div');
+            d.className = 'kb-nav-target-highlight'; d.style.display = 'block'; d.style.opacity = '0'; return d;
+        },
+        releaseSpan(s) {
+            s.style.display = 'none'; s.textContent = ''; delete s.dataset.code;
+            if (s.parentNode) s.parentNode.removeChild(s); this.pools.span.push(s);
+        },
+        releaseDiv(d) {
+            d.style.display = 'none'; d.style.opacity = '0';
+            if (d.parentNode) d.parentNode.removeChild(d); this.pools.div.push(d);
+        }
+    };
+
+    const Scanner = {
+        targets: new Set(),
+        visible: new Set(),
+        observer: null,
+        mutationObserver: null,
+
+        init() {
+            this.observer = new IntersectionObserver((es) => {
+                es.forEach(e => { if (e.isIntersecting) this.visible.add(e.target); else this.visible.delete(e.target); });
+                if (state.active) Core.debouncedRefresh();
+            }, { threshold: 0, rootMargin: '200px' });
+            this.mutationObserver = new MutationObserver(() => { if (state.active) Core.update(); });
+        },
+
+        observe() {
+            if (this.mutationObserver) this.mutationObserver.disconnect();
+            document.querySelectorAll(CONFIG.selectors).forEach(el => this.observer.observe(el));
+            this.mutationObserver.observe(document.body, { childList: true, subtree: true });
+        },
+
+        scan() {
+            const roots = new Set();
+            const find = (root) => {
+                if (!root || roots.has(root)) return []; roots.add(root);
+                let els = Array.from(root.querySelectorAll(CONFIG.selectors));
+                const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
+                    acceptNode: (n) => n.shadowRoot ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP
                 });
-        } else {
-            injectFallbackStyles();
-        }
+                let h; while (h = walker.nextNode()) els = els.concat(find(h.shadowRoot));
+                return els;
+            };
 
-        const injectFallbackStyles = () => {
-        if (shadowRoot.querySelector('#kb-nav-styles-fallback')) return;
-        const style = document.createElement('style');
-        style.id = 'kb-nav-styles-fallback';
-
-        // HARDCODED FALLBACK: Essential styles if fetch and scraping fail
-        let cssText = `
-            .kb-nav-hint {
-                position: absolute; padding: 3px 6px; background: rgba(255, 241, 118, 0.9);
-                color: #000; font-family: sans-serif; font-size: 14px; font-weight: 700;
-                z-index: 2147483647; pointer-events: none; border-radius: 4px; border: 1px solid rgba(0,0,0,0.2);
-            }
-            .kb-nav-target-highlight {
-                position: absolute; border: 2px solid #ffd700; pointer-events: none; z-index: 2147483646;
-            }
-            .kb-nav-hint-filtered { display: none !important; }
-            .kb-nav-hint-active { transform: scale(1.1); }
-        `;
-
-        try {
-            // Try to scrape manifest-injected styles if possible
-            const styleTags = Array.from(document.querySelectorAll('style, link[rel="stylesheet"]'));
-            styleTags.forEach(st => {
-                try {
-                    if (st.tagName === 'STYLE' && st.textContent.includes('kb-nav-hint')) {
-                        cssText += st.textContent;
+            let found = find(document);
+            const targetSet = new Set(found);
+            found = found.filter(el => {
+                let p = el.parentElement;
+                while (p) {
+                    if (targetSet.has(p)) {
+                        // Keep distinct interactive elements even if nested in another target
+                        const interactiveTags = ['A', 'BUTTON', 'INPUT', 'TEXTAREA', 'SELECT', 'SUMMARY', 'details'];
+                        if (interactiveTags.includes(el.tagName) || el.hasAttribute('role') || el.tagName === 'YT-TAB-SHAPE') break;
+                        return false;
                     }
-                } catch (e) {}
-            });
-        } catch (e) {}
-
-        style.textContent = cssText;
-        shadowRoot.appendChild(style);
-    };
-
-        shadowRoot.appendChild(hintContainer);
-
-        mutationObserver.observe(document.body, { childList: true, subtree: true });
-        updateTargets();
-        initialized = true;
-    }
-
-    // Optimized state tracking
-    const targets = new Set();
-    const visibleTargets = new Set();
-
-    let typingBuffer = "";
-    let currentLabelLength = 1;
-
-    const charData = {
-        'A': { h: 'L', r: 1 }, 'S': { h: 'L', r: 1 }, 'D': { h: 'L', r: 1 }, 'F': { h: 'L', r: 1 }, 'G': { h: 'L', r: 1 },
-        'J': { h: 'R', r: 1 }, 'K': { h: 'R', r: 1 }, 'L': { h: 'R', r: 1 }, 'H': { h: 'R', r: 1 },
-        'Q': { h: 'L', r: 0 }, 'W': { h: 'L', r: 0 }, 'E': { h: 'L', r: 0 }, 'R': { h: 'L', r: 0 }, 'T': { h: 'L', r: 0 },
-        'Y': { h: 'R', r: 0 }, 'U': { h: 'R', r: 0 }, 'I': { h: 'R', r: 0 }, 'O': { h: 'R', r: 0 }, 'P': { h: 'R', r: 0 },
-        'Z': { h: 'L', r: 2 }, 'X': { h: 'L', r: 2 }, 'C': { h: 'L', r: 2 }, 'V': { h: 'L', r: 2 }, 'B': { h: 'L', r: 2 },
-        'N': { h: 'R', r: 2 }, 'M': { h: 'R', r: 2 }
-    };
-
-    const alphabet = Object.keys(charData);
-
-    const calculateCost = (label) => {
-        let cost = 0;
-        for (let i = 0; i < label.length; i++) {
-            const char = label[i];
-            const data = charData[char];
-            // Lower row index (home=1) is better
-            cost += (data.r === 1 ? 0 : data.r === 0 ? 1 : 2);
-
-            if (i > 0) {
-                const prev = charData[label[i-1]];
-                // Hand alternation is great
-                if (data.h === prev.h) cost += 1.5;
-                else cost -= 0.5;
-
-                // Penalty for same key repetition
-                if (char === label[i-1]) cost += 3.0;
-
-                // Penalty for large row jumps
-                cost += Math.abs(data.r - prev.r) * 0.5;
-            }
-        }
-        return cost;
-    };
-
-    const sortedLabels = {};
-    const getSortedLabels = (length) => {
-        if (sortedLabels[length]) return sortedLabels[length];
-
-        let results = [];
-        const chars = alphabet;
-
-        if (length === 1) {
-            results = chars;
-        } else if (length === 2) {
-            for (const a1 of chars) {
-                for (const a2 of chars) {
-                    results.push(a1 + a2);
+                    p = p.parentElement;
                 }
-            }
-        } else {
-            // Fallback for long rare labels: just sequential
-            for (let i = 0; i < Math.pow(26, length); i++) {
-                let l = "";
-                let t = i;
-                for (let j = 0; j < length; j++) {
-                    l = String.fromCharCode((t % 26) + 65) + l;
-                    t = Math.floor(t / 26);
+                const r = el.getRootNode();
+                if (r !== document && r.host) {
+                    let hp = r.host;
+                    while (hp) { if (targetSet.has(hp)) return false; hp = hp.parentElement; }
                 }
-                results.push(l);
-            }
-            return results;
-        }
-
-        results.sort((a, b) => calculateCost(a) - calculateCost(b));
-        sortedLabels[length] = results;
-        return results;
-    };
-
-    const getLabel = (i, length) => {
-        const labels = getSortedLabels(length);
-        if (i < labels.length) return labels[i];
-
-        // Final fallback
-        return labels[i % labels.length] + Math.floor(i / labels.length);
-    };
-
-    let activationMode = 'SAME_TAB'; // 'SAME_TAB' or 'NEW_TAB'
-    let labelMap = new WeakMap();
-    let elementToHintMap = new Map(); // Element -> Span
-    let elementToHighlightMap = new Map(); // Element -> Div
-    let motionState = new WeakMap(); // Element -> { lastTop, lastScrollY, mode: 'unknown' | 'scrolling' | 'fixed' }
-    let nextLabelIndex = 0;
-
-    // Object Pooling for performance
-    const spanPool = [];
-    const overlayPool = [];
-
-    function getSpanFromPool() {
-        const span = spanPool.pop() || document.createElement('span');
-        span.className = 'kb-nav-hint';
-        span.style.display = 'inline-block';
-        span.style.animation = ''; // Allow CSS animation to trigger
-        return span;
-    }
-
-    function getOverlayFromPool() {
-        const div = overlayPool.pop() || document.createElement('div');
-        div.className = 'kb-nav-target-highlight';
-        div.style.display = 'block';
-        div.style.opacity = '0';
-        return div;
-    }
-    function releaseSpanToPool(span) {
-        span.style.display = 'none';
-        span.style.animation = 'none'; // Reset animation
-        span.innerHTML = '';
-        delete span.dataset.code;
-        if (span.parentNode) {
-            span.parentNode.removeChild(span);
-        }
-        spanPool.push(span);
-    }
-
-    function releaseOverlayToPool(div) {
-        div.style.display = 'none';
-        div.style.opacity = '0';
-        if (div.parentNode) {
-            div.parentNode.removeChild(div);
-        }
-        overlayPool.push(div);
-    }
-
-    // Track visibility of elements
-    const observer = new IntersectionObserver((entries) => {
-        entries.forEach(entry => {
-            if (entry.isIntersecting) {
-                visibleTargets.add(entry.target);
-            } else {
-                visibleTargets.delete(entry.target);
-            }
-        });
-        if (hintsActive) debouncedRefresh();
-    }, { threshold: 0, rootMargin: '200px' });
-
-    const selectors = 'a, button, input, textarea, select, label, summary, [role="button"], [role="link"], [role="checkbox"], [role="menuitem"], [role="tab"], [role="option"], [role="radio"], [role="switch"], [role="menuitemcheckbox"], [role="menuitemradio"], [onclick], [tabindex="0"], [contenteditable="true"], [role="textbox"], [hx-get], [hx-post], [hx-put], [hx-delete], [hx-patch]';
-    const updateTargets = () => {
-        if (!document.body) return;
-        const shadowRoots = new Set();
-        const scanShadowDOMs = (root) => {
-            if (shadowRoots.has(root)) return [];
-            shadowRoots.add(root);
-
-            let elements = Array.from(root.querySelectorAll(selectors));
-
-            const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
-                acceptNode: (node) => node.shadowRoot ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP
+                return true;
             });
 
-            let host;
-            while (host = walker.nextNode()) {
-                elements = elements.concat(scanShadowDOMs(host.shadowRoot));
-            }
-            return elements;
-        };
-
-        let found = scanShadowDOMs(document);
-
-        // FASTER FILTERING: Use native .closest()
-        const wrapperSelector = 'a, button, label, [role="button"], [role="link"]';
-        found = found.filter(el => {
-            // Check if this element is already inside another valid target
-            // Use a more general approach than wrapperSelector to catch all nestings
-            const parentTarget = el.parentElement ? el.parentElement.closest(selectors) : null;
-            if (parentTarget) {
-                // If the element has an explicit semantic role, don't merge it into the parent
-                // This ensures tabs, options, etc. are uniquely targetable even if the container is also targetable
-                const hasRole = el.hasAttribute('role') || el.tagName === 'YT-TAB-SHAPE';
-                if (!hasRole) return false;
-            }
-
-            // Handle Shadow DOM boundary
-            const root = el.getRootNode();
-            if (root !== document && root.host && root.host.closest(selectors)) return false;
-
-            return true;
-        });
-
-        found.forEach(el => {
-            if (!targets.has(el)) {
-                targets.add(el);
-                observer.observe(el);
-            }
-        });
-
-        // REMOVED manual visibility check loop. Relying on IntersectionObserver.
-
-        ensureLabelCapacity();
-
-        // Cleanup elements no longer in DOM - FAST connected check
-        for (const el of targets) {
-            if (!el.isConnected) {
-                targets.delete(el);
-                visibleTargets.delete(el);
-                observer.unobserve(el);
-                elementToHintMap.delete(el);
-                elementToHighlightMap.delete(el);
-                motionState.delete(el);
-            }
+            this.targets.clear();
+            found.forEach(el => { this.targets.add(el); this.observer.observe(el); });
+            return found;
         }
     };
 
-    function ensureLabelCapacity() {
-        if (hintsActive) return;
+    const Core = {
+        hintMap: {},
+        elToHint: new Map(),
+        elToHighlight: new Map(),
+        labelMap: new WeakMap(),
+        motion: new WeakMap(),
+        refreshTimer: null,
+        deactivateTimer: null,
 
-        // Use visible count for length, but with a small buffer
-        const totalCount = Math.max(visibleTargets.size, 1);
-        let length = 1;
-        while (Math.pow(26, length) < totalCount) length++;
+        activate(mode = 'SAME_TAB') {
+            if (state.closing) { state.closing = false; Renderer.container.classList.remove('kb-nav-closing'); clearTimeout(this.deactivateTimer); }
+            Renderer.ensureHost();
+            state.active = true; state.mode = mode; state.buffer = ""; state.otherKeyPressed = false;
 
-        // Cap at 3 for stability, but prioritize 1 and 2
-        if (length !== currentLabelLength) {
-            currentLabelLength = length;
-            labelMap = new WeakMap();
-            hintMap = {};
-            nextLabelIndex = 0;
-            elementToHintMap.forEach((span) => releaseSpanToPool(span));
-            elementToHighlightMap.forEach((div) => releaseOverlayToPool(div));
-            elementToHintMap.clear();
-            elementToHighlightMap.clear();
-            motionState = new WeakMap();
-        }
-    }
+            this.update();
+            Renderer.container.style.display = 'block';
+            this.refresh(true);
+            this.startPolling();
+        },
 
-    let updateTimeout;
-    let updateIdleHandle;
-    const debouncedUpdate = () => {
-        if (hintsActive) {
-            clearTimeout(updateTimeout);
-            updateTimeout = setTimeout(updateTargets, 50);
-        } else {
-            // Non-active: Use idle callback to avoid blocking
-            if (window.requestIdleCallback) {
-                if (updateIdleHandle) cancelIdleCallback(updateIdleHandle);
-                updateIdleHandle = requestIdleCallback(() => updateTargets(), { timeout: 1000 });
-            } else {
-                clearTimeout(updateTimeout);
-                updateTimeout = setTimeout(updateTargets, 500);
-            }
-        }
-    };
+        deactivate(instant = false) {
+            if (!state.active && !state.closing) return;
+            state.active = false;
+            if (instant) { this.finalizeDeactivation(); return; }
+            state.closing = true;
+            Renderer.container.classList.add('kb-nav-closing');
+            this.deactivateTimer = setTimeout(() => { if (!state.active) this.finalizeDeactivation(); }, 150);
+        },
 
-    let refreshRequested = false;
-    const debouncedRefresh = () => {
-        if (!hintsActive || refreshRequested) return;
-        refreshRequested = true;
-        requestAnimationFrame(() => {
-            refreshRequested = false;
-            refreshVisibleHints();
-        });
-    };
+        finalizeDeactivation() {
+            state.closing = false;
+            Renderer.container.style.display = 'none';
+            Renderer.container.classList.remove('kb-nav-closing');
+            this.elToHint.forEach((s, el) => { Renderer.releaseSpan(s); el.classList.remove('kb-nav-clicked'); });
+            this.elToHighlight.forEach(d => Renderer.releaseDiv(d));
+            this.elToHint.clear(); this.elToHighlight.clear(); this.hintMap = {};
+            state.buffer = "";
+        },
 
-    const mutationObserver = new MutationObserver(debouncedUpdate);
+        update() { Renderer.ensureHost(); Scanner.scan(); },
 
-    function isElementVisible(el) {
-        // FAST PATH: Check basic visibility first
-        if (el.offsetWidth === 0 || el.offsetHeight === 0) return false;
+        debouncedRefresh() {
+            if (this.refreshTimer) return;
+            this.refreshTimer = requestAnimationFrame(() => { this.refresh(); this.refreshTimer = null; });
+        },
 
-        // Modern API check (Chrome 105+) - very fast
-        if (typeof el.checkVisibility === 'function') {
-            return el.checkVisibility({ opacityProperty: true });
-        }
+        refresh(force = false) {
+            if (!state.active && !state.closing) return;
+            const scrollX = window.scrollX, scrollY = window.scrollY;
+            const frag = document.createDocumentFragment();
+            const seenLocations = [];
+            const seenUrls = new Map();
 
-        const style = window.getComputedStyle(el);
-        return style.display !== 'none' &&
-               style.visibility !== 'hidden' &&
-               style.opacity !== '0' &&
-               style.pointerEvents !== 'none';
-    }
+            // STABLE SORT: Always process elements from top-to-bottom, left-to-right
+            // This prevents chaotic re-labeling when the DOM order is random or changing.
+            const sortedVisible = Array.from(Scanner.visible)
+                .filter(el => el.isConnected)
+                .map(el => ({ el, rect: el.getBoundingClientRect() }))
+                .filter(item => item.rect.width > 0 && item.rect.height > 0)
+                .sort((a, b) => (a.rect.top + scrollY) - (b.rect.top + scrollY) || (a.rect.left + scrollX) - (b.rect.left + scrollX));
 
-    // Attempt init as early as possible
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', tryInit);
-    } else {
-        tryInit();
-    }
+            // RESET Mappings for this pass to ensure strict uniqueness
+            this.hintMap = {};
+            const activeEls = new Set();
+            let labelIdx = 0;
 
-    let isShiftDown = false;
-    let lastMouseX = 0;
-    let lastMouseY = 0;
-
-    let lastPrepareTime = 0;
-    let hintPreparationHandle;
-    const runPrepare = () => {
-        hintPreparationHandle = null;
-
-        // CRITICAL: Release all currently managed elements back to pools to avoid orphaning them in the DOM
-        elementToHintMap.forEach((span) => releaseSpanToPool(span));
-        elementToHighlightMap.forEach((div) => releaseOverlayToPool(div));
-
-        labelMap = new WeakMap();
-        elementToHintMap.clear();
-        elementToHighlightMap.clear();
-        motionState = new WeakMap();
-        nextLabelIndex = 0;
-        hintMap = {};
-
-        hintContainer.style.display = 'none';
-        updateTargets();
-        ensureLabelCapacity();
-        refreshVisibleHints(true);
-    };
-
-    function prepareHints() {
-        if (hintsActive) return;
-
-        const now = Date.now();
-        if (now - lastPrepareTime < 500) return;
-        lastPrepareTime = now;
-
-        if (hintPreparationHandle) cancelAnimationFrame(hintPreparationHandle);
-        hintPreparationHandle = requestAnimationFrame(runPrepare);
-    }
-
-    function normalizeUrl(urlStr) {
-        if (!urlStr) return "";
-        try {
-            const url = new URL(urlStr, window.location.origin);
-            let path = url.origin + url.pathname;
-            // GitHub specific: Treat /blob/, /edit/, /tree/, /raw/ as the same for de-duplication
-            path = path.replace(/\/(blob|edit|tree|raw|blame)\/[^/]+\//, '/.../');
-            return path + url.search + url.hash;
-        } catch (e) {
-            return urlStr;
-        }
-    }
-
-    let lastRefreshTime = 0;
-    function refreshVisibleHints(force = false, isScrolling = false) {
-        if (!hintsActive && !force) return;
-
-        const now = Date.now();
-        // If we recently refreshed (within 16ms), skip unless forced
-        if (!force && !isScrolling && now - lastRefreshTime < 16) return;
-        lastRefreshTime = now;
-
-        const scrollX = window.scrollX;
-        const scrollY = window.scrollY;
-
-        // --- READ PHASE ---
-        const measurements = [];
-        const targetsToProcess = Array.from(visibleTargets);
-
-        targetsToProcess.forEach(el => {
-            let state = motionState.get(el);
-            if (isScrolling && state && state.mode === 'static') return;
-
-            const rect = el.getBoundingClientRect();
-            // Strict viewport intersection check (ignore IntersectionObserver's rootMargin here)
-            const inViewport = rect.bottom > 0 && rect.top < window.innerHeight &&
-                               rect.right > 0 && rect.left < window.innerWidth;
-
-            // Stricter visibility check
-            const isVisible = (state && typeof state.isVisible !== 'undefined') ? state.isVisible : isElementVisible(el);
-
-            if (rect.width > 0 && rect.height > 0 && isVisible && inViewport) {
-                measurements.push({ el, rect, isVisible: true });
-            } else {
-                measurements.push({ el, isVisible: false });
-            }
-        });
-
-        // SPATIAL SORT: Prioritize top-to-bottom, then left-to-right
-        measurements.sort((a, b) => {
-            if (!a.isVisible && !b.isVisible) return 0;
-            if (!a.isVisible) return 1;
-            if (!b.isVisible) return -1;
-
-            // Allow 5px jitter in vertical alignment to keep rows together
-            const verticalDiff = a.rect.top - b.rect.top;
-            if (Math.abs(verticalDiff) > 5) return verticalDiff;
-            return a.rect.left - b.rect.left;
-        });
-
-        // --- WRITE PHASE ---
-        const seenUrls = new Map();
-        const seenLocations = []; // Array of { rect, el } for general spatial de-duplication
-        const fragment = document.createDocumentFragment();
-
-        measurements.forEach(({ el, rect, isVisible }) => {
-            let span = elementToHintMap.get(el);
-            let highlight = elementToHighlightMap.get(el);
-            let state = motionState.get(el);
-
-            if (!isVisible) {
-                if (span) {
-                    releaseSpanToPool(span);
-                    elementToHintMap.delete(el);
+            // DYNAMIC LABEL LENGTH: Ensure prefix-free labels by using a consistent length for all visible items.
+            // We pre-calculate the actual number of hints that will be shown to avoid "falling forward" conflicts.
+            let finalCount = 0;
+            const preFiltered = sortedVisible.filter(({ el, rect }) => {
+                const isDup = seenLocations.some(p =>
+                    Math.abs(rect.left - p.rect.left) < 5 && Math.abs(rect.top - p.rect.top) < 5 &&
+                    Math.abs(rect.width - p.rect.width) < 5 && Math.abs(rect.height - p.rect.height) < 5
+                );
+                if (isDup) return false;
+                const href = el.href || el.getAttribute('href');
+                if ((el.tagName === 'A' || el.getAttribute('role') === 'link') && href) {
+                    const norm = normalizeUrl(href);
+                    const exist = seenUrls.get(norm);
+                    if (exist && exist !== el && Math.abs(rect.left - exist.getBoundingClientRect().left) < 50 && Math.abs(rect.top - exist.getBoundingClientRect().top) < 15) return false;
+                    seenUrls.set(norm, el);
                 }
-                if (highlight) {
-                    releaseOverlayToPool(highlight);
-                    elementToHighlightMap.delete(el);
-                }
-                return;
-            }
-
-            // General spatial de-duplication: Skip if another element is at nearly the same location
-            // This catches overlapping siblings like carousel buttons or custom controls.
-            const isDuplicateLocation = seenLocations.some(pos => {
-                return Math.abs(rect.left - pos.rect.left) < 5 &&
-                       Math.abs(rect.top - pos.rect.top) < 5 &&
-                       Math.abs(rect.width - pos.rect.width) < 5 &&
-                       Math.abs(rect.height - pos.rect.height) < 5;
+                seenLocations.push({ rect, el });
+                return true;
             });
 
-            if (isDuplicateLocation) {
-                if (span) releaseSpanToPool(span);
-                elementToHintMap.delete(el);
-                if (highlight) releaseOverlayToPool(highlight);
-                elementToHighlightMap.delete(el);
-                return;
-            }
-            seenLocations.push({ rect, el });
+            // Re-reset helpers for the actual assignment loop
+            seenLocations.length = 0;
+            seenUrls.clear();
 
-            // Link de-duplication - Additional logic for identical URLs in close proximity
-            const href = el.href || el.getAttribute('href');
-            if ((el.tagName === 'A' || el.getAttribute('role') === 'link') && href) {
-                const normalized = normalizeUrl(href);
-                const existing = seenUrls.get(normalized);
-                if (existing) {
-                    const eRect = existing.getBoundingClientRect();
-                    if (Math.abs(rect.left - eRect.left) < 300 && Math.abs(rect.top - eRect.top) < 20) {
-                        if (span) releaseSpanToPool(span);
-                        elementToHintMap.delete(el);
-                        if (highlight) releaseOverlayToPool(highlight);
-                        elementToHighlightMap.delete(el);
-                        return;
-                    }
+            let L = 1;
+            let capacity = Labeler.alphabet.length;
+            while (capacity < preFiltered.length && L < 5) { L++; capacity *= Labeler.alphabet.length; }
+            state.labelLen = L;
+
+            sortedVisible.forEach(({ el, rect }) => {
+                // Spatial de-duplication
+                const isDup = seenLocations.some(p =>
+                    Math.abs(rect.left - p.rect.left) < 5 && Math.abs(rect.top - p.rect.top) < 5 &&
+                    Math.abs(rect.width - p.rect.width) < 5 && Math.abs(rect.height - p.rect.height) < 5
+                );
+                if (isDup) return;
+
+                const href = el.href || el.getAttribute('href');
+                if ((el.tagName === 'A' || el.getAttribute('role') === 'link') && href) {
+                    const norm = normalizeUrl(href);
+                    const exist = seenUrls.get(norm);
+                    if (exist && exist !== el && Math.abs(rect.left - exist.getBoundingClientRect().left) < 50 && Math.abs(rect.top - exist.getBoundingClientRect().top) < 15) return;
+                    seenUrls.set(norm, el);
                 }
-                seenUrls.set(normalized, el);
-            }
+                seenLocations.push({ rect, el });
 
-            // ASSIGN LABEL: Dynamic priority based on sorted order
-            if (!labelMap.has(el)) {
-                const code = getLabel(nextLabelIndex++, currentLabelLength);
-                labelMap.set(el, code);
-            }
-            const code = labelMap.get(el);
-            hintMap[code] = el;
+                // ATOMIC ASSIGNMENT: Force unique labels for every unique visible target
+                // We clear labelMap per-session or just use the index to guarantee uniqueness here.
+                const code = Labeler.get(labelIdx++, state.labelLen);
+                this.labelMap.set(el, code);
+                this.hintMap[code] = el;
+                activeEls.add(el);
 
-            const docTop = rect.top + scrollY;
-            const docLeft = rect.left + scrollX;
+                const docTop = rect.top + scrollY, docLeft = rect.left + scrollX;
+                let span = this.elToHint.get(el);
+                let highlight = this.elToHighlight.get(el);
+                let m = this.motion.get(el);
 
-            if (!span) {
-                span = getSpanFromPool();
-                span.dataset.code = code;
-                span.innerText = code;
-                state = { docTop, docLeft, lastTop: rect.top, lastScrollY: scrollY, mode: 'static' };
-                motionState.set(el, state);
-
-                // Position Clamp: Ensure hints don't bleed off screen edges
-                // Use fixed estimates for hint size to avoid O(N) offsetWidth reflows
-                const vRight = window.innerWidth + scrollX;
-                const vBottom = window.innerHeight + scrollY;
-                const safeTop = Math.max(scrollY + 2, Math.min(docTop, vBottom - 25));
-                const safeLeft = Math.max(scrollX + 2, Math.min(docLeft, vRight - 40));
-
-                span.style.translate = `${Math.round(safeLeft)}px ${Math.round(safeTop)}px`;
-                span.style.position = 'absolute';
-                span.style.left = '0';
-                span.style.top = '0';
-
-                elementToHintMap.set(el, span);
-                fragment.appendChild(span);
-
-                highlight = getOverlayFromPool();
-                highlight.style.width = `${Math.round(rect.width)}px`;
-                highlight.style.height = `${Math.round(rect.height)}px`;
-                highlight.style.translate = `${Math.round(docLeft)}px ${Math.round(docTop)}px`;
-                elementToHighlightMap.set(el, highlight);
-                fragment.appendChild(highlight);
-            } else {
-                // ... update logic
-                const deltaScroll = scrollY - state.lastScrollY;
-                if (Math.abs(deltaScroll) > 1) {
-                    const deltaTop = rect.top - state.lastTop;
-                    let currentBehavior = 'unknown';
-
-                    if (Math.abs(deltaTop) < 0.1) {
-                        currentBehavior = 'fixed';
-                    } else if (Math.abs(deltaTop + deltaScroll) < 1) {
-                        currentBehavior = 'static';
-                    }
-
-                    if (currentBehavior !== 'unknown') {
-                        state.mode = currentBehavior;
-                    }
-
-                    if (state.mode !== 'static') {
-                        const vRight = window.innerWidth + scrollX;
-                        const vBottom = window.innerHeight + scrollY;
-                        const safeTop = Math.max(scrollY + 2, Math.min(docTop, vBottom - 25));
-                        const safeLeft = Math.max(scrollX + 2, Math.min(docLeft, vRight - 40));
-                        span.style.translate = `${Math.round(safeLeft)}px ${Math.round(safeTop)}px`;
-                    }
-
-                    if (highlight && state.mode !== 'static') {
-                        highlight.style.translate = `${Math.round(docLeft)}px ${Math.round(docTop)}px`;
-                    }
-
-                    state.lastTop = rect.top;
-                    state.lastScrollY = scrollY;
+                if (!span) {
+                    span = Renderer.getSpan(); span.dataset.code = code; span.innerText = code;
+                    m = { docTop, docLeft, lastTop: rect.top, lastScrollY: scrollY, mode: 'static' };
+                    this.motion.set(el, m);
+                    const safeTop = Math.max(scrollY + 2, Math.min(docTop, window.innerHeight + scrollY - 25));
+                    const safeLeft = Math.max(scrollX + 2, Math.min(docLeft, window.innerWidth + scrollX - 40));
+                    span.style.translate = `${Math.round(safeLeft)}px ${Math.round(safeTop)}px`;
+                    this.elToHint.set(el, span); frag.appendChild(span);
+                    highlight = Renderer.getDiv();
+                    highlight.style.width = `${Math.round(rect.width)}px`; highlight.style.height = `${Math.round(rect.height)}px`;
+                    highlight.style.translate = `${Math.round(docLeft)}px ${Math.round(docTop)}px`;
+                    this.elToHighlight.set(el, highlight); frag.appendChild(highlight);
+                } else {
+                    if (span.dataset.code !== code) { span.dataset.code = code; span.textContent = code; }
+                    const safeTop = Math.max(scrollY + 2, Math.min(docTop, window.innerHeight + scrollY - 25));
+                    const safeLeft = Math.max(scrollX + 2, Math.min(docLeft, window.innerWidth + scrollX - 40));
+                    span.style.translate = `${Math.round(safeLeft)}px ${Math.round(safeTop)}px`;
+                    if (highlight) highlight.style.translate = `${Math.round(docLeft)}px ${Math.round(docTop)}px`;
                 }
-            }
 
-            if (typingBuffer && code.startsWith(typingBuffer)) {
-                const matched = code.slice(0, typingBuffer.length);
-                const remaining = code.slice(typingBuffer.length);
-                span.innerHTML = `<span class="kb-nav-hint-match">${matched}</span>${remaining}`;
-                span.classList.remove('kb-nav-hint-filtered');
-                if (typingBuffer) {
-                    span.classList.add('kb-nav-hint-active'); // For scaling
+                if (state.buffer && code.startsWith(state.buffer)) {
+                    if (span.textContent !== code) span.textContent = code;
+                    if (!span.firstChild || span.firstChild.className !== 'kb-nav-hint-match' || span.firstChild.textContent !== code.slice(0, state.buffer.length)) {
+                        span.textContent = '';
+                        const m = document.createElement('span'); m.className = 'kb-nav-hint-match';
+                        m.textContent = code.slice(0, state.buffer.length);
+                        span.appendChild(m);
+                        span.appendChild(document.createTextNode(code.slice(state.buffer.length)));
+                    }
+                    span.classList.remove('kb-nav-hint-filtered'); span.classList.add('kb-nav-hint-active');
                     if (highlight) highlight.style.opacity = '1';
                 } else {
+                    if (span.textContent !== code) span.textContent = code;
                     span.classList.remove('kb-nav-hint-active');
+                    if (state.buffer) span.classList.add('kb-nav-hint-filtered'); else span.classList.remove('kb-nav-hint-filtered');
                     if (highlight) highlight.style.opacity = '0';
                 }
-            } else {
-                span.innerText = code;
-                span.classList.remove('kb-nav-hint-active');
-                if (typingBuffer) {
-                    span.classList.add('kb-nav-hint-filtered');
-                } else {
-                    span.classList.remove('kb-nav-hint-filtered');
-                }
-                if (highlight) highlight.style.opacity = '0';
-            }
-        });
-
-        if (fragment.childNodes.length > 0) {
-            hintContainer.appendChild(fragment);
-        }
-
-        // Cleanup
-        elementToHintMap.forEach((span, el) => {
-            if (!visibleTargets.has(el)) {
-                releaseSpanToPool(span);
-                elementToHintMap.delete(el);
-                const highlight = elementToHighlightMap.get(el);
-                if (highlight) {
-                    releaseOverlayToPool(highlight);
-                    elementToHighlightMap.delete(el);
-                }
-                motionState.delete(el);
-            }
-        });
-    }
-
-    function finalizeSelection(targetEl, span) {
-        // Inject checkmark SVG
-        const checkmark = document.createElement('span');
-        checkmark.className = 'kb-nav-checkmark';
-        checkmark.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
-        span.innerHTML = '';
-        span.appendChild(checkmark);
-        span.classList.add('kb-nav-hint-finalized');
-
-        targetEl.classList.add('kb-nav-clicked');
-    }
-
-    let deactivateTimeout = null;
-    function deactivateHints() {
-        if (!hintsActive) return;
-        hintsActive = false;
-
-        hintContainer.classList.add('kb-nav-closing');
-
-        if (deactivateTimeout) clearTimeout(deactivateTimeout);
-        deactivateTimeout = setTimeout(() => {
-            deactivateTimeout = null;
-            if (hintsActive) return; // Abort if reactivated during fadeout
-
-            hintContainer.style.display = 'none';
-            elementToHintMap.forEach((span, el) => {
-                releaseSpanToPool(span);
-                el.classList.remove('kb-nav-clicked');
             });
-            elementToHighlightMap.forEach((div) => {
-                releaseOverlayToPool(div);
+
+            if (frag.childNodes.length > 0) Renderer.container.appendChild(frag);
+            this.elToHint.forEach((s, el) => {
+                if (!activeEls.has(el)) {
+                    Renderer.releaseSpan(s); this.elToHint.delete(el);
+                    const h = this.elToHighlight.get(el); if (h) { Renderer.releaseDiv(h); this.elToHighlight.delete(el); }
+                    this.motion.delete(el);
+                }
             });
-            hintContainer.classList.remove('kb-nav-closing');
-            hintMap = {};
-            elementToHintMap.clear();
-            elementToHighlightMap.clear();
-            typingBuffer = "";
-        }, 150);
+        },
+
+        startPolling() {
+            let ticks = 0;
+            const itv = setInterval(() => {
+                if (!state.active) { clearInterval(itv); return; }
+                this.update(); this.debouncedRefresh();
+                if (++ticks > 10) {
+                    clearInterval(itv);
+                    const slow = setInterval(() => { if (!state.active) clearInterval(slow); else { this.update(); this.debouncedRefresh(); } }, 2000);
+                }
+            }, 150);
+        },
+
+        select(el, span) {
+            const isFocusable = CONFIG.focusTags.includes(el.tagName) || el.contentEditable === 'true' || el.getAttribute('role') === 'textbox' || el.getAttribute('role') === 'tab';
+            span.textContent = '✓';
+            span.classList.add('kb-nav-hint-finalized'); el.classList.add('kb-nav-clicked');
+            if (state.mode === 'NEW_TAB' && el.tagName === 'A' && el.href) window.open(el.href, '_blank');
+            else {
+                el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+                el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+                el.click(); if (isFocusable) el.focus();
+            }
+            this.deactivate(isFocusable);
+        }
+    };
+
+    const Input = {
+        init() {
+            window.addEventListener('keydown', (e) => this.onKeyDown(e), true);
+            window.addEventListener('keyup', (e) => this.onKeyUp(e), true);
+            window.addEventListener('blur', () => this.onBlur());
+            window.addEventListener('scroll', () => { if (state.active) Core.debouncedRefresh(); }, { passive: true });
+            ['mousedown', 'wheel', 'touchstart', 'touchmove'].forEach(t => window.addEventListener(t, () => { if (state.shiftDown) state.otherKeyPressed = true; }, { passive: true }));
+            window.addEventListener('mousemove', (e) => {
+                if (state.shiftDown && !state.otherKeyPressed && (Math.abs(e.screenX - state.lastMouse.x) > 3 || Math.abs(e.screenY - state.lastMouse.y) > 3)) state.otherKeyPressed = true;
+                state.lastMouse = { x: e.screenX, y: e.screenY };
+            }, { passive: true });
+            window.addEventListener('popstate', () => Core.update());
+            window.addEventListener('hashchange', () => Core.update());
+        },
+
+        onKeyDown(e) {
+            if (e.key === 'Shift') { if (!state.shiftDown) { state.shiftDown = true; if (state.active) { Core.deactivate(); state.otherKeyPressed = true; } else state.otherKeyPressed = false; } return; }
+            if (state.active) {
+                if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End'].includes(e.key)) return;
+                if (e.key === 'Escape') Core.deactivate();
+                else if (e.key === 'Backspace') { state.buffer = state.buffer.slice(0, -1); Core.debouncedRefresh(); }
+                else if (e.key.length === 1 && /^[a-zA-Z]$/.test(e.key)) {
+                    state.buffer += e.key.toUpperCase();
+                    let match = false; for (const code in Core.hintMap) if (code.startsWith(state.buffer)) { match = true; break; }
+                    if (!match) { Core.deactivate(); return; }
+                    Core.debouncedRefresh();
+                    const el = Core.hintMap[state.buffer];
+                    if (el && state.buffer.length === state.labelLen) Core.select(el, Core.elToHint.get(el));
+                } else { Core.deactivate(); return; }
+                e.preventDefault(); e.stopPropagation();
+            } else if (state.shiftDown && !['CapsLock', 'NumLock', 'ScrollLock'].includes(e.key)) state.otherKeyPressed = true;
+        },
+
+        onKeyUp(e) {
+            if (e.key === 'Shift') {
+                state.shiftDown = false;
+                if (!state.otherKeyPressed) {
+                    if (state.active) Core.deactivate();
+                    else Core.activate(e.code === 'ShiftRight' ? 'NEW_TAB' : 'SAME_TAB');
+                }
+                state.otherKeyPressed = false;
+            }
+        },
+
+        onBlur() { state.shiftDown = false; state.otherKeyPressed = false; if (state.active) Core.deactivate(); }
+    };
+
+    function tryInit() {
+        if (state.initialized) return;
+        if (!document.body) { setTimeout(tryInit, 50); return; }
+        Scanner.init();
+        Renderer.init();
+        Input.init();
+        state.initialized = true;
+        console.info("Keyboard Navigator: Tap 'Shift' to steer.");
     }
 
-    function activateHints(mode = 'SAME_TAB') {
-        if (deactivateTimeout) {
-            clearTimeout(deactivateTimeout);
-            deactivateTimeout = null;
-            hintContainer.classList.remove('kb-nav-closing');
-        }
-
-        hintsActive = true;
-        activationMode = mode;
-        typingBuffer = "";
-        otherKeyPressed = false;
-
-        // If preparation is still deferred, force it now
-        if (hintPreparationHandle) {
-            cancelAnimationFrame(hintPreparationHandle);
-            runPrepare();
-        }
-
-        // Show prepared hints
-        hintContainer.style.display = 'block';
-
-        // IMMEDIATE SYNC: Force a target update and refresh to ensure dynamic results are caught
-        updateTargets();
-
-        // Wait a tiny bit for IntersectionObserver to fire its first batch
-        setTimeout(() => {
-            refreshVisibleHints(true);
-        }, 16);
-
-        // Add a temporary fast poll to catch elements that load just after activation
-        let ticks = 0;
-        const interval = setInterval(() => {
-            updateTargets();
-            debouncedRefresh(); // Refresh UI for any new elements
-            ticks++;
-            if (!hintsActive || ticks > 10) {
-                clearInterval(interval);
-                // Switch to a slower background poll if still active
-                if (hintsActive) {
-                    const slowInterval = setInterval(() => {
-                        if (!hintsActive) {
-                            clearInterval(slowInterval);
-                            return;
-                        }
-                        updateTargets();
-                        debouncedRefresh();
-                    }, 2000);
-                }
-            }
-        }, 300);
-    }
-
-    const allowedNavigationKeys = new Set([
-        'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
-        'PageUp', 'PageDown', 'Home', 'End', ' ', 'Tab',
-        'CapsLock', 'NumLock', 'ScrollLock'
-    ]);
-
-    window.addEventListener('scroll', () => {
-        if (hintsActive) refreshVisibleHints(false, true);
-    }, { passive: true });
-
-    function isAnyVisibleHintMatching(prefix) {
-        for (const el of elementToHintMap.keys()) {
-            const code = labelMap.get(el);
-            if (code && code.startsWith(prefix)) return true;
-        }
-        return false;
-    }
-
-    window.addEventListener('keydown', (e) => {
-        if (e.key === 'Shift') {
-            if (!isShiftDown) {
-                isShiftDown = true;
-                if (hintsActive) {
-                    deactivateHints();
-                    otherKeyPressed = true; // Prevent re-activation on keyup
-                } else {
-                    otherKeyPressed = false;
-                    prepareHints();
-                }
-            }
-            return;
-        }
-
-        if (hintsActive) {
-            // Allow navigation keys to pass through
-            if (allowedNavigationKeys.has(e.key)) {
-                return;
-            }
-
-            if (e.key === 'Escape') {
-                deactivateHints();
-            } else if (e.key === 'Backspace') {
-                typingBuffer = typingBuffer.slice(0, -1);
-                updateHintFiltering();
-            } else if (e.key.length === 1 && /^[a-zA-Z]$/.test(e.key)) {
-                const newBuffer = typingBuffer + e.key.toUpperCase();
-
-                // Validate against visible hints
-                if (!isAnyVisibleHintMatching(newBuffer)) {
-                    deactivateHints();
-                    return; // Dismiss and allow native key behavior
-                }
-
-                typingBuffer = newBuffer;
-                updateHintFiltering();
-
-                if (typingBuffer.length === currentLabelLength) {
-                    const targetEl = hintMap[typingBuffer];
-                    const span = elementToHintMap.get(targetEl);
-                    if (targetEl && span) {
-                        finalizeSelection(targetEl, span);
-
-                        // Trigger action instantly
-                        if (activationMode === 'NEW_TAB' && targetEl.tagName === 'A' && targetEl.href) {
-                            window.open(targetEl.href, '_blank');
-                        } else {
-                            const down = new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window });
-                            const up = new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window });
-                            targetEl.dispatchEvent(down);
-                            targetEl.dispatchEvent(up);
-                            targetEl.click();
-
-                            const focusTags = ['INPUT', 'TEXTAREA', 'SELECT'];
-                            if (focusTags.includes(targetEl.tagName) ||
-                                targetEl.contentEditable === 'true' ||
-                                targetEl.tagName === 'YT-TAB-SHAPE' ||
-                                targetEl.getAttribute('role') === 'tab' ||
-                                targetEl.getAttribute('role') === 'textbox') {
-                                targetEl.focus();
-                            }
-                        }
-
-                        // Just wait a moment for the user to see the "success" state
-                        // while the browser processes the action.
-                        setTimeout(() => {
-                            deactivateHints();
-                        }, 200);
-                    } else {
-                        deactivateHints();
-                    }
-                }
-            } else {
-                // Any other key dismisses mode immediatly
-                deactivateHints();
-                return; // Let native behavior happen
-            }
-            e.preventDefault();
-            e.stopPropagation();
-        } else if (isShiftDown && !['CapsLock', 'NumLock', 'ScrollLock'].includes(e.key)) {
-            otherKeyPressed = true;
-        }
-    }, true);
-
-    function updateHintFiltering() {
-        const hints = shadowRoot.querySelectorAll('.kb-nav-hint');
-        hints.forEach(hint => {
-            const code = hint.dataset.code;
-            if (!code) return; // Pooled span skip
-
-            const el = hintMap[code];
-            const highlight = elementToHighlightMap.get(el);
-
-            if (code.startsWith(typingBuffer)) {
-                hint.classList.remove('kb-nav-hint-filtered');
-                if (typingBuffer) {
-                    hint.classList.add('kb-nav-hint-active');
-                    if (highlight) highlight.style.opacity = '1';
-                } else {
-                    hint.classList.remove('kb-nav-hint-active');
-                    if (highlight) highlight.style.opacity = '0';
-                }
-                const matched = code.slice(0, typingBuffer.length);
-                const remaining = code.slice(typingBuffer.length);
-                hint.innerHTML = `<span class="kb-nav-hint-match">${matched}</span>${remaining}`;
-            } else {
-                hint.classList.add('kb-nav-hint-filtered');
-                hint.classList.remove('kb-nav-hint-active');
-                if (highlight) highlight.style.opacity = '0';
-            }
-        });
-    }
-
-    window.addEventListener('keyup', (e) => {
-        if (e.key === 'Shift') {
-            isShiftDown = false;
-            if (!otherKeyPressed) {
-                if (hintsActive) {
-                    deactivateHints();
-                } else {
-                    const mode = (e.code === 'ShiftRight') ? 'NEW_TAB' : 'SAME_TAB';
-                    activateHints(mode);
-                }
-            }
-            otherKeyPressed = false;
-        }
-    }, true);
-
-    window.addEventListener('blur', () => {
-        isShiftDown = false;
-        otherKeyPressed = false;
-        if (hintsActive) deactivateHints();
-    });
-
-    // Prevent accidental trigger during Shift+Mouse/Touch actions (selection, drag, scroll, etc.)
-    ['mousedown', 'wheel', 'touchstart', 'touchmove'].forEach(type => {
-        window.addEventListener(type, () => {
-            if (isShiftDown) otherKeyPressed = true;
-        }, { passive: true });
-    });
-
-    window.addEventListener('mousemove', (e) => {
-        if (isShiftDown && !otherKeyPressed) {
-            const dx = Math.abs(e.screenX - lastMouseX);
-            const dy = Math.abs(e.screenY - lastMouseY);
-            // Threshold (3px) to avoid suppression by minor mouse jitter
-            if (dx > 3 || dy > 3) {
-                otherKeyPressed = true;
-            }
-        }
-        lastMouseX = e.screenX;
-        lastMouseY = e.screenY;
-    }, { passive: true });
-
-    console.log("Keyboard Navigator Prefix-Free: Tap 'Shift' to steer.");
+    tryInit();
 })();
