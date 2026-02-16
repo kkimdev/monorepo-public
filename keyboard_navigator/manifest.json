@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Keyboard Navigator",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Navigate web pages using keyboard hints. Tap 'Shift' to activate.",
   "action": {},
   "icons": {
@@ -21,7 +21,7 @@
       "matches": ["<all_urls>"],
       "js": ["content.js"],
       "css": ["content.css"],
-      "run_at": "document_start",
+      "run_at": "document_idle",
       "all_frames": true
     }
   ],

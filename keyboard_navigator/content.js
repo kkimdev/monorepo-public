@@ -46,7 +46,17 @@
     let initialized = false;
     let shadowRoot = null;
     function tryInit() {
-        if (initialized || !document.body) return;
+        if (initialized) return;
+        if (!document.body) {
+            // Fallback for document_start: wait until body is available
+            const checkBody = setInterval(() => {
+                if (document.body) {
+                    clearInterval(checkBody);
+                    tryInit();
+                }
+            }, 50);
+            return;
+        }
 
         const host = document.createElement('div');
         host.id = 'kb-nav-host';
@@ -57,7 +67,7 @@
         // Use closed shadow root for isolation
         shadowRoot = host.attachShadow({ mode: 'closed' });
 
-        // Inject CSS via fetch + style tag (more reliable for CSP on many sites)
+        // Try standard fetch first
         if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL) {
             fetch(chrome.runtime.getURL('content.css'))
                 .then(res => res.text())
@@ -73,45 +83,58 @@
                     });
                 })
                 .catch(err => {
-                    console.warn("Keyboard Navigator: fetch failed, using fallback", err);
+                    console.warn("Keyboard Navigator: fetch failed, trying <link> fallback", err);
+                    const link = document.createElement('link');
+                    link.rel = 'stylesheet';
+                    link.id = 'kb-nav-styles-link';
+                    link.href = chrome.runtime.getURL('content.css');
+                    shadowRoot.appendChild(link);
+
+                    // Also try fallback styles just in case <link> is also blocked
                     injectFallbackStyles();
+
+                    chrome.storage.local.get(['bgColor', 'accentColor'], (result) => {
+                        applyColors(result.bgColor || '#fff176', result.accentColor || '#ffd700');
+                    });
                 });
         } else {
             injectFallbackStyles();
         }
 
-        function injectFallbackStyles() {
-            // Check if already injected
-            if (shadowRoot.querySelector('#kb-nav-styles-fallback')) return;
+        const injectFallbackStyles = () => {
+        if (shadowRoot.querySelector('#kb-nav-styles-fallback')) return;
+        const style = document.createElement('style');
+        style.id = 'kb-nav-styles-fallback';
 
-            const style = document.createElement('style');
-            style.id = 'kb-nav-styles-fallback';
+        // HARDCODED FALLBACK: Essential styles if fetch and scraping fail
+        let cssText = `
+            .kb-nav-hint {
+                position: absolute; padding: 3px 6px; background: rgba(255, 241, 118, 0.9);
+                color: #000; font-family: sans-serif; font-size: 14px; font-weight: 700;
+                z-index: 2147483647; pointer-events: none; border-radius: 4px; border: 1px solid rgba(0,0,0,0.2);
+            }
+            .kb-nav-target-highlight {
+                position: absolute; border: 2px solid #ffd700; pointer-events: none; z-index: 2147483646;
+            }
+            .kb-nav-hint-filtered { display: none !important; }
+            .kb-nav-hint-active { transform: scale(1.1); }
+        `;
+
+        try {
+            // Try to scrape manifest-injected styles if possible
             const styleTags = Array.from(document.querySelectorAll('style, link[rel="stylesheet"]'));
-            let cssText = '';
-
-            // Try to find the content.css content if it was injected by manifest
             styleTags.forEach(st => {
                 try {
                     if (st.tagName === 'STYLE' && st.textContent.includes('kb-nav-hint')) {
                         cssText += st.textContent;
-                    } else if (st.tagName === 'LINK' && st.sheet) {
-                        // For links, we might be able to read the rules if same-origin or CORS
-                        Array.from(st.sheet.cssRules).forEach(rule => {
-                            if (rule.cssText.includes('kb-nav-hint')) {
-                                cssText += rule.cssText;
-                            }
-                        });
                     }
-                } catch (e) {
-                    // Ignore CORS restricted sheets
-                }
+                } catch (e) {}
             });
+        } catch (e) {}
 
-            if (cssText) {
-                style.textContent = cssText;
-                shadowRoot.appendChild(style);
-            }
-        }
+        style.textContent = cssText;
+        shadowRoot.appendChild(style);
+    };
 
         shadowRoot.appendChild(hintContainer);
 
@@ -351,6 +374,7 @@
         }
     }
 
+    let updateTimeout;
     let updateIdleHandle;
     const debouncedUpdate = () => {
         if (hintsActive) {
@@ -734,7 +758,14 @@
 
         // Show prepared hints
         hintContainer.style.display = 'block';
-        refreshVisibleHints();
+
+        // IMMEDIATE SYNC: Force a target update and refresh to ensure dynamic results are caught
+        updateTargets();
+
+        // Wait a tiny bit for IntersectionObserver to fire its first batch
+        setTimeout(() => {
+            refreshVisibleHints(true);
+        }, 16);
 
         // Add a temporary fast poll to catch elements that load just after activation
         let ticks = 0;
