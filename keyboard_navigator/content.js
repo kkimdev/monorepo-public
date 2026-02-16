@@ -347,6 +347,7 @@
             elementToHighlightMap.forEach((div) => releaseOverlayToPool(div));
             elementToHintMap.clear();
             elementToHighlightMap.clear();
+            motionState = new WeakMap();
         }
     }
 
@@ -410,6 +411,11 @@
     let hintPreparationHandle;
     const runPrepare = () => {
         hintPreparationHandle = null;
+
+        // CRITICAL: Release all currently managed elements back to pools to avoid orphaning them in the DOM
+        elementToHintMap.forEach((span) => releaseSpanToPool(span));
+        elementToHighlightMap.forEach((div) => releaseOverlayToPool(div));
+
         labelMap = new WeakMap();
         elementToHintMap.clear();
         elementToHighlightMap.clear();
@@ -819,7 +825,12 @@
                         if (activationMode === 'NEW_TAB' && targetEl.tagName === 'A' && targetEl.href) {
                             window.open(targetEl.href, '_blank');
                         } else {
+                            const down = new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window });
+                            const up = new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window });
+                            targetEl.dispatchEvent(down);
+                            targetEl.dispatchEvent(up);
                             targetEl.click();
+
                             const focusTags = ['INPUT', 'TEXTAREA', 'SELECT'];
                             if (focusTags.includes(targetEl.tagName) ||
                                 targetEl.contentEditable === 'true' ||
@@ -893,7 +904,7 @@
             }
             otherKeyPressed = false;
         }
-    });
+    }, true);
 
     window.addEventListener('blur', () => {
         isShiftDown = false;

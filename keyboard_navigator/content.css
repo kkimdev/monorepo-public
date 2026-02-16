@@ -17,8 +17,8 @@
     line-height: 1;
     text-transform: uppercase;
     border-radius: 4px;
-    border: 1px solid rgba(255, 215, 0, 0.4);
-    box-shadow: 0 4px 12px rgba(0,0,0,0.15), 0 2px 4px rgba(0,0,0,0.1);
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.12), 0 1px 3px rgba(0,0,0,0.08);
     transform-origin: center;
     /* Explicit defaults and independent scale property for smooth transitions */
     scale: 1;
@@ -74,7 +74,7 @@
     z-index: 2147483646; /* Just below hints */
     outline: 2px solid var(--kb-nav-accent) !important;
     outline-offset: -2px !important;
-    box-shadow: 0 0 0 2px rgba(255, 215, 0, 0.2), 0 0 8px 4px rgba(255, 215, 0, 0.4) !important;
+    box-shadow: none !important;
     transition: opacity 0.15s cubic-bezier(0.4, 0, 0.2, 1);
     opacity: 0;
     pointer-events: none;
@@ -115,7 +115,7 @@
 .kb-nav-hint-finalized {
     background: #e6f4ea !important;
     border-color: #1e8e3e !important;
-    box-shadow: 0 0 10px rgba(30, 142, 62, 0.4);
+    box-shadow: 0 4px 12px rgba(30, 142, 62, 0.3);
     scale: 1.2 !important;
     z-index: 2147483647;
 }
