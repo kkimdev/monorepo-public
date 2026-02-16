@@ -48,7 +48,6 @@
 
             # Assets & Screenshots
             (xvfb-run bun tools/capture_screenshot.ts) &
-            (xvfb-run bun tools/capture_char_bounds.ts) &
             (xvfb-run bun tools/capture_filter.ts) &
             (sh tools/generate_assets.sh) &
             wait
@@ -58,7 +57,7 @@
             mkdir -p $out
             cp content.js content.css manifest.json icon128.local.png \
                promo_small.png promo_marquee.png screenshot1.png \
-               char_bounds_showcase.png filtered_screenshot.png \
+               filtered_screenshot.png \
                options.html options.js $out/
             (cd $out && zip -r keyboard-navigator.zip .)
           '';
