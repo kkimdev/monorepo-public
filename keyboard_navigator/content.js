@@ -250,14 +250,21 @@
         deactivateTimer: null,
 
         activate(mode = 'SAME_TAB') {
+            if (window !== window.top) {
+                window.top.postMessage({ type: 'KB_NAV_ACTIVATE', mode }, '*');
+                return;
+            }
             if (state.closing) { state.closing = false; Renderer.container.classList.remove('kb-nav-closing'); clearTimeout(this.deactivateTimer); }
             Renderer.ensureHost();
             state.active = true; state.mode = mode; state.buffer = ""; state.otherKeyPressed = false;
+            state.labelLen = 1;
 
             this.update();
             Renderer.container.style.display = 'block';
             this.refresh(true);
             this.startPolling();
+            // Ensure focus is on the top window to capture keys
+            window.focus();
         },
 
         deactivate(instant = false) {
@@ -293,23 +300,15 @@
             const seenLocations = [];
             const seenUrls = new Map();
 
-            // STABLE SORT: Always process elements from top-to-bottom, left-to-right
-            // This prevents chaotic re-labeling when the DOM order is random or changing.
+            // STABLE SORT: Always process elements from top-to-bottom, left-to-Right
             const sortedVisible = Array.from(Scanner.visible)
                 .filter(el => el.isConnected)
                 .map(el => ({ el, rect: el.getBoundingClientRect() }))
                 .filter(item => item.rect.width > 0 && item.rect.height > 0)
                 .sort((a, b) => (a.rect.top + scrollY) - (b.rect.top + scrollY) || (a.rect.left + scrollX) - (b.rect.left + scrollX));
 
-            // RESET Mappings for this pass to ensure strict uniqueness
-            this.hintMap = {};
-            const activeEls = new Set();
-            let labelIdx = 0;
-
-            // DYNAMIC LABEL LENGTH: Ensure prefix-free labels by using a consistent length for all visible items.
-            // We pre-calculate the actual number of hints that will be shown to avoid "falling forward" conflicts.
-            let finalCount = 0;
-            const preFiltered = sortedVisible.filter(({ el, rect }) => {
+            // Pre-filter for de-duplication to calculate true count
+            const filtered = sortedVisible.filter(({ el, rect }) => {
                 const isDup = seenLocations.some(p =>
                     Math.abs(rect.left - p.rect.left) < 5 && Math.abs(rect.top - p.rect.top) < 5 &&
                     Math.abs(rect.width - p.rect.width) < 5 && Math.abs(rect.height - p.rect.height) < 5
@@ -326,62 +325,66 @@
                 return true;
             });
 
-            // Re-reset helpers for the actual assignment loop
-            seenLocations.length = 0;
-            seenUrls.clear();
-
-            let L = 1;
-            let capacity = Labeler.alphabet.length;
-            while (capacity < preFiltered.length && L < 5) { L++; capacity *= Labeler.alphabet.length; }
+            // MONOTONIC LABEL LENGTH: It can increase but never decrease during a session.
+            let L = state.labelLen || 1;
+            let capacity = Math.pow(Labeler.alphabet.length, L);
+            while (capacity < filtered.length && L < 5) { L++; capacity = Math.pow(Labeler.alphabet.length, L); }
             state.labelLen = L;
 
-            sortedVisible.forEach(({ el, rect }) => {
-                // Spatial de-duplication
-                const isDup = seenLocations.some(p =>
-                    Math.abs(rect.left - p.rect.left) < 5 && Math.abs(rect.top - p.rect.top) < 5 &&
-                    Math.abs(rect.width - p.rect.width) < 5 && Math.abs(rect.height - p.rect.height) < 5
-                );
-                if (isDup) return;
+            // RESET ephemeral mappings
+            this.hintMap = {};
+            const activeEls = new Set();
+            const usedLabels = new Set();
+            const assignments = [];
 
-                const href = el.href || el.getAttribute('href');
-                if ((el.tagName === 'A' || el.getAttribute('role') === 'link') && href) {
-                    const norm = normalizeUrl(href);
-                    const exist = seenUrls.get(norm);
-                    if (exist && exist !== el && Math.abs(rect.left - exist.getBoundingClientRect().left) < 50 && Math.abs(rect.top - exist.getBoundingClientRect().top) < 15) return;
-                    seenUrls.set(norm, el);
+            // 1st PASS: Reuse existing valid labels that match current state.labelLen
+            filtered.forEach(({ el, rect }) => {
+                const existing = this.labelMap.get(el);
+                if (existing && existing.length === state.labelLen) {
+                    this.hintMap[existing] = el;
+                    usedLabels.add(existing);
+                    activeEls.add(el);
+                    assignments.push({ el, rect, code: existing });
+                } else {
+                    assignments.push({ el, rect, code: null });
                 }
-                seenLocations.push({ rect, el });
+            });
 
-                // ATOMIC ASSIGNMENT: Force unique labels for every unique visible target
-                // We clear labelMap per-session or just use the index to guarantee uniqueness here.
-                const code = Labeler.get(labelIdx++, state.labelLen);
-                this.labelMap.set(el, code);
-                this.hintMap[code] = el;
-                activeEls.add(el);
+            // 2nd PASS: Assign new labels for elements that don't have a valid one
+            let labelIdx = 0;
+            assignments.forEach(task => {
+                if (task.code) return;
+                let code;
+                do { code = Labeler.get(labelIdx++, state.labelLen); } while (usedLabels.has(code));
+                this.labelMap.set(task.el, code);
+                this.hintMap[code] = task.el;
+                usedLabels.add(code);
+                activeEls.add(task.el);
+                task.code = code;
+            });
 
+            // RENDER PASS
+            assignments.forEach(({ el, rect, code }) => {
                 const docTop = rect.top + scrollY, docLeft = rect.left + scrollX;
                 let span = this.elToHint.get(el);
                 let highlight = this.elToHighlight.get(el);
-                let m = this.motion.get(el);
 
                 if (!span) {
-                    span = Renderer.getSpan(); span.dataset.code = code; span.innerText = code;
-                    m = { docTop, docLeft, lastTop: rect.top, lastScrollY: scrollY, mode: 'static' };
-                    this.motion.set(el, m);
-                    const safeTop = Math.max(scrollY + 2, Math.min(docTop, window.innerHeight + scrollY - 25));
-                    const safeLeft = Math.max(scrollX + 2, Math.min(docLeft, window.innerWidth + scrollX - 40));
-                    span.style.translate = `${Math.round(safeLeft)}px ${Math.round(safeTop)}px`;
+                    span = Renderer.getSpan();
                     this.elToHint.set(el, span); frag.appendChild(span);
                     highlight = Renderer.getDiv();
-                    highlight.style.width = `${Math.round(rect.width)}px`; highlight.style.height = `${Math.round(rect.height)}px`;
-                    highlight.style.translate = `${Math.round(docLeft)}px ${Math.round(docTop)}px`;
                     this.elToHighlight.set(el, highlight); frag.appendChild(highlight);
-                } else {
-                    if (span.dataset.code !== code) { span.dataset.code = code; span.textContent = code; }
-                    const safeTop = Math.max(scrollY + 2, Math.min(docTop, window.innerHeight + scrollY - 25));
-                    const safeLeft = Math.max(scrollX + 2, Math.min(docLeft, window.innerWidth + scrollX - 40));
-                    span.style.translate = `${Math.round(safeLeft)}px ${Math.round(safeTop)}px`;
-                    if (highlight) highlight.style.translate = `${Math.round(docLeft)}px ${Math.round(docTop)}px`;
+                }
+
+                if (span.dataset.code !== code) { span.dataset.code = code; span.textContent = code; }
+                const safeTop = Math.max(scrollY + 2, Math.min(docTop, window.innerHeight + scrollY - 25));
+                const safeLeft = Math.max(scrollX + 2, Math.min(docLeft, window.innerWidth + scrollX - 40));
+                span.style.translate = `${Math.round(safeLeft)}px ${Math.round(safeTop)}px`;
+
+                if (highlight) {
+                    highlight.style.width = `${Math.round(rect.width)}px`;
+                    highlight.style.height = `${Math.round(rect.height)}px`;
+                    highlight.style.translate = `${Math.round(docLeft)}px ${Math.round(docTop)}px`;
                 }
 
                 if (state.buffer && code.startsWith(state.buffer)) {
@@ -396,7 +399,7 @@
                     span.classList.remove('kb-nav-hint-filtered'); span.classList.add('kb-nav-hint-active');
                     if (highlight) highlight.style.opacity = '1';
                 } else {
-                    if (span.textContent !== code) span.textContent = code;
+                    if (span.childNodes.length > 1 || span.textContent !== code) span.textContent = code;
                     span.classList.remove('kb-nav-hint-active');
                     if (state.buffer) span.classList.add('kb-nav-hint-filtered'); else span.classList.remove('kb-nav-hint-filtered');
                     if (highlight) highlight.style.opacity = '0';
@@ -408,7 +411,6 @@
                 if (!activeEls.has(el)) {
                     Renderer.releaseSpan(s); this.elToHint.delete(el);
                     const h = this.elToHighlight.get(el); if (h) { Renderer.releaseDiv(h); this.elToHighlight.delete(el); }
-                    this.motion.delete(el);
                 }
             });
         },
@@ -450,8 +452,27 @@
                 if (state.shiftDown && !state.otherKeyPressed && (Math.abs(e.screenX - state.lastMouse.x) > 3 || Math.abs(e.screenY - state.lastMouse.y) > 3)) state.otherKeyPressed = true;
                 state.lastMouse = { x: e.screenX, y: e.screenY };
             }, { passive: true });
-            window.addEventListener('popstate', () => Core.update());
-            window.addEventListener('hashchange', () => Core.update());
+            window.addEventListener('popstate', () => { Core.update(); if (state.active) Core.debouncedRefresh(); });
+            window.addEventListener('hashchange', () => { Core.update(); if (state.active) Core.debouncedRefresh(); });
+
+            // SPA Navigation Support: Wrap pushState and replaceState
+            const wrap = (fn) => {
+                const orig = history[fn];
+                history[fn] = function() {
+                    const res = orig.apply(this, arguments);
+                    Core.update();
+                    if (state.active) Core.debouncedRefresh();
+                    return res;
+                };
+            };
+            wrap('pushState'); wrap('replaceState');
+
+            // Cross-frame Activation Support
+            window.addEventListener('message', (e) => {
+                if (e.data && e.data.type === 'KB_NAV_ACTIVATE' && window === window.top) {
+                    Core.activate(e.data.mode);
+                }
+            });
         },
 
         onKeyDown(e) {
@@ -477,7 +498,14 @@
                 state.shiftDown = false;
                 if (!state.otherKeyPressed) {
                     if (state.active) Core.deactivate();
-                    else Core.activate(e.code === 'ShiftRight' ? 'NEW_TAB' : 'SAME_TAB');
+                    else {
+                        const mode = (e.code === 'ShiftRight' ? 'NEW_TAB' : 'SAME_TAB');
+                        if (window !== window.top) {
+                            window.top.postMessage({ type: 'KB_NAV_ACTIVATE', mode }, '*');
+                        } else {
+                            Core.activate(mode);
+                        }
+                    }
                 }
                 state.otherKeyPressed = false;
             }
