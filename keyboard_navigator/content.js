@@ -431,8 +431,12 @@
             const isFocusable = CONFIG.focusTags.includes(el.tagName) || el.contentEditable === 'true' || el.getAttribute('role') === 'textbox' || el.getAttribute('role') === 'tab';
             span.textContent = '✓';
             span.classList.add('kb-nav-hint-finalized'); el.classList.add('kb-nav-clicked');
-            if (state.mode === 'NEW_TAB' && el.tagName === 'A' && el.href) window.open(el.href, '_blank');
-            else {
+            if (state.mode === 'NEW_TAB' && el.tagName === 'A' && el.href) {
+                const ctrlKey = true;
+                el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, ctrlKey }));
+                el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window, ctrlKey }));
+                el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window, ctrlKey }));
+            } else {
                 el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
                 el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
                 el.click(); if (isFocusable) el.focus();
@@ -495,8 +499,9 @@
 
         onKeyUp(e) {
             if (e.key === 'Shift') {
+                const wasDown = state.shiftDown;
                 state.shiftDown = false;
-                if (!state.otherKeyPressed) {
+                if (wasDown && !state.otherKeyPressed) {
                     if (state.active) Core.deactivate();
                     else {
                         const mode = (e.code === 'ShiftRight' ? 'NEW_TAB' : 'SAME_TAB');
