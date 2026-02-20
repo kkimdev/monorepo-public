@@ -21,6 +21,8 @@ nix build
 
 The resulting build will be available in the `result/` directory.
 
+Upload to https://chrome.google.com/webstore/devconsole
+
 ## Development
 To load the extension into Chrome:
 1. Run `nix build`.
