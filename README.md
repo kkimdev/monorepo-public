@@ -26,6 +26,7 @@ Beta channel is recommended
 ```bash
 append_if_not_exist() {
   # https://stackoverflow.com/a/28021305
+  touch "$2"
   grep -xqF -- "$1" "$2" || echo "$1" >> "$2"
 }
 
@@ -262,6 +263,9 @@ git config --global user.email "..." # Use private email from https://github.com
 git config --global core.editor 'code --wait --new-window'
 git config --global diff.tool diff-code
 git config --global difftool.diff-code.cmd 'code --wait --new-window --diff $LOCAL $REMOTE'
+
+append_if_not_exist kkim_personal/ ~/.gitignore_global
+git config --global core.excludesfile ~/.gitignore_global
 
 ```
 ## Nix upgrade
