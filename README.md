@@ -350,7 +350,41 @@ format = '[[  $time ](fg:#a0a9cb bg:#1d2230)]($style)'
 ```
 
 ## Troubleshooting
+### HDMI Audio Output
+
+1. [Ctrl]+[Alt]+T to open crosh terminal
+2. Type `shell` then [Enter]
+3. Copy-paste the following for one-off enabling.
+```bash
+CARD_NUM=$(aplay -l | grep -i "HDMI" | head -n 1 | cut -d" " -f2 | tr -d ":")
+CARD_NUM=${CARD_NUM:-0}
+sudo amixer -c $CARD_NUM sset IEC958 on
+echo "One-time activation complete for Card: $CARD_NUM"
 ```
-# Restarting window manager
+4. If HDMI output is working, copy-paste the following to permanently enable.
+```bash
+sudo bash -c "
+cat <<EOF > /etc/init/hdmi-audio.conf
+description \"Activate HDMI Audio at Boot\"
+author \"User\"
+start on started system-services
+stop on stopping system-services
+task
+script
+    sleep 10
+    /usr/bin/amixer -c $CARD_NUM sset IEC958 on
+end script
+EOF
+
+chmod 644 /etc/init/hdmi-audio.conf
+initctl reload-configuration
+initctl start hdmi-audio
+echo \"Permanent boot job created for Card: $CARD_NUM\"
+"
+```
+Reference: https://github.com/sebanc/brunch/issues/2273
+
+### Restarting window manager
+```
 systemctl --user restart sommelier-x@0.service sommelier@0.service
 ```
