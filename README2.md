@@ -214,11 +214,17 @@ cat <<EOF > "$CONF_DIR/home.nix"
     Environment="SOMMELIER_ACCELERATORS=Super_L,<Alt>bracketleft,<Alt>bracketright,<Alt>minus,<Alt>equal,<Alt>1,<Alt>2,<Alt>3,<Alt>4,<Alt>5,<Alt>6,<Alt>7,<Alt>8,<Alt>9,print,<Control>space"
   '';
 
-  home.file.".inputrc".text = ''
-    "\e[A": history-search-backward
-    "\e[B": history-search-forward
-    set show-all-if-ambiguous on
-  '';
+  home.file = {
+    # Your existing inputrc configuration
+    ".inputrc".text = ''
+      "\e[A": history-search-backward
+      "\e[B": history-search-forward
+      set show-all-if-ambiguous on
+    '';
+
+    # TODO
+    # https://www.reddit.com/r/Nix/comments/zh1803/guide_how_to_have_nix_installed_applications/
+  };
 }
 EOF
 
