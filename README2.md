@@ -119,7 +119,7 @@ in
 
       # Coding
       vscode
-      #antigravity
+      antigravity
 
       # Fonts
       nerd-fonts.jetbrains-mono
