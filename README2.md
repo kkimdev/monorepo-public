@@ -31,6 +31,7 @@ CONF_DIR="$HOME/.config/home-manager"
 mkdir -p "$CONF_DIR"
 
 # 6. GENERATE FLAKE.NIX
+rm -f "$CONF_DIR/flake.nix"
 cat <<EOF > "$CONF_DIR/flake.nix"
 {
   inputs = {
@@ -58,6 +59,7 @@ cat <<EOF > "$CONF_DIR/flake.nix"
 EOF
 
 # 7. GENERATE HOME.NIX
+rm -f "$CONF_DIR/home.nix"
 cat <<EOF > "$CONF_DIR/home.nix"
 { config, pkgs, lib, ... }:
 
