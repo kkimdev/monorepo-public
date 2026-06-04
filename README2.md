@@ -7,7 +7,7 @@ GIT_USER_NAME=""
 # Use private email from https://github.com/settings/emails
 GIT_USER_EMAIL=""
 
-sudo apt-get purge vim command-not-found -y
+sudo apt-get purge vi vim command-not-found -y
 
 # 2. INSTALL NIX (Only if missing)
 if ! command -v nix &> /dev/null; then
@@ -59,7 +59,42 @@ EOF
 
 # 7. GENERATE HOME.NIX
 cat <<EOF > "$CONF_DIR/home.nix"
-{ config, pkgs, ... }: {
+{ config, pkgs, ... }:
+
+let
+  # 1. Define the sommelier-rs package inside your config
+  # This "fixes" the binary permanently so it doesn't need nix-ld
+  sommelier-rs = pkgs.stdenv.mkDerivation rec {
+    pname = "sommelier-rs";
+    version = "0.1.1";
+
+    src = pkgs.fetchurl {
+      url = "https://github.com/google/sommelier-rs/releases/download/virtwl-v0.1.1/sommelier_rs_virtwl-v0.1.1-x86_64";
+      sha256 = "sha256-zztkv98J8hpVXCXfUnjSaPKaPua44e56yyO/jUwtFzY";
+    };
+
+    dontUnpack = true;
+    nativeBuildInputs = [ pkgs.makeWrapper ];
+
+    installPhase = ''
+      mkdir -p $out/bin
+      cp $src $out/bin/sommelier-rs
+      chmod +x $out/bin/sommelier-rs
+    '';
+
+    # This is where the magic happens: it links the libraries directly into the binary
+    postFixup = ''
+      patchelf --set-interpreter "$(cat $NIX_CC/nix-support/dynamic-linker)" \
+               --set-rpath "${pkgs.lib.makeLibraryPath [ 
+                 pkgs.libxkbcommon
+                 pkgs.libgbm
+               ]}" \
+               $out/bin/sommelier-rs
+    '';
+  };
+in
+
+{
   nixpkgs.config.allowUnfree = true;
 
   home = {
@@ -67,13 +102,23 @@ cat <<EOF > "$CONF_DIR/home.nix"
     homeDirectory = "$HOME";
     stateVersion = "$NIX_VER";
     packages = with pkgs; [
+      sommelier-rs
+
+      # Utils
       git
-      vscode
-      antigravity
-      podman
       micro
       yazi
       zellij
+      podman
+
+      # Apps
+      gedit
+      chromium      
+
+      # Coding
+      vscode
+      #antigravity
+
       # Fonts
       nerd-fonts.jetbrains-mono
       google-fonts
@@ -84,7 +129,33 @@ cat <<EOF > "$CONF_DIR/home.nix"
     };
   };
 
+  xdg.configFile."systemd/user/sommelier@.service".source = lib.mkForce "/dev/null";
+  xdg.configFile."systemd/user/sommelier-x@.service".source = lib.mkForce "/dev/null";
+
+  systemd.user.services.sommelier-rs = {
+    Unit = {
+      Description = "Sommelier-RS Wayland Compositor";
+      # Ensure it starts after the basic user session is ready
+      After = [ "debian-fixup.service" ]; 
+    };
+    Service = {
+      # Use the absolute path from the derivation defined above
+      ExecStart = "${sommelier-rs}/bin/sommelier-rs --virtio-wl /dev/wl0 wayland-0";
+      Restart = "always";
+      RestartSec = "5";
+    };
+    Install = {
+      WantedBy = [ "default.target" ];
+    };
+  };
+
   services.ssh-agent.enable = true;
+
+  # ChromeOS / Crostini Integration Fixes
+  # This tells Home Manager that it is running on a generic Linux distro (not NixOS)
+  # and forces it to export desktop files and icons to standard XDG directories.
+  targets.genericLinux.enable = true;
+  xdg.enable = true;
 
   programs = {
     home-manager.enable = true;
