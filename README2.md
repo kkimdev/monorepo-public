@@ -247,10 +247,10 @@ in
 
     # https://github.com/nix-community/home-manager/blob/master/modules/programs/zellij.nix
     zellij = {
-      enable = true;
+      enable = false;
       enableBashIntegration = true;
       attachExistingSession = false;
-      exitShellOnExit = true;
+      exitShellOnExit = false;
 
       settings = {
         show_startup_tips = false;
