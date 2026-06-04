@@ -249,6 +249,19 @@ echo "============================================================"
 . "$HOME/.bashrc"
 ```
 
+## Terminal App Nerd Font
+
+References
+- https://vcfvct.wordpress.com/2021/11/14/chromeos-dev-setup/
+- https://www.reddit.com/r/Crostini/comments/s1dgvk/best_way_to_get_nerd_fonts_on_crostini/
+
+`[Ctrl]+[Shift]+J` in Terminal App then paste the following.
+
+```javascript
+await term_.prefs_.set('font-family', '"JetBrainsMono Nerd Font", "JetBrains Mono"');
+await term_.prefs_.set('user-css-text', '@font-face {font-family: "JetBrainsMono Nerd Font"; src: url("https://raw.githubusercontent.com/ryanoasis/nerd-fonts/master/patched-fonts/JetBrainsMono/Ligatures/Regular/JetBrainsMonoNerdFont-Regular.ttf"); font-weight: normal; font-style: normal;}')
+```
+
 ## Github key
 ```bash
 
