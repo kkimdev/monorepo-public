@@ -59,7 +59,7 @@ EOF
 
 # 7. GENERATE HOME.NIX
 cat <<EOF > "$CONF_DIR/home.nix"
-{ config, pkgs, ... }:
+{ config, pkgs, lib, ... }:
 
 let
   # 1. Define the sommelier-rs package inside your config
@@ -77,19 +77,19 @@ let
     nativeBuildInputs = [ pkgs.makeWrapper ];
 
     installPhase = ''
-      mkdir -p $out/bin
-      cp $src $out/bin/sommelier-rs
-      chmod +x $out/bin/sommelier-rs
+      mkdir -p \$out/bin
+      cp \$src \$out/bin/sommelier-rs
+      chmod +x \$out/bin/sommelier-rs
     '';
 
     # This is where the magic happens: it links the libraries directly into the binary
     postFixup = ''
-      patchelf --set-interpreter "$(cat $NIX_CC/nix-support/dynamic-linker)" \
-               --set-rpath "${pkgs.lib.makeLibraryPath [ 
+      patchelf --set-interpreter "\$(cat $NIX_CC/nix-support/dynamic-linker)" \
+               --set-rpath "\${pkgs.lib.makeLibraryPath [ 
                  pkgs.libxkbcommon
                  pkgs.libgbm
                ]}" \
-               $out/bin/sommelier-rs
+               \$out/bin/sommelier-rs
     '';
   };
 in
@@ -129,8 +129,8 @@ in
     };
   };
 
-  xdg.configFile."systemd/user/sommelier@.service".source = lib.mkForce "/dev/null";
-  xdg.configFile."systemd/user/sommelier-x@.service".source = lib.mkForce "/dev/null";
+  xdg.configFile."systemd/user/sommelier@.service".source = config.lib.file.mkOutOfStoreSymlink "/dev/null";
+  xdg.configFile."systemd/user/sommelier-x@.service".source = config.lib.file.mkOutOfStoreSymlink "/dev/null";
 
   systemd.user.services.sommelier-rs = {
     Unit = {
@@ -140,7 +140,7 @@ in
     };
     Service = {
       # Use the absolute path from the derivation defined above
-      ExecStart = "${sommelier-rs}/bin/sommelier-rs --virtio-wl /dev/wl0 wayland-0";
+      ExecStart = "\${sommelier-rs}/bin/sommelier-rs --virtio-wl /dev/wl0 wayland-0";
       Restart = "always";
       RestartSec = "5";
     };
@@ -188,12 +188,12 @@ in
         egrep = "egrep --color=auto";
 
         upgrade-all = ''
-          sudo apt-get update && sudo apt-get full-upgrade -y && \
-          sudo apt-get autoremove -y && \
-          pushd $CONF_DIR && \
-          nix flake update && \
-          home-manager switch --flake .#$USER --impure && \
-          popd && \
+          sudo apt-get update && sudo apt-get full-upgrade -y && \\
+          sudo apt-get autoremove -y && \\
+          pushd $CONF_DIR && \\
+          nix flake update && \\
+          home-manager switch --flake .#$USER --impure && \\
+          popd && \\
           nix-collect-garbage -d
         '';
 
