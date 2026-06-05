@@ -6,6 +6,7 @@
 GIT_USER_NAME=""
 # Use private email from https://github.com/settings/emails
 GIT_USER_EMAIL=""
+
 sudo apt-get purge vi vim command-not-found -y
 
 # INSTALL NIX (Only if missing)
@@ -188,11 +189,12 @@ in
         upgrade-all = ''
           sudo apt-get update && sudo apt-get full-upgrade -y && \\
           sudo apt-get autoremove -y && \\
+          sudo determinate-nixd upgrade && \\
           pushd $CONF_DIR && \\
           nix flake update && \\
           home-manager switch --flake .#$USER --impure && \\
           popd && \\
-          nix-collect-garbage -d
+          nix store gc
         '';
 
         cros-reset = ''
@@ -426,3 +428,39 @@ ssh-add ~/.ssh/id_ed25519
 # Paste the output to https://github.com/settings/keys
 cat ~/.ssh/id_ed25519.pub
 ```
+
+## Troubleshooting
+
+### HDMI Audio Output
+
+1. `[Ctrl]+[Alt]+T` to open crosh terminal
+2. Type `shell` then `[Enter]`
+3. Copy-paste the following for one-off enabling.
+```bash
+CARD_NUM=$(aplay -l | grep -i "HDMI" | head -n 1 | cut -d" " -f2 | tr -d ":")
+CARD_NUM=${CARD_NUM:-0}
+sudo amixer -c $CARD_NUM sset IEC958 on
+echo "One-time activation complete for Card: $CARD_NUM"
+```
+4. If HDMI output is working, copy-paste the following to permanently enable.
+```bash
+sudo bash -c "
+cat <<EOF > /etc/init/hdmi-audio.conf
+description \"Activate HDMI Audio at Boot\"
+author \"User\"
+start on started system-services
+stop on stopping system-services
+task
+script
+    sleep 10
+    /usr/bin/amixer -c $CARD_NUM sset IEC958 on
+end script
+EOF
+
+chmod 644 /etc/init/hdmi-audio.conf
+initctl reload-configuration
+initctl start hdmi-audio
+echo \"Permanent boot job created for Card: $CARD_NUM\"
+"
+```
+Reference: https://github.com/sebanc/brunch/issues/2273
