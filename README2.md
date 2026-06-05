@@ -32,7 +32,7 @@ mkdir -p "$CONF_DIR"
 
 # 6. GENERATE FLAKE.NIX
 rm -f "$CONF_DIR/flake.nix"
-cat <<EOF > "$CONF_DIR/flake.nix"
+cat <<'EOF' > "$CONF_DIR/flake.nix"
 {
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
@@ -45,16 +45,53 @@ cat <<EOF > "$CONF_DIR/flake.nix"
     nix-index-database.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { nixpkgs, home-manager, nix-index-database, ... }: {
-    homeConfigurations."$USER" = home-manager.lib.homeManagerConfiguration {
-      pkgs = nixpkgs.legacyPackages.$SYS;
-      modules = [
-        ./home.nix
-        nix-index-database.homeModules.default
-        { programs.nix-index-database.comma.enable = true; }
-      ];
+  outputs = { nixpkgs, home-manager, nix-index-database, ... }: 
+    let
+      system = builtins.currentSystem;
+      
+      # Dynamically grab the current user directly from the environment inside Nix
+      username = builtins.getEnv "USER";
+
+      targetCpu = {
+        "x86_64-linux"  = "x86_64";
+        "aarch64-linux" = "aarch64";
+      }.${system} or (throw "Unsupported system architecture: ${system}");
+
+      shaMap = {
+        "x86_64"  = "sha256-zztkv98J8hpVXCXfUnjSaPKaPua44e56yyO/jUwtFzY";
+        "aarch64" = "sha256-PLACE_ARM64_SHA256_HERE_IF_AVAILABLE";
+      };
+
+      sommelierOverlay = final: prev: {
+        sommelier-rs = prev.stdenv.mkDerivation rec {
+          pname = "sommelier-rs";
+          version = "0.1.1";
+          src = prev.fetchurl {
+            url = "https://github.com/google/sommelier-rs/releases/download/virtwl-v0.1.1/sommelier_rs_virtwl-v0.1.1-${targetCpu}";
+            sha256 = shaMap.${targetCpu};
+          };
+          dontUnpack = true;
+          nativeBuildInputs = [ prev.makeWrapper ];
+          installPhase = "mkdir -p $out/bin && cp $src $out/bin/sommelier-rs && chmod +x $out/bin/sommelier-rs";
+          postFixup = "patchelf --set-interpreter \$(cat ${prev.stdenv.cc}/nix-support/dynamic-linker) --set-rpath ${prev.lib.makeLibraryPath [ prev.libxkbcommon prev.libgbm ]} $out/bin/sommelier-rs";
+        };
+      };
+    in {
+      # Use our new native username variable here
+      homeConfigurations."${username}" = home-manager.lib.homeManagerConfiguration {
+        pkgs = import nixpkgs {
+          inherit system;
+          config.allowUnfree = true;
+          overlays = [ sommelierOverlay ];
+        };
+        
+        modules = [
+          ./home.nix
+          nix-index-database.homeModules.default
+          { programs.nix-index-database.comma.enable = true; }
+        ];
+      };
     };
-  };
 }
 EOF
 
@@ -64,38 +101,9 @@ cat <<EOF > "$CONF_DIR/home.nix"
 { config, pkgs, lib, ... }:
 
 let
-  # 1. Define the sommelier-rs package inside your config
-  # This "fixes" the binary permanently so it doesn't need nix-ld
-  sommelier-rs = pkgs.stdenv.mkDerivation rec {
-    pname = "sommelier-rs";
-    version = "0.1.1";
-
-    src = pkgs.fetchurl {
-      url = "https://github.com/google/sommelier-rs/releases/download/virtwl-v0.1.1/sommelier_rs_virtwl-v0.1.1-x86_64";
-      sha256 = "sha256-zztkv98J8hpVXCXfUnjSaPKaPua44e56yyO/jUwtFzY";
-    };
-
-    dontUnpack = true;
-    nativeBuildInputs = [ pkgs.makeWrapper ];
-
-    installPhase = ''
-      mkdir -p \$out/bin
-      cp \$src \$out/bin/sommelier-rs
-      chmod +x \$out/bin/sommelier-rs
-    '';
-
-    # This is where the magic happens: it links the libraries directly into the binary
-    postFixup = ''
-      patchelf --set-interpreter "\$(cat $NIX_CC/nix-support/dynamic-linker)" \
-               --set-rpath "\${pkgs.lib.makeLibraryPath [ 
-                 pkgs.libxkbcommon
-                 pkgs.libgbm
-               ]}" \
-               \$out/bin/sommelier-rs
-    '';
-  };
+  # https://github.com/google/sommelier-rs/issues/14
+  useSommelierRS = true;
 in
-
 {
   nixpkgs.config.allowUnfree = true;
 
@@ -104,8 +112,6 @@ in
     homeDirectory = "$HOME";
     stateVersion = "$NIX_VER";
     packages = with pkgs; [
-      sommelier-rs
-
       # Utils
       git
       micro
@@ -115,7 +121,7 @@ in
 
       # Apps
       gedit
-      chromium      
+      #chromium      
 
       # Coding
       vscode
@@ -124,17 +130,14 @@ in
       # Fonts
       nerd-fonts.jetbrains-mono
       google-fonts
-    ];
+    ] ++ lib.optional useSommelierRS pkgs.sommelier-rs;
     sessionVariables = {
       NIXPKGS_ALLOW_UNFREE = "1";
       EDITOR = "code --wait --new-window";
     };
   };
 
-  xdg.configFile."systemd/user/sommelier@.service".source = config.lib.file.mkOutOfStoreSymlink "/dev/null";
-  xdg.configFile."systemd/user/sommelier-x@.service".source = config.lib.file.mkOutOfStoreSymlink "/dev/null";
-
-  systemd.user.services.sommelier-rs = {
+  systemd.user.services.sommelier-rs = lib.mkIf useSommelierRS {
     Unit = {
       Description = "Sommelier-RS Wayland Compositor";
       # Ensure it starts after the basic user session is ready
@@ -142,7 +145,7 @@ in
     };
     Service = {
       # Use the absolute path from the derivation defined above
-      ExecStart = "\${sommelier-rs}/bin/sommelier-rs --virtio-wl /dev/wl0 wayland-0";
+      ExecStart = "\${pkgs.sommelier-rs}/bin/sommelier-rs --virtio-wl /dev/wl0 wayland-0";
       Restart = "always";
       RestartSec = "5";
     };
@@ -268,24 +271,29 @@ in
     };
   };
 
-  # https://nixos.wiki/wiki/Installing_Nix_on_Crostini
-  xdg.configFile."systemd/user/cros-garcon.service.d/override.conf".text = ''
-    [Service]
-    Environment="PATH=%h/.nix-profile/bin:/usr/local/sbin:/usr/local/bin:/usr/local/games:/usr/sbin:/usr/bin:/usr/games:/sbin:/bin"
-    Environment="XDG_DATA_DIRS=%h/.nix-profile/share:%h/.local/share:%h/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share:/usr/share"
-  '';
+  xdg.configFile = {
+    # https://nixos.wiki/wiki/Installing_Nix_on_Crostini
+    "systemd/user/cros-garcon.service.d/override.conf".text = ''
+      [Service]
+      Environment="PATH=%h/.nix-profile/bin:/usr/local/sbin:/usr/local/bin:/usr/local/games:/usr/sbin:/usr/bin:/usr/games:/sbin:/bin"
+      Environment="XDG_DATA_DIRS=%h/.nix-profile/share:%h/.local/share:%h/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share:/usr/share"
+    '';
 
-  # Chrome OS shortcuts in Linux apps
-  # https://www.reddit.com/r/Crostini/wiki/enable-chrome-shortcuts-in-linux-apps
-  # https://issuetracker.google.com/issues/149234835#comment14
-  xdg.configFile."systemd/user/sommelier@.service.d/cros-sommelier-override.conf".text = ''
-    [Service]
-    Environment="SOMMELIER_ACCELERATORS=Super_L,<Alt>bracketleft,<Alt>bracketright,<Alt>minus,<Alt>equal,<Alt>1,<Alt>2,<Alt>3,<Alt>4,<Alt>5,<Alt>6,<Alt>7,<Alt>8,<Alt>9,print,<Control>space"
-  '';
-  xdg.configFile."systemd/user/sommelier-x@.service.d/cros-sommelier-x-override.conf".text = ''
-    [Service]
-    Environment="SOMMELIER_ACCELERATORS=Super_L,<Alt>bracketleft,<Alt>bracketright,<Alt>minus,<Alt>equal,<Alt>1,<Alt>2,<Alt>3,<Alt>4,<Alt>5,<Alt>6,<Alt>7,<Alt>8,<Alt>9,print,<Control>space"
-  '';
+    # Chrome OS shortcuts in Linux apps
+    # https://www.reddit.com/r/Crostini/wiki/enable-chrome-shortcuts-in-linux-apps
+    # https://issuetracker.google.com/issues/149234835#comment14
+    "systemd/user/sommelier@.service.d/cros-sommelier-override.conf".text = ''
+      [Service]
+      Environment="SOMMELIER_ACCELERATORS=Super_L,<Alt>bracketleft,<Alt>bracketright,<Alt>minus,<Alt>equal,<Alt>1,<Alt>2,<Alt>3,<Alt>4,<Alt>5,<Alt>6,<Alt>7,<Alt>8,<Alt>9,print,<Control>space"
+    '';
+    "systemd/user/sommelier-x@.service.d/cros-sommelier-x-override.conf".text = ''
+      [Service]
+      Environment="SOMMELIER_ACCELERATORS=Super_L,<Alt>bracketleft,<Alt>bracketright,<Alt>minus,<Alt>equal,<Alt>1,<Alt>2,<Alt>3,<Alt>4,<Alt>5,<Alt>6,<Alt>7,<Alt>8,<Alt>9,print,<Control>space"
+    '';
+
+    "systemd/user/sommelier@.service".source = lib.mkIf useSommelierRS (config.lib.file.mkOutOfStoreSymlink "/dev/null");
+    "systemd/user/sommelier-x@.service".source = lib.mkIf useSommelierRS (config.lib.file.mkOutOfStoreSymlink "/dev/null");
+  };
 
   home.file = {
     # Your existing inputrc configuration
