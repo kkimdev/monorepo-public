@@ -102,7 +102,7 @@ cat <<EOF > "$CONF_DIR/home.nix"
 
 let
   # https://github.com/google/sommelier-rs/issues/14
-  useSommelierRS = true;
+  useSommelierRS = false;
 in
 {
   nixpkgs.config.allowUnfree = true;
@@ -290,9 +290,10 @@ in
       [Service]
       Environment="SOMMELIER_ACCELERATORS=Super_L,<Alt>bracketleft,<Alt>bracketright,<Alt>minus,<Alt>equal,<Alt>1,<Alt>2,<Alt>3,<Alt>4,<Alt>5,<Alt>6,<Alt>7,<Alt>8,<Alt>9,print,<Control>space"
     '';
-
-    "systemd/user/sommelier@.service".source = lib.mkIf useSommelierRS (config.lib.file.mkOutOfStoreSymlink "/dev/null");
-    "systemd/user/sommelier-x@.service".source = lib.mkIf useSommelierRS (config.lib.file.mkOutOfStoreSymlink "/dev/null");
+  } // lib.optionalAttrs useSommelierRS {
+    # These entire file definitions are only added if useSommelierRS is true
+    "systemd/user/sommelier@.service".source = config.lib.file.mkOutOfStoreSymlink "/dev/null";
+    "systemd/user/sommelier-x@.service".source = config.lib.file.mkOutOfStoreSymlink "/dev/null";
   };
 
   home.file = {
@@ -329,6 +330,73 @@ echo "============================================================"
 
 . "$HOME/.bashrc"
 ```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ## Terminal App Nerd Font
 
