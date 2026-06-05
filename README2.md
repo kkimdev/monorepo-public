@@ -7,6 +7,7 @@ GIT_USER_NAME=""
 # Use private email from https://github.com/settings/emails
 GIT_USER_EMAIL=""
 
+
 sudo apt-get purge vi vim command-not-found -y
 
 # 2. INSTALL NIX (Only if missing)
@@ -103,6 +104,8 @@ cat <<EOF > "$CONF_DIR/home.nix"
 let
   # https://github.com/google/sommelier-rs/issues/14
   useSommelierRS = false;
+  crosDesktopShareDir = "\${config.home.homeDirectory}/.local/share";
+  nixProfileShareDir  = "\${config.home.homeDirectory}/.nix-profile/share";
 in
 {
   nixpkgs.config.allowUnfree = true;
@@ -306,6 +309,19 @@ in
 
     # TODO
     # https://www.reddit.com/r/Nix/comments/zh1803/guide_how_to_have_nix_installed_applications/
+  };
+
+  home.activation = {
+    linkDesktopApplications = lib.hm.dag.entryAfter ["writeBoundary"] ''
+      rm -rf "\${crosDesktopShareDir}/applications" "\${crosDesktopShareDir}/icons"
+      mkdir -p "\${crosDesktopShareDir}/applications" "\${crosDesktopShareDir}/icons"
+
+      cp -rL "\${nixProfileShareDir}/applications/." "\${crosDesktopShareDir}/applications/"
+      cp -rL "\${nixProfileShareDir}/icons/."        "\${crosDesktopShareDir}/icons/"
+      chmod -R u+w "\${crosDesktopShareDir}/applications" "\${crosDesktopShareDir}/icons" 2>/dev/null || true
+
+      # update-desktop-database "\${crosDesktopShareDir}/applications" 2>/dev/null || true
+    '';
   };
 }
 EOF
