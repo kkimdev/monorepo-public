@@ -1,13 +1,15 @@
-```bash
-# =============================================================================
-# COMPLETE IDEMPOTENT NIX + HOME-MANAGER BOOTSTRAP (FIXED ARGUMENTS)
-# =============================================================================
+#!/usr/bin/env bash
+set -euxo pipefail
 
-GIT_USER_NAME=""
-# Use private email from https://github.com/settings/emails
-GIT_USER_EMAIL=""
+# TODO
+# - [ ] podman setup
+# - [ ] zsh setup
 
-sudo apt-get purge vi vim command-not-found -y
+# TODO: Fill out and execute these before running the script.
+# export GIT_USER_NAME=""
+# export GIT_USER_EMAIL="" # Use private email from https://github.com/settings/emails
+
+sudo apt-get purge vim command-not-found -y
 
 # INSTALL NIX (Only if missing)
 if ! command -v nix &> /dev/null; then
@@ -29,19 +31,19 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
 {
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
-    home-manager = { 
-      url = "github:nix-community/home-manager"; 
-      inputs.nixpkgs.follows = "nixpkgs"; 
+    home-manager = {
+      url = "github:nix-community/home-manager";
+      inputs.nixpkgs.follows = "nixpkgs";
     };
 
     nix-index-database.url = "github:nix-community/nix-index-database";
     nix-index-database.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { nixpkgs, home-manager, nix-index-database, ... }: 
+  outputs = { nixpkgs, home-manager, nix-index-database, ... }:
     let
       system = builtins.currentSystem;
-      
+
       # Dynamically grab the current user directly from the environment inside Nix
       username = builtins.getEnv "USER";
 
@@ -76,7 +78,7 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
           config.allowUnfree = true;
           overlays = [ sommelierOverlay ];
         };
-        
+
         modules = [
           ./home.nix
           nix-index-database.homeModules.default
@@ -107,22 +109,38 @@ in
     stateVersion = "$NIX_VER";
     packages = with pkgs; [
       # Utils
+      bash
+      zsh
       git
       micro
+      direnv
+      nix-direnv
+      bat
+      btop
+      fzf
       yazi
+      zoxide
       zellij
+      starship
+      wl-clipboard
       podman
 
       # Apps
-      gedit
-      #chromium      
+      #chromium
+      inkscape
+      beekeeper-studio
+      yt-dlp
 
       # Coding
       vscode
       antigravity
+      codex
+      claude-code
+      opencode
 
       # Fonts
       nerd-fonts.jetbrains-mono
+      noto-fonts
       google-fonts
     ] ++ lib.optional useSommelierRS pkgs.sommelier-rs;
     sessionVariables = {
@@ -135,7 +153,7 @@ in
     Unit = {
       Description = "Sommelier-RS Wayland Compositor";
       # Ensure it starts after the basic user session is ready
-      After = [ "debian-fixup.service" ]; 
+      After = [ "debian-fixup.service" ];
     };
     Service = {
       # Use the absolute path from the derivation defined above
@@ -210,7 +228,7 @@ in
       settings = {
         core.editor = "code --wait --new-window";
         diff.tool = "diff-code";
-        difftool.diff-code.cmd = "code --wait --new-window --diff $LOCAL $REMOTE";
+        difftool.diff-code.cmd = "code --wait --new-window --diff \$LOCAL \$REMOTE";
         user = {
           name = "$GIT_USER_NAME";
           email = "$GIT_USER_EMAIL";
@@ -334,133 +352,3 @@ echo "============================================================"
 # exec bash
 
 . "$HOME/.bashrc"
-```
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-## Terminal App Nerd Font
-
-References
-- https://vcfvct.wordpress.com/2021/11/14/chromeos-dev-setup/
-- https://www.reddit.com/r/Crostini/comments/s1dgvk/best_way_to_get_nerd_fonts_on_crostini/
-
-`[Ctrl]+[Shift]+J` in Terminal App then paste the following.
-
-```javascript
-await term_.prefs_.set('font-family', '"JetBrainsMono Nerd Font", "JetBrains Mono"');
-await term_.prefs_.set('user-css-text', '@font-face {font-family: "JetBrainsMono Nerd Font"; src: url("https://raw.githubusercontent.com/ryanoasis/nerd-fonts/master/patched-fonts/JetBrainsMono/Ligatures/Regular/JetBrainsMonoNerdFont-Regular.ttf"); font-weight: normal; font-style: normal;}')
-```
-
-## Github key
-```bash
-
-# https://docs.github.com/en/authentication/connecting-to-github-with-ssh/generating-a-new-ssh-key-and-adding-it-to-the-ssh-agent
-ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N ""
-eval "$(ssh-agent -s)"
-ssh-add ~/.ssh/id_ed25519
-
-# https://docs.github.com/en/authentication/connecting-to-github-with-ssh/adding-a-new-ssh-key-to-your-github-account
-# Paste the output to https://github.com/settings/keys
-cat ~/.ssh/id_ed25519.pub
-```
-
-## Troubleshooting
-
-### HDMI Audio Output
-
-1. `[Ctrl]+[Alt]+T` to open crosh terminal
-2. Type `shell` then `[Enter]`
-3. Copy-paste the following for one-off enabling.
-```bash
-CARD_NUM=$(aplay -l | grep -i "HDMI" | head -n 1 | cut -d" " -f2 | tr -d ":")
-CARD_NUM=${CARD_NUM:-0}
-sudo amixer -c $CARD_NUM sset IEC958 on
-echo "One-time activation complete for Card: $CARD_NUM"
-```
-4. If HDMI output is working, copy-paste the following to permanently enable.
-```bash
-sudo bash -c "
-cat <<EOF > /etc/init/hdmi-audio.conf
-description \"Activate HDMI Audio at Boot\"
-author \"User\"
-start on started system-services
-stop on stopping system-services
-task
-script
-    sleep 10
-    /usr/bin/amixer -c $CARD_NUM sset IEC958 on
-end script
-EOF
-
-chmod 644 /etc/init/hdmi-audio.conf
-initctl reload-configuration
-initctl start hdmi-audio
-echo \"Permanent boot job created for Card: $CARD_NUM\"
-"
-```
-Reference: https://github.com/sebanc/brunch/issues/2273
