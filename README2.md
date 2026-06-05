@@ -6,11 +6,9 @@
 GIT_USER_NAME=""
 # Use private email from https://github.com/settings/emails
 GIT_USER_EMAIL=""
-
-
 sudo apt-get purge vi vim command-not-found -y
 
-# 2. INSTALL NIX (Only if missing)
+# INSTALL NIX (Only if missing)
 if ! command -v nix &> /dev/null; then
     echo "Nix not found. Installing via Determinate Systems..."
     curl --proto "=https" --tlsv1.2 -sSfL https://install.determinate.systems/nix | sh -s -- install --no-confirm
@@ -19,19 +17,12 @@ else
     echo "Nix is already installed."
 fi
 
-# 3. DETECT ARCHITECTURE & SYSTEM
-ARCH=$(uname -m)
-SYS=$([ "$ARCH" = "x86_64" ] && echo "x86_64-linux" || echo "aarch64-linux")
-
-# 4. DETECT CURRENT NIXPKGS VERSION
 echo "Detecting current Nixpkgs release..."
 NIX_VER=$(nix eval --raw nixpkgs#lib.version | cut -d. -f1,2)
 
-# 5. PREPARE CONFIG DIRECTORY
 CONF_DIR="$HOME/.config/home-manager"
 mkdir -p "$CONF_DIR"
 
-# 6. GENERATE FLAKE.NIX
 rm -f "$CONF_DIR/flake.nix"
 cat <<'EOF' > "$CONF_DIR/flake.nix"
 {
@@ -78,7 +69,6 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
         };
       };
     in {
-      # Use our new native username variable here
       homeConfigurations."${username}" = home-manager.lib.homeManagerConfiguration {
         pkgs = import nixpkgs {
           inherit system;
@@ -326,11 +316,8 @@ in
 }
 EOF
 
-# 8. ACTIVATE (With implicit Git bootstrap and Clobber safety)
-echo "Activating Home Manager (Version $NIX_VER, System $SYS)..."
+echo "Activating Home Manager (Version $NIX_VER)..."
 cd "$CONF_DIR"
-
-# Pass -b backup cleanly to look after clobbering issues
 nix shell nixpkgs#git --command \
   nix run github:nix-community/home-manager -- switch --flake .#$USER --impure -b backup
 
