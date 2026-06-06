@@ -4,6 +4,7 @@ set -euxo pipefail
 # TODO
 # - [ ] podman setup
 # - [ ] zsh setup
+# - [ ] fzf setup
 
 # TODO: Fill out and execute these before running the script.
 # export GIT_USER_NAME=""
@@ -111,18 +112,24 @@ in
       # Utils
       bash
       zsh
+      zsh-fzf-tab
       git
+      difftastic
       micro
       direnv
       nix-direnv
       bat
       btop
       fzf
+      ripgrep
+      fd
+      eza
       yazi
       zoxide
       zellij
       starship
       wl-clipboard
+      killall
       podman
 
       # Apps
@@ -223,11 +230,32 @@ in
       };
     };
 
+    zsh = {
+      enable = true;
+      enableCompletion = true;
+      autosuggestion.enable = true;
+      syntaxHighlighting.enable = true;
+
+      plugins = [
+        {
+          name = "fzf-tab";
+          src = "\${pkgs.zsh-fzf-tab}/share/fzf-tab";
+        }
+      ];
+
+      zplug = {
+        enable = true;
+        plugins = [
+          { name = "plugins/dirhistory"; tags = [ "from:oh-my-zsh" ]; }
+        ];
+      };
+      # TODO: More options
+    };
+
     git = {
       enable = true;
       settings = {
         core.editor = "code --wait --new-window";
-        diff.tool = "diff-code";
         difftool.diff-code.cmd = "code --wait --new-window --diff \$LOCAL \$REMOTE";
         user = {
           name = "$GIT_USER_NAME";
@@ -253,6 +281,7 @@ in
     starship = {
       enable = true;
       enableBashIntegration = true;
+      enableZshIntegration = true;
       presets = [ "catppuccin-powerline" ];
       settings = {};
     };
@@ -260,6 +289,19 @@ in
     direnv = {
       enable = true;
       nix-direnv.enable = true;
+      enableBashIntegration = true;
+    };
+
+    difftastic = {
+      enable = true;
+      git = {
+        enable = true;
+        diffToolMode = true;
+      };
+    };
+
+    fzf = {
+      enable = true;
       enableBashIntegration = true;
     };
 
