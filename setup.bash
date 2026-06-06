@@ -2,9 +2,8 @@
 set -euxo pipefail
 
 # TODO
-# - [ ] podman setup
-# - [ ] zsh setup
-# - [ ] fzf setup
+# - [ ] https://github.com/sigoden/aichat setup
+# - [ ] https://github.com/tashfeenahmed/freellmapi setup
 
 # TODO: Fill out and execute these before running the script.
 # export GIT_USER_NAME=""
