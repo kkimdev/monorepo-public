@@ -10,7 +10,8 @@ set -euxo pipefail
 # export GIT_USER_NAME=""
 # export GIT_USER_EMAIL="" # Use private email from https://github.com/settings/emails
 
-sudo apt-get purge vim command-not-found -y
+sudo apt-get install uidmap -y
+sudo apt-get remove vim command-not-found -y
 
 # INSTALL NIX (Only if missing)
 if ! command -v nix &> /dev/null; then
@@ -100,6 +101,33 @@ let
   useSommelierRS = false;
   crosDesktopShareDir = "\${config.home.homeDirectory}/.local/share";
   nixProfileShareDir  = "\${config.home.homeDirectory}/.nix-profile/share";
+
+  myShellAliases = {
+    sudo = "sudo env PATH=\\\\\"\$PATH\\\\\"";
+    grep = "grep --color=auto";
+    fgrep = "fgrep --color=auto";
+    egrep = "egrep --color=auto";
+    ls = "ls --color=auto";
+    dir = "dir --color=auto";
+    vdir = "vdir --color=auto";
+
+    upgrade-all = ''
+      sudo apt-get update && sudo apt-get full-upgrade -y && \\
+      sudo apt-get autoremove -y && \\
+      sudo determinate-nixd upgrade && \\
+      pushd $CONF_DIR && \\
+      nix flake update && \\
+      home-manager switch --flake .#$USER --impure && \\
+      popd && \\
+      nix store gc
+    '';
+
+    cros-reset = ''
+      systemctl --user daemon-reload && \
+      systemctl --user restart sommelier@0.service && \
+      systemctl --user restart sommelier-x@0.service
+    '';
+  };
 in
 {
   nixpkgs.config.allowUnfree = true;
@@ -131,6 +159,7 @@ in
       wl-clipboard
       killall
       podman
+      # shadow # newuidmap
 
       # Apps
       #chromium
@@ -153,6 +182,8 @@ in
     sessionVariables = {
       NIXPKGS_ALLOW_UNFREE = "1";
       EDITOR = "code --wait --new-window";
+      GIT_USER_NAME = "$GIT_USER_NAME";
+      GIT_USER_EMAIL = "$GIT_USER_EMAIL";
     };
   };
 
@@ -205,29 +236,7 @@ in
         . \$HOME/.profile.backup
       '';
 
-      shellAliases = {
-        sudo = "sudo env PATH=\\\\\"\$PATH\\\\\"";
-        grep = "grep --color=auto";
-        fgrep = "fgrep --color=auto";
-        egrep = "egrep --color=auto";
-
-        upgrade-all = ''
-          sudo apt-get update && sudo apt-get full-upgrade -y && \\
-          sudo apt-get autoremove -y && \\
-          sudo determinate-nixd upgrade && \\
-          pushd $CONF_DIR && \\
-          nix flake update && \\
-          home-manager switch --flake .#$USER --impure && \\
-          popd && \\
-          nix store gc
-        '';
-
-        cros-reset = ''
-          systemctl --user daemon-reload && \
-          systemctl --user restart sommelier@0.service && \
-          systemctl --user restart sommelier-x@0.service
-        '';
-      };
+      shellAliases = myShellAliases;
     };
 
     zsh = {
@@ -235,6 +244,23 @@ in
       enableCompletion = true;
       autosuggestion.enable = true;
       syntaxHighlighting.enable = true;
+      history = {
+        append = true;
+        extended = true;
+        expireDuplicatesFirst = true;
+        ignoreDups = true;
+        ignoreAllDups = true;
+        ignoreSpace = true;
+        save = 10000;
+        size = 10000;
+      };
+      historySubstringSearch = {
+        enable = true;
+        searchUpKey = [ "^[[A" "^[OA" ];
+        searchDownKey = [ "^[[B" "^[OB" ];
+      };
+
+      shellAliases = myShellAliases;
 
       plugins = [
         {
@@ -249,6 +275,23 @@ in
           { name = "plugins/dirhistory"; tags = [ "from:oh-my-zsh" ]; }
         ];
       };
+
+      initContent = ''
+        # Fix standard navigation keys
+        bindkey "\e[1~" beginning-of-line       # Home
+        bindkey "^[[H"  beginning-of-line       # Home key
+        bindkey "\e[4~" end-of-line             # End
+        bindkey "^[[F"  end-of-line             # End key
+        bindkey "\e[3~" delete-char             # Delete
+        bindkey "^[[3~" delete-char
+
+        # Fix word-by-word movements (Bash style)
+        bindkey "\e[1;5D" backward-word        # Ctrl + Left
+        bindkey "\e[1;5C" forward-word         # Ctrl + Right
+        bindkey "^[^?"    backward-kill-word   # Ctrl + Backspace
+        bindkey "^H"      backward-kill-word   # Ctrl + Backspace
+      '';
+
       # TODO: More options
     };
 
@@ -256,7 +299,8 @@ in
       enable = true;
       settings = {
         core.editor = "code --wait --new-window";
-        difftool.diff-code.cmd = "code --wait --new-window --diff \$LOCAL \$REMOTE";
+        diff.tool = "vscode";
+        difftool.vscode.cmd = "code --wait --new-window --diff \$LOCAL \$REMOTE";
         user = {
           name = "$GIT_USER_NAME";
           email = "$GIT_USER_EMAIL";
@@ -296,7 +340,10 @@ in
       enable = true;
       git = {
         enable = true;
-        diffToolMode = true;
+        diffToolMode = false;
+      };
+      options = {
+        override = "*.md:text";
       };
     };
 
@@ -375,13 +422,20 @@ in
       # update-desktop-database "\${crosDesktopShareDir}/applications" 2>/dev/null || true
     '';
   };
+
+  # Podman
+  # https://discourse.nixos.org/t/rootless-podman-setup-with-home-manager/57905
+  services.podman = {
+    enable = true;
+  };
 }
 EOF
 
 echo "Activating Home Manager (Version $NIX_VER)..."
-cd "$CONF_DIR"
 nix shell nixpkgs#git --command \
-  nix run github:nix-community/home-manager -- switch --flake .#$USER --impure -b backup
+  nix run github:nix-community/home-manager -- switch --flake "$CONF_DIR#$USER" --impure -b backup
+
+sudo chsh -s "$(which zsh)" "$USER"
 
 echo "============================================================"
 echo "SUCCESS: Home Manager setup is fully activated!"
@@ -389,8 +443,4 @@ echo "Your original configs were safely backed up as *.backup"
 echo "Modify your packages anytime in: $CONF_DIR/home.nix"
 echo "============================================================"
 
-# . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-# export PATH="/nix/var/nix/profiles/default/bin:$HOME/.nix-profile/bin:$PATH"
-# exec bash
-
-. "$HOME/.bashrc"
+# exec "$(readlink -f /proc/$PPID/exe)"
