@@ -114,10 +114,12 @@ let
       sudo apt-get update && sudo apt-get full-upgrade -y && \\
       sudo apt-get autoremove -y && \\
       sudo determinate-nixd upgrade && \\
-      pushd $CONF_DIR && \\
+      pushd "$CONF_DIR" && \\
       nix flake update && \\
-      home-manager switch --flake .#$USER --impure && \\
+      home-manager switch --flake ".#$USER" --impure && \\
       popd && \\
+      nix-collect-garbage -d && \\
+      nix store optimise && \\
       nix store gc
     '';
 
@@ -144,7 +146,6 @@ in
       difftastic
       micro
       direnv
-      nix-direnv
       bat
       btop
       fzf
@@ -157,8 +158,10 @@ in
       starship
       wl-clipboard
       killall
-      podman
-      # shadow # newuidmap
+
+      ## Already included via other lines.
+      # nix-direnv
+      # podman
 
       # Apps
       #chromium
@@ -253,11 +256,6 @@ in
         save = 10000;
         size = 10000;
       };
-      historySubstringSearch = {
-        enable = true;
-        searchUpKey = [ "^[[A" "^[OA" ];
-        searchDownKey = [ "^[[B" "^[OB" ];
-      };
 
       shellAliases = myShellAliases;
 
@@ -276,6 +274,18 @@ in
       };
 
       initContent = ''
+        # History Beginning Search
+        autoload -U up-line-or-beginning-search
+        autoload -U down-line-or-beginning-search
+        zle -N up-line-or-beginning-search
+        zle -N down-line-or-beginning-search
+
+        # Arrow up and down keys binding
+        bindkey "^[[A" up-line-or-beginning-search
+        bindkey "^[[B" down-line-or-beginning-search
+        bindkey "^[OA" up-line-or-beginning-search
+        bindkey "^[OB" down-line-or-beginning-search
+
         # Fix standard navigation keys
         bindkey "\e[1~" beginning-of-line       # Home
         bindkey "^[[H"  beginning-of-line       # Home key
