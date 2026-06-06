@@ -158,6 +158,8 @@ in
       starship
       wl-clipboard
       killall
+      podman-compose
+      podman-tui
 
       ## Already included via other lines.
       # nix-direnv
@@ -201,6 +203,24 @@ in
       Restart = "always";
       RestartSec = "5";
     };
+    Install = {
+      WantedBy = [ "default.target" ];
+    };
+  };
+
+  systemd.user.services.podman-api = {
+    Unit = {
+      Description = "Podman API Service";
+    };
+
+    Service = {
+    ExecStartPre = "\${pkgs.coreutils}/bin/mkdir -p %t/podman";
+      ExecStart =
+        "\${pkgs.podman}/bin/podman system service --time=0 unix://%t/podman/podman.sock";
+      Restart = "always";
+      RestartSec = "5";
+    };
+
     Install = {
       WantedBy = [ "default.target" ];
     };
