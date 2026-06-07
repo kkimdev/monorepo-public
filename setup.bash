@@ -296,17 +296,17 @@ in
       };
 
       initContent = ''
-        # History Beginning Search
-        autoload -U up-line-or-beginning-search
-        autoload -U down-line-or-beginning-search
-        zle -N up-line-or-beginning-search
-        zle -N down-line-or-beginning-search
+        # History Beginning Search (Commented out as Atuin is enabled)
+        # autoload -U up-line-or-beginning-search
+        # autoload -U down-line-or-beginning-search
+        # zle -N up-line-or-beginning-search
+        # zle -N down-line-or-beginning-search
 
         # Arrow up and down keys binding
-        bindkey "^[[A" up-line-or-beginning-search
-        bindkey "^[[B" down-line-or-beginning-search
-        bindkey "^[OA" up-line-or-beginning-search
-        bindkey "^[OB" down-line-or-beginning-search
+        # bindkey "^[[A" up-line-or-beginning-search
+        # bindkey "^[[B" down-line-or-beginning-search
+        # bindkey "^[OA" up-line-or-beginning-search
+        # bindkey "^[OB" down-line-or-beginning-search
 
         # Fix standard navigation keys
         bindkey "\e[1~" beginning-of-line       # Home
@@ -407,6 +407,18 @@ in
         };
       };
     };
+
+    atuin = {
+      enable = true;
+      enableBashIntegration = true;
+      enableZshIntegration = true;
+      daemon.enable = true;
+      settings = {
+        enter_accept = true;
+        workspaces = true;
+        filter_mode = "session-preload";
+      };
+    };
   };
 
   xdg.configFile = {
@@ -437,8 +449,8 @@ in
   home.file = {
     # Your existing inputrc configuration
     ".inputrc".text = ''
-      "\e[A": history-search-backward
-      "\e[B": history-search-forward
+      # "\e[A": history-search-backward
+      # "\e[B": history-search-forward
       set show-all-if-ambiguous on
     '';
 
