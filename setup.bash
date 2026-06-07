@@ -9,6 +9,7 @@ set -euxo pipefail
 # export GIT_USER_NAME=""
 # export GIT_USER_EMAIL="" # Use private email from https://github.com/settings/emails
 
+sudo apt-get update -y
 sudo apt-get install uidmap -y
 sudo apt-get remove vim command-not-found -y
 
@@ -144,6 +145,7 @@ in
       zsh-fzf-tab
       git
       difftastic
+      delta
       micro
       direnv
       bat
@@ -368,11 +370,16 @@ in
     difftastic = {
       enable = true;
       git = {
-        enable = true;
+        enable = false;
         diffToolMode = false;
       };
+    };
+
+    delta = {
+      enable = true;
+      enableGitIntegration = true;
       options = {
-        override = "*.md:text";
+        "side-by-side" = true;
       };
     };
 
@@ -458,6 +465,7 @@ in
     enable = true;
   };
 }
+
 EOF
 
 echo "Activating Home Manager (Version $NIX_VER)..."
