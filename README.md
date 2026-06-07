@@ -31,6 +31,11 @@ ssh-add ~/.ssh/id_ed25519
 cat ~/.ssh/id_ed25519.pub
 ```
 
+## Keyboard Backlight Timeout Config
+
+1. `[Ctrl]+[Alt]+T` to open crosh terminal
+2. `cat /usr/share/power_manager/keyboard_backlight_keep_on_ms && echo "86400000" | sudo tee /usr/share/power_manager/keyboard_backlight_keep_on_ms`
+
 ## Troubleshooting
 
 ### HDMI Audio Output
