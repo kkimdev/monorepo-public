@@ -35,6 +35,7 @@ cat ~/.ssh/id_ed25519.pub
 
 1. `[Ctrl]+[Alt]+T` to open crosh terminal
 2. `cat /usr/share/power_manager/keyboard_backlight_keep_on_ms && echo "86400000" | sudo tee /usr/share/power_manager/keyboard_backlight_keep_on_ms`
+3. `sudo restart powerd`
 
 ## Troubleshooting
 
