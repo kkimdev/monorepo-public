@@ -168,7 +168,7 @@ in
       # podman
 
       # Apps
-      #chromium
+      chromium
       inkscape
       beekeeper-studio
       yt-dlp
@@ -235,6 +235,17 @@ in
   # and forces it to export desktop files and icons to standard XDG directories.
   targets.genericLinux.enable = true;
   xdg.enable = true;
+
+  xdg.mimeApps = {
+    enable = true;
+    defaultApplications = {
+      "text/html" = [ "garcon_host_browser.desktop" ];
+      "x-scheme-handler/http" = [ "garcon_host_browser.desktop" ];
+      "x-scheme-handler/https" = [ "garcon_host_browser.desktop" ];
+      "x-scheme-handler/about" = [ "garcon_host_browser.desktop" ];
+      "x-scheme-handler/unknown" = [ "garcon_host_browser.desktop" ];
+    };
+  };
 
   programs = {
     home-manager.enable = true;
