@@ -465,6 +465,11 @@ in
       set show-all-if-ambiguous on
     '';
 
+    # Share VS Code settings with Antigravity via symlink
+    ".config/Antigravity/User/settings.json" = {
+      source = "$HOME/.config/Code/User/settings.json";
+    };
+
     # TODO
     # https://www.reddit.com/r/Nix/comments/zh1803/guide_how_to_have_nix_installed_applications/
   };
