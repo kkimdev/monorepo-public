@@ -42,7 +42,7 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
     nix-index-database.inputs.nixpkgs.follows = "nixpkgs";
 
     kakaotalk = {
-      url = "github:kkimdev/monorepo-public?dir=kakaotalk";
+      url = "github:kkimdev/monorepo-public/main?dir=kakaotalk";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -508,7 +508,7 @@ EOF
 
 echo "Activating Home Manager (Version $NIX_VER)..."
 nix shell nixpkgs#git --command \
-  nix run github:nix-community/home-manager -- switch --flake "$CONF_DIR#$USER" --impure -b backup
+  nix run --refresh github:nix-community/home-manager -- switch --flake "$CONF_DIR#$USER" --impure -b backup --refresh
 
 sudo chsh -s "$(which zsh)" "$USER"
 
