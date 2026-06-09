@@ -106,8 +106,6 @@ cat <<EOF > "$CONF_DIR/home.nix"
 { config, pkgs, lib, ... }:
 
 let
-  # https://github.com/google/sommelier-rs/issues/14
-  useSommelierRS = false;
   crosDesktopShareDir = "\${config.home.homeDirectory}/.local/share";
   nixProfileShareDir  = "\${config.home.homeDirectory}/.nix-profile/share";
 
@@ -181,11 +179,12 @@ in
       inkscape
       beekeeper-studio
       yt-dlp
+      sommelier-rs
       (kakaotalk.overrideAttrs (oldAttrs: {
         nativeBuildInputs = (oldAttrs.nativeBuildInputs or []) ++ [ pkgs.makeWrapper ];
         postInstall = (oldAttrs.postInstall or "") + ''
           wrapProgram \$out/bin/kakaotalk \
-            --set WAYLAND_DISPLAY "\${if useSommelierRS then "wayland-0" else "wayland-1"}"
+            --set WAYLAND_DISPLAY "wayland-1"
         '';
       }))
 
@@ -200,7 +199,7 @@ in
       nerd-fonts.jetbrains-mono
       noto-fonts
       google-fonts
-    ] ++ lib.optional useSommelierRS pkgs.sommelier-rs;
+    ];
     sessionVariables = {
       NIXPKGS_ALLOW_UNFREE = "1";
       EDITOR = "code --wait --new-window";
@@ -218,10 +217,7 @@ in
     Service = {
       # Use the absolute path from the derivation defined above
       ExecStart =
-        if useSommelierRS then
-          "\${pkgs.sommelier-rs}/bin/sommelier-rs --virtio-wl /dev/wl0 wayland-0"
-        else
-          "\${pkgs.sommelier-rs}/bin/sommelier-rs --virtio-wl /dev/wl0 wayland-1";
+        "\${pkgs.sommelier-rs}/bin/sommelier-rs --virtio-wl /dev/wl0 wayland-1";
       Restart = "always";
       RestartSec = "5";
     };
@@ -471,10 +467,6 @@ in
       [Service]
       Environment="SOMMELIER_ACCELERATORS=Super_L,<Alt>bracketleft,<Alt>bracketright,<Alt>minus,<Alt>equal,<Alt>1,<Alt>2,<Alt>3,<Alt>4,<Alt>5,<Alt>6,<Alt>7,<Alt>8,<Alt>9,print,<Control>space"
     '';
-  } // lib.optionalAttrs useSommelierRS {
-    # These entire file definitions are only added if useSommelierRS is true
-    "systemd/user/sommelier@.service".source = config.lib.file.mkOutOfStoreSymlink "/dev/null";
-    "systemd/user/sommelier-x@.service".source = config.lib.file.mkOutOfStoreSymlink "/dev/null";
   };
 
   home.file = {
