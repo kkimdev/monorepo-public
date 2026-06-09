@@ -115,23 +115,23 @@ This was caused by a protocol mismatch when bridging Wayland's `zwp_text_input_v
 3. **Reverting Redundant Events**: Emulated `on_enter` and `on_leave` forward handlers in the v1 text-input bridge were removed. Focus state is already fully managed by `KeyboardHandler`, avoiding desynchronized state and protocol assertion failures.
 
 ### 3. Local Development & Deployment Workflow
-To make changes to `sommelier-rs` and test them in KakaoTalk:
+To make changes to `sommelier-rs` and test them in KakaoTalk (assuming the `sommelier-rs` and `monorepo-public` repositories are checked out side-by-side):
 
 1. **Build the Custom Proxy**:
    ```bash
-   cd _local/sommelier-rs
-   nix develop ../.. -c cargo build
+   cd sommelier-rs
+   cargo build
    ```
 2. **Stage the Binary**:
-   Copy the debug binary to the development setup directory:
+   Copy the debug binary to the development setup directory inside `monorepo-public`:
    ```bash
-   cp target/debug/sommelier ../../kkim_personal/monorepo-public/chromeos-dev-setup/sommelier-rs.local.bin
+   cp target/debug/sommelier ../monorepo-public/chromeos-dev-setup/sommelier-rs.local.bin
    ```
 3. **Deploy & Restart Service**:
-   Run the dev setup script to build the local derivation and restart the systemd service:
+   Run the dev setup script from the root of the `monorepo-public` repository to rebuild the local derivation and restart the systemd service:
    ```bash
-   cd ../../
-   ./kkim_personal/monorepo-public/chromeos-dev-setup/setup.bash
+   cd ../monorepo-public
+   ./chromeos-dev-setup/setup.bash
    ```
 4. **Launch KakaoTalk**:
    Start KakaoTalk on the secondary Wayland display:
@@ -139,6 +139,7 @@ To make changes to `sommelier-rs` and test them in KakaoTalk:
    WAYLAND_DISPLAY=wayland-1 kakaotalk
    ```
    Check the `sommelier-rs` logs via:
+
    ```bash
    journalctl --user -u sommelier-rs -f
    ```
