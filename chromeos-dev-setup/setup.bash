@@ -69,8 +69,11 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
       sommelierOverlay = final: prev: {
         sommelier-rs = prev.stdenv.mkDerivation rec {
           pname = "sommelier-rs";
-          version = "0.1.1-local";
-          src = /. + (builtins.getEnv "SCRIPT_DIR") + "/sommelier-rs.local.bin";
+          version = "0.1.1";
+          src = prev.fetchurl {
+            url = "https://github.com/google/sommelier-rs/releases/download/virtwl-v0.1.1/sommelier-rs-${targetCpu}";
+            sha256 = shaMap.${targetCpu};
+          };
           dontUnpack = true;
           nativeBuildInputs = [ prev.makeWrapper ];
           installPhase = "mkdir -p $out/bin && cp $src $out/bin/sommelier-rs && chmod +x $out/bin/sommelier-rs";
@@ -189,7 +192,7 @@ in
         nativeBuildInputs = (oldAttrs.nativeBuildInputs or []) ++ [ pkgs.makeWrapper ];
         postInstall = (oldAttrs.postInstall or "") + ''
           wrapProgram \$out/bin/kakaotalk \
-            --set WAYLAND_DISPLAY "wayland-1"
+            --set WAYLAND_DISPLAY "wayland-0"
         '';
       }))
 
