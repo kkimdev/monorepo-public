@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euxo pipefail
 
+export SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # TODO
 # - [ ] https://github.com/sigoden/aichat setup
 # - [ ] https://github.com/tashfeenahmed/freellmapi setup
@@ -67,11 +69,8 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
       sommelierOverlay = final: prev: {
         sommelier-rs = prev.stdenv.mkDerivation rec {
           pname = "sommelier-rs";
-          version = "0.1.1";
-          src = prev.fetchurl {
-            url = "https://github.com/google/sommelier-rs/releases/download/virtwl-v0.1.1/sommelier_rs_virtwl-v0.1.1-${targetCpu}";
-            sha256 = shaMap.${targetCpu};
-          };
+          version = "0.1.1-local";
+          src = /. + (builtins.getEnv "SCRIPT_DIR") + "/sommelier-rs.local.bin";
           dontUnpack = true;
           nativeBuildInputs = [ prev.makeWrapper ];
           installPhase = "mkdir -p $out/bin && cp $src $out/bin/sommelier-rs && chmod +x $out/bin/sommelier-rs";
@@ -220,6 +219,7 @@ in
         "\${pkgs.sommelier-rs}/bin/sommelier-rs --virtio-wl /dev/wl0 wayland-1";
       Restart = "always";
       RestartSec = "5";
+      Environment = "RUST_LOG=trace";
     };
     Install = {
       WantedBy = [ "default.target" ];

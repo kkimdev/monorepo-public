@@ -92,3 +92,54 @@ On ChromeOS (Crostini), the system launcher daemon (`garcon`) only indexes stand
 1. **Official KakaoTalk**: [kakaocorp.com](https://www.kakaocorp.com/page/service/service/KakaoTalk)
 2. **Arch Linux AUR Package (`ulagbulag/kakaotalk`)**: [GitHub Repository](https://github.com/ulagbulag/kakaotalk) - Provided the basis for Input Method Editor (IME) detection and the silent installation parameters.
 3. **Nix Flake (`sodii/kakaotalk-nix`)**: [GitHub Repository](https://github.com/sodii/kakaotalk-nix) - Demonstrated registry font overrides and integration with Wikimedia SVG assets.
+
+---
+
+## ChromeOS / Sommelier-RS / Wayland Native Driver Integration
+
+For high-fidelity input (including Korean IME) on ChromeOS, KakaoTalk must run with Wine's native Wayland graphics driver instead of Xwayland. This routes input through the custom `sommelier-rs` Wayland proxy running on `wayland-1`.
+
+### 1. Wine Native Wayland Graphics Driver
+By default, Wine fallbacks to X11. The wrapper forces Wayland by:
+- Setting the Wine registry key `HKCU\Software\Wine\Drivers\Graphics = "wayland"`.
+- Clearing the `DISPLAY` environment variable when `WAYLAND_DISPLAY="wayland-1"` is set.
+
+### 2. Sommelier-RS Protocol Stability Fixes
+During early development, Wine's native Wayland driver crashed with the following error:
+```
+wl_display#1: error 1: invalid arguments for zwp_text_input_v1#12.activate
+```
+This was caused by a protocol mismatch when bridging Wayland's `zwp_text_input_v3` (client-side) to `zwp_text_input_v1` (host-side):
+1. **Unmapped Object Guards**: `sommelier-rs` attempted to forward `activate` and `deactivate` requests to the host compositor before the target surface focus or seat was correctly mapped. In the Wayland wire protocol, sending `0` for non-nullable object parameters (like `wl_seat` and `wl_surface`) is a fatal protocol error.
+2. **Focus Handling**: We added guards to `TextInputV3Handler::on_commit` to only forward `activate` requests when `host_seat != 0 && host_surface != 0`, and `deactivate` requests when `host_seat != 0`.
+3. **Reverting Redundant Events**: Emulated `on_enter` and `on_leave` forward handlers in the v1 text-input bridge were removed. Focus state is already fully managed by `KeyboardHandler`, avoiding desynchronized state and protocol assertion failures.
+
+### 3. Local Development & Deployment Workflow
+To make changes to `sommelier-rs` and test them in KakaoTalk:
+
+1. **Build the Custom Proxy**:
+   ```bash
+   cd _local/sommelier-rs
+   nix develop ../.. -c cargo build
+   ```
+2. **Stage the Binary**:
+   Copy the debug binary to the development setup directory:
+   ```bash
+   cp target/debug/sommelier ../../kkim_personal/monorepo-public/chromeos-dev-setup/sommelier-rs.local.bin
+   ```
+3. **Deploy & Restart Service**:
+   Run the dev setup script to build the local derivation and restart the systemd service:
+   ```bash
+   cd ../../
+   ./kkim_personal/monorepo-public/chromeos-dev-setup/setup.bash
+   ```
+4. **Launch KakaoTalk**:
+   Start KakaoTalk on the secondary Wayland display:
+   ```bash
+   WAYLAND_DISPLAY=wayland-1 kakaotalk
+   ```
+   Check the `sommelier-rs` logs via:
+   ```bash
+   journalctl --user -u sommelier-rs -f
+   ```
+
