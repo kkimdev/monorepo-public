@@ -71,7 +71,7 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
           pname = "sommelier-rs";
           version = "0.1.1";
           src = prev.fetchurl {
-            url = "https://github.com/google/sommelier-rs/releases/download/virtwl-v0.1.1/sommelier-rs-${targetCpu}";
+            url = "https://github.com/google/sommelier-rs/releases/download/virtwl-v0.1.1/sommelier_rs_virtwl-v0.1.1-${targetCpu}";
             sha256 = shaMap.${targetCpu};
           };
           dontUnpack = true;
