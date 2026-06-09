@@ -135,6 +135,12 @@ let
       systemctl --user restart sommelier@0.service && \
       systemctl --user restart sommelier-x@0.service
     '';
+
+    # Re-run the full ChromeOS dev setup and reload the current shell so all
+    # new paths, aliases, and env vars take effect immediately.
+    # The path to setup.bash is baked in at generation time so this alias
+    # works from any directory.
+    cros-setup = "bash ${SCRIPT_DIR}/setup.bash && exec \"\$(readlink -f /proc/\$\$/exe)\"";
   };
 in
 {
@@ -219,7 +225,10 @@ in
         "\${pkgs.sommelier-rs}/bin/sommelier-rs --virtio-wl /dev/wl0 wayland-1";
       Restart = "always";
       RestartSec = "5";
-      Environment = "RUST_LOG=trace";
+      Environment = [
+        "RUST_LOG=info"
+        "SOMMELIER_ACCELERATORS=Super_L,<Alt>bracketleft,<Alt>bracketright,<Alt>minus,<Alt>equal,<Alt>1,<Alt>2,<Alt>3,<Alt>4,<Alt>5,<Alt>6,<Alt>7,<Alt>8,<Alt>9,print,<Control>space"
+      ];
     };
     Install = {
       WantedBy = [ "default.target" ];
