@@ -184,7 +184,7 @@ in
       (kakaotalk.overrideAttrs (oldAttrs: {
         nativeBuildInputs = (oldAttrs.nativeBuildInputs or []) ++ [ pkgs.makeWrapper ];
         postInstall = (oldAttrs.postInstall or "") + ''
-          wrapProgram $out/bin/kakaotalk \
+          wrapProgram \$out/bin/kakaotalk \
             --set WAYLAND_DISPLAY "\${if useSommelierRS then "wayland-0" else "wayland-1"}"
         '';
       }))
