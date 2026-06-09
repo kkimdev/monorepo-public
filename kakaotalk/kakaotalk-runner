@@ -1,0 +1,106 @@
+#!@bash@/bin/bash
+# Copyright (c) 2026 Antigravity Developers.
+# Derived from ulagbulag/kakaotalk wrapper script.
+# Use of this source code is governed by The Unlicense license.
+
+set -euo pipefail
+
+# Configure Wine environment
+export WINEARCH=win64
+export WINEPREFIX="${XDG_DATA_HOME:-$HOME/.local/share}/kakaotalk"
+export LANG="ko_KR.UTF-8"
+export LC_ALL="ko_KR.UTF-8"
+# Disable Mono/Gecko install prompts since KakaoTalk is a native C++ app and doesn't need them
+export WINEDLLOVERRIDES="mscoree=d;mshtml=d"
+
+# Path to Wine and dependencies
+WINE="@wine@/bin/wine"
+WINEBOOT="@wine@/bin/wineboot"
+REGEDIT="@wine@/bin/regedit"
+INSTALLER="@installer@"
+FONTS_DIR="@nanum@/share/fonts"
+
+WINE_EXE="$WINEPREFIX/drive_c/Program Files/Kakao/KakaoTalk/KakaoTalk.exe"
+
+# Function to detect IME (Input Method Editor)
+detect_ime() {
+    if [[ -z "${XMODIFIERS:-}" ]]; then
+        local im=""
+        # Search for running IME daemon processes in order of preference
+        if pgrep -x fcitx >/dev/null || pgrep -x fcitx5 >/dev/null; then
+            im="fcitx"
+        elif pgrep -x ibus-daemon >/dev/null || pgrep -f ibus-ui-gtk3 >/dev/null; then
+            im="ibus"
+        elif pgrep -x kime >/dev/null; then
+            im="kime"
+        elif pgrep -x nimf >/dev/null; then
+            im="nimf"
+        fi
+
+        if [[ -n "$im" ]]; then
+            export XMODIFIERS="@im=$im"
+            export GTK_IM_MODULE="$im"
+            export QT_IM_MODULE="$im"
+            echo "IME detected: $im. Set XMODIFIERS=$XMODIFIERS"
+        fi
+    fi
+}
+
+# Initialize Wine prefix and install if KakaoTalk is not installed
+if [[ ! -f "$WINE_EXE" ]]; then
+    echo "Initializing isolated Wine prefix in $WINEPREFIX..."
+    "$WINEBOOT" --init
+
+    # Wait for prefix initialization to complete
+    sleep 3
+
+    # Install Korean Nanum fonts to prevent broken text (boxes/blocks)
+    echo "Installing Nanum fonts to Wine prefix..."
+    mkdir -p "$WINEPREFIX/drive_c/windows/Fonts"
+    find "$FONTS_DIR" -name "*.ttf" -exec ln -sf {} "$WINEPREFIX/drive_c/windows/Fonts/" \;
+
+    # Write a registry patch to substitute standard Windows Korean fonts with Nanum fonts
+    echo "Applying registry font substitutions..."
+    reg_file=$(mktemp)
+    cat << 'EOF' > "$reg_file"
+REGEDIT4
+
+[HKEY_CURRENT_USER\Software\Wine\Fonts\Replacements]
+"MS Gothic"="NanumGothic"
+"MS PGothic"="NanumGothic"
+"MS Sans Serif"="NanumGothic"
+"Gulim"="NanumGothic"
+"GulimChe"="NanumGothic"
+"Batang"="NanumMyeongjo"
+"BatangChe"="NanumMyeongjo"
+"Dotum"="NanumGothic"
+"DotumChe"="NanumGothic"
+"맑은 고딕"="NanumGothic"
+"Malgun Gothic"="NanumGothic"
+EOF
+
+    "$REGEDIT" "$reg_file"
+    rm "$reg_file"
+
+    # Install KakaoTalk silently
+    echo "Running KakaoTalk installer silently..."
+    "$WINE" "$INSTALLER" /S
+
+    # Wait a bit for the installation to finalize
+    sleep 3
+
+    # Optional: Configure KakaoTalk preferences to default to NanumBarunGothic
+    pref_dir=$(find "$WINEPREFIX/drive_c/users" -type d -path "*/AppData/Local/Kakao/KakaoTalk" -print -quit || true)
+    if [[ -n "$pref_dir" ]]; then
+        echo "Configuring KakaoTalk to use NanumBarunGothic font..."
+        mkdir -p "$pref_dir"
+        echo "CustomFontFaceName=NanumBarunGothic" >> "$pref_dir/pref.ini"
+    fi
+fi
+
+# Detect and apply IME environment variables
+detect_ime
+
+# Start KakaoTalk
+echo "Starting KakaoTalk..."
+exec "$WINE" "$WINE_EXE" "$@"

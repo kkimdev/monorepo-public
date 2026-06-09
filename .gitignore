@@ -2,3 +2,7 @@
 _local/*
 
 node_modules/
+
+/result
+/*/result
+
