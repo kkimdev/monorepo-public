@@ -28,6 +28,14 @@ NIX_VER=$(nix eval --raw nixpkgs#lib.version | cut -d. -f1,2)
 CONF_DIR="$HOME/.config/home-manager"
 mkdir -p "$CONF_DIR"
 
+# Copy KakaoTalk package files if run within the monorepo context
+SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
+if [ -d "$SCRIPT_DIR/../kakaotalk" ]; then
+    echo "Copying KakaoTalk package files..."
+    mkdir -p "$CONF_DIR/kakaotalk"
+    cp -rf "$SCRIPT_DIR/../kakaotalk"/* "$CONF_DIR/kakaotalk/"
+fi
+
 rm -f "$CONF_DIR/flake.nix"
 cat <<'EOF' > "$CONF_DIR/flake.nix"
 {
@@ -73,12 +81,19 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
           postFixup = "patchelf --set-interpreter \$(cat ${prev.stdenv.cc}/nix-support/dynamic-linker) --set-rpath ${prev.lib.makeLibraryPath [ prev.libxkbcommon prev.libgbm ]} $out/bin/sommelier-rs";
         };
       };
+
+      kakaotalkOverlay = final: prev: {
+        kakaotalk = prev.callPackage ./kakaotalk/package.nix {};
+      };
     in {
       homeConfigurations."${username}" = home-manager.lib.homeManagerConfiguration {
         pkgs = import nixpkgs {
           inherit system;
           config.allowUnfree = true;
-          overlays = [ sommelierOverlay ];
+          overlays = [
+            sommelierOverlay
+            kakaotalkOverlay
+          ];
         };
 
         modules = [
@@ -172,6 +187,7 @@ in
       inkscape
       beekeeper-studio
       yt-dlp
+      kakaotalk
 
       # Coding
       vscode
