@@ -28,14 +28,6 @@ NIX_VER=$(nix eval --raw nixpkgs#lib.version | cut -d. -f1,2)
 CONF_DIR="$HOME/.config/home-manager"
 mkdir -p "$CONF_DIR"
 
-# Copy KakaoTalk package files if run within the monorepo context
-SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
-if [ -d "$SCRIPT_DIR/../kakaotalk" ]; then
-    echo "Copying KakaoTalk package files..."
-    mkdir -p "$CONF_DIR/kakaotalk"
-    cp -rf "$SCRIPT_DIR/../kakaotalk"/* "$CONF_DIR/kakaotalk/"
-fi
-
 rm -f "$CONF_DIR/flake.nix"
 cat <<'EOF' > "$CONF_DIR/flake.nix"
 {
@@ -48,9 +40,14 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
 
     nix-index-database.url = "github:nix-community/nix-index-database";
     nix-index-database.inputs.nixpkgs.follows = "nixpkgs";
+
+    kakaotalk = {
+      url = "github:kkimdev/monorepo-public?dir=kakaotalk";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { nixpkgs, home-manager, nix-index-database, ... }:
+  outputs = { nixpkgs, home-manager, nix-index-database, kakaotalk, ... }:
     let
       system = builtins.currentSystem;
 
@@ -82,9 +79,6 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
         };
       };
 
-      kakaotalkOverlay = final: prev: {
-        kakaotalk = prev.callPackage ./kakaotalk/package.nix {};
-      };
     in {
       homeConfigurations."${username}" = home-manager.lib.homeManagerConfiguration {
         pkgs = import nixpkgs {
@@ -92,7 +86,7 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
           config.allowUnfree = true;
           overlays = [
             sommelierOverlay
-            kakaotalkOverlay
+            kakaotalk.overlays.default
           ];
         };
 
