@@ -181,7 +181,13 @@ in
       inkscape
       beekeeper-studio
       yt-dlp
-      kakaotalk
+      (kakaotalk.overrideAttrs (oldAttrs: {
+        nativeBuildInputs = (oldAttrs.nativeBuildInputs or []) ++ [ pkgs.makeWrapper ];
+        postInstall = (oldAttrs.postInstall or "") + ''
+          wrapProgram $out/bin/kakaotalk \
+            --set WAYLAND_DISPLAY "${if useSommelierRS then "wayland-0" else "wayland-1"}"
+        '';
+      }))
 
       # Coding
       vscode
@@ -203,7 +209,7 @@ in
     };
   };
 
-  systemd.user.services.sommelier-rs = lib.mkIf useSommelierRS {
+  systemd.user.services.sommelier-rs = {
     Unit = {
       Description = "Sommelier-RS Wayland Compositor";
       # Ensure it starts after the basic user session is ready
@@ -211,7 +217,11 @@ in
     };
     Service = {
       # Use the absolute path from the derivation defined above
-      ExecStart = "\${pkgs.sommelier-rs}/bin/sommelier-rs --virtio-wl /dev/wl0 wayland-0";
+      ExecStart =
+        if useSommelierRS then
+          "\${pkgs.sommelier-rs}/bin/sommelier-rs --virtio-wl /dev/wl0 wayland-0"
+        else
+          "\${pkgs.sommelier-rs}/bin/sommelier-rs --virtio-wl /dev/wl0 wayland-1";
       Restart = "always";
       RestartSec = "5";
     };
