@@ -120,14 +120,17 @@ let
     dir = "dir --color=auto";
     vdir = "vdir --color=auto";
 
-    upgrade-all = ''
+    cros-update = ''
       sudo apt-get update && sudo apt-get full-upgrade -y && \\
       sudo apt-get autoremove -y && \\
       sudo determinate-nixd upgrade && \\
       pushd "$CONF_DIR" && \\
       nix flake update && \\
       home-manager switch --flake ".#$USER" --impure && \\
-      popd && \\
+      popd
+    '';
+
+    cros-clean = ''
       nix-collect-garbage -d && \\
       nix store optimise && \\
       nix store gc
@@ -143,7 +146,7 @@ let
     # new paths, aliases, and env vars take effect immediately.
     # The path to setup.bash is baked in at generation time so this alias
     # works from any directory.
-    cros-setup = "bash ${SCRIPT_DIR}/setup.bash && exec \"\$(readlink -f /proc/\$\$/exe)\"";
+    cros-setup = "bash \"${SCRIPT_DIR}/setup.bash\" && exec \"\$(readlink -f /proc/\$\$/exe)\"";
   };
 in
 {
@@ -199,6 +202,7 @@ in
       # Coding
       vscode
       antigravity
+      antigravity-cli
       codex
       claude-code
       opencode
