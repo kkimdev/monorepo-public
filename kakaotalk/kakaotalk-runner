@@ -101,6 +101,16 @@ fi
 # Detect and apply IME environment variables
 detect_ime
 
+# Enable Wayland driver if WAYLAND_DISPLAY is set
+if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+    echo "Wayland display detected (${WAYLAND_DISPLAY}). Configuring Wine Wayland driver..."
+    "$WINE" reg add "HKCU\\Software\\Wine\\Drivers" /v Graphics /d wayland /f >/dev/null 2>&1 || true
+    export DISPLAY=""
+else
+    # Restore to default X11 driver
+    "$WINE" reg delete "HKCU\\Software\\Wine\\Drivers" /v Graphics /f >/dev/null 2>&1 || true
+fi
+
 # Start KakaoTalk
 echo "Starting KakaoTalk..."
 exec "$WINE" "$WINE_EXE" "$@"
