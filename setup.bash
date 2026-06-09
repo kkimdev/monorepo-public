@@ -467,7 +467,7 @@ in
 
     # Share VS Code settings with Antigravity via symlink
     ".config/Antigravity/User/settings.json" = {
-      source = "$HOME/.config/Code/User/settings.json";
+      source = config.lib.file.mkOutOfStoreSymlink "$HOME/.config/Code/User/settings.json";
     };
 
     # TODO
