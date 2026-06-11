@@ -433,6 +433,12 @@ in
       enableBashIntegration = true;
     };
 
+    zoxide = {
+      enable = true;
+      enableBashIntegration = true;
+      enableZshIntegration = true;
+    };
+
     # https://github.com/nix-community/home-manager/blob/master/modules/programs/zellij.nix
     zellij = {
       enable = false;
@@ -463,6 +469,11 @@ in
         workspaces = true;
         filter_mode = "session-preload";
       };
+    };
+
+    nix-index = {
+      enableBashIntegration = false;
+      enableZshIntegration = false;
     };
   };
 
