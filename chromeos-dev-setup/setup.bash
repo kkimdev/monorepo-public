@@ -2,6 +2,7 @@
 set -euxo pipefail
 
 export SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export CROS_SETUP_SCRIPT_FILE="$(readlink -f "${BASH_SOURCE[0]}")"
 
 # TODO
 # - [ ] https://github.com/sigoden/aichat setup
@@ -146,7 +147,7 @@ let
     # new paths, aliases, and env vars take effect immediately.
     # The path to setup.bash is baked in at generation time so this alias
     # works from any directory.
-    cros-setup = "bash \"${SCRIPT_DIR}/setup.bash\" && exec \"\$(readlink -f /proc/\$\$/exe)\"";
+    cros-setup = "bash \"\$CROS_SETUP_SCRIPT_FILE\" && exec \"\$(readlink -f /proc/\$\$/exe)\"";
   };
 in
 {
@@ -217,6 +218,7 @@ in
       EDITOR = "code --wait --new-window";
       GIT_USER_NAME = "$GIT_USER_NAME";
       GIT_USER_EMAIL = "$GIT_USER_EMAIL";
+      CROS_SETUP_SCRIPT_FILE = "$CROS_SETUP_SCRIPT_FILE";
     };
   };
 
