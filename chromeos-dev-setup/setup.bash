@@ -31,7 +31,7 @@ NIX_VER=$(nix eval --raw nixpkgs#lib.version | cut -d. -f1,2)
 CONF_DIR="$HOME/.config/home-manager"
 mkdir -p "$CONF_DIR"
 
-rm -f "$CONF_DIR/flake.nix"
+rm -f "$CONF_DIR/flake.nix" "$CONF_DIR/flake.lock"
 cat <<'EOF' > "$CONF_DIR/flake.nix"
 {
   inputs = {
