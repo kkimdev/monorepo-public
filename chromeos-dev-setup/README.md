@@ -34,9 +34,15 @@ cat ~/.ssh/id_ed25519.pub
 ## Keyboard Backlight Timeout Config
 
 1. `[Ctrl]+[Alt]+T` to open crosh terminal
-2. `cat /usr/share/power_manager/keyboard_backlight_keep_on_ms && echo "86400000" | sudo tee /usr/share/power_manager/keyboard_backlight_keep_on_ms`
-3. `sudo restart powerd`
+2. Type `shell` then `[Enter]`
+3.
+```bash
+cat /usr/share/power_manager/keyboard_backlight_keep_on_ms
+# 24 hours in milliseconds
+echo "86400000" | sudo tee /usr/share/power_manager/keyboard_backlight_keep_on_ms
 
+sudo restart powerd
+```
 ## Troubleshooting
 
 ### HDMI Audio Output
