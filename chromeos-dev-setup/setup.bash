@@ -120,7 +120,8 @@ let
     cros-reset = ''
       systemctl --user daemon-reload && \
       systemctl --user restart sommelier@0.service && \
-      systemctl --user restart sommelier-x@0.service
+      systemctl --user restart sommelier-x@0.service && \
+      systemctl --user restart sommelier-rs.service
     '';
 
     # Re-run the full ChromeOS dev setup and reload the current shell so all
@@ -201,13 +202,14 @@ in
   systemd.user.services.sommelier-rs = {
     Unit = {
       Description = "Sommelier-RS Wayland Compositor";
-      # Ensure it starts after the basic user session is ready
-      After = [ "debian-fixup.service" ];
+      # Ensure it starts after the basic user session and wayland-0 host compositor are ready
+      After = [ "debian-fixup.service" "sommelier@0.service" ];
+      Requires = [ "sommelier@0.service" ];
     };
     Service = {
       # Use the absolute path from the derivation defined above
       ExecStart =
-        "\${pkgs.sommelier-rs}/bin/sommelier-rs --virtio-wl /dev/wl0 wayland-1";
+        "\${pkgs.sommelier-rs}/bin/sommelier-rs --local-compositor %t/wayland-0 wayland-1";
       Restart = "always";
       RestartSec = "5";
       Environment = [
