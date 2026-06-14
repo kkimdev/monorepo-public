@@ -121,6 +121,7 @@ let
       systemctl --user daemon-reload && \
       systemctl --user restart sommelier@0.service && \
       systemctl --user restart sommelier-x@0.service && \
+      systemctl --user restart sommelier-x@1.service && \
       systemctl --user restart sommelier-rs.service
     '';
 
@@ -196,6 +197,7 @@ in
       CROS_SETUP_SCRIPT_FILE = "$CROS_SETUP_SCRIPT_FILE";
       # wayland-0: host compositor (sommelier), wayland-1: custom sommelier-rs
       WAYLAND_DISPLAY = "wayland-1";
+      DISPLAY = ":1";
     };
   };
 
@@ -209,7 +211,7 @@ in
     Service = {
       # Use the absolute path from the derivation defined above
       ExecStart =
-        "\${pkgs.sommelier-rs}/bin/sommelier-rs --local-compositor %t/wayland-0 wayland-1";
+        "\${pkgs.sommelier-rs}/bin/sommelier-rs wayland-1";
       Restart = "always";
       RestartSec = "5";
       Environment = [
@@ -473,6 +475,20 @@ in
     "systemd/user/sommelier-x@.service.d/cros-sommelier-x-override.conf".text = ''
       [Service]
       Environment="SOMMELIER_ACCELERATORS=Super_L,<Alt>bracketleft,<Alt>bracketright,<Alt>minus,<Alt>equal,<Alt>1,<Alt>2,<Alt>3,<Alt>4,<Alt>5,<Alt>6,<Alt>7,<Alt>8,<Alt>9,print,<Control>space"
+    '';
+
+    # Override sommelier-x@1 to run at scale 1.0 (high-density)
+    "systemd/user/sommelier-x@1.service.d/override.conf".text = ''
+      [Service]
+      Environment="SOMMELIER_SCALE=1.0"
+    '';
+
+    # Disable system sommelier@1 by overriding it to run /bin/true
+    "systemd/user/sommelier@1.service.d/override.conf".text = ''
+      [Service]
+      ExecStart=
+      ExecStart=\${pkgs.coreutils}/bin/true
+      Restart=no
     '';
   };
 
