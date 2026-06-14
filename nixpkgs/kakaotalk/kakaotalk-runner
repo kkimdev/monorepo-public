@@ -1,4 +1,4 @@
-#!@bash@/bin/bash
+#!/@bash@/bin/bash
 # Copyright (c) 2026 Antigravity Developers.
 # Derived from ulagbulag/kakaotalk wrapper script.
 # Use of this source code is governed by The Unlicense license.

@@ -44,43 +44,23 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
     nix-index-database.url = "github:nix-community/nix-index-database";
     nix-index-database.inputs.nixpkgs.follows = "nixpkgs";
 
+    sommelier-rs = {
+      url = "github:kkimdev/monorepo-public/main?dir=nixpkgs/sommelier-rs";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
     kakaotalk = {
-      url = "github:kkimdev/monorepo-public/main?dir=kakaotalk";
+      url = "github:kkimdev/monorepo-public/main?dir=nixpkgs/kakaotalk";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
-  outputs = { nixpkgs, home-manager, nix-index-database, kakaotalk, ... }:
+  outputs = { nixpkgs, home-manager, nix-index-database, sommelier-rs, kakaotalk, ... }:
     let
       system = builtins.currentSystem;
 
       # Dynamically grab the current user directly from the environment inside Nix
       username = builtins.getEnv "USER";
-
-      targetCpu = {
-        "x86_64-linux"  = "x86_64";
-        "aarch64-linux" = "aarch64";
-      }.${system} or (throw "Unsupported system architecture: ${system}");
-
-      shaMap = {
-        "x86_64"  = "sha256-zztkv98J8hpVXCXfUnjSaPKaPua44e56yyO/jUwtFzY";
-        "aarch64" = "sha256-PLACE_ARM64_SHA256_HERE_IF_AVAILABLE";
-      };
-
-      sommelierOverlay = final: prev: {
-        sommelier-rs = prev.stdenv.mkDerivation rec {
-          pname = "sommelier-rs";
-          version = "0.1.1";
-          src = prev.fetchurl {
-            url = "https://github.com/google/sommelier-rs/releases/download/virtwl-v0.1.1/sommelier_rs_virtwl-v0.1.1-${targetCpu}";
-            sha256 = shaMap.${targetCpu};
-          };
-          dontUnpack = true;
-          nativeBuildInputs = [ prev.makeWrapper ];
-          installPhase = "mkdir -p $out/bin && cp $src $out/bin/sommelier-rs && chmod +x $out/bin/sommelier-rs";
-          postFixup = "patchelf --set-interpreter \$(cat ${prev.stdenv.cc}/nix-support/dynamic-linker) --set-rpath ${prev.lib.makeLibraryPath [ prev.libxkbcommon prev.libgbm ]} $out/bin/sommelier-rs";
-        };
-      };
 
     in {
       homeConfigurations."${username}" = home-manager.lib.homeManagerConfiguration {
@@ -88,7 +68,7 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
           inherit system;
           config.allowUnfree = true;
           overlays = [
-            sommelierOverlay
+            sommelier-rs.overlays.default
             kakaotalk.overlays.default
           ];
         };
@@ -192,7 +172,7 @@ in
       beekeeper-studio
       yt-dlp
       sommelier-rs
-      (kakaotalk.overrideAttrs (oldAttrs: {
+      (kakaotalk-bin.overrideAttrs (oldAttrs: {
         nativeBuildInputs = (oldAttrs.nativeBuildInputs or []) ++ [ pkgs.makeWrapper ];
         postInstall = (oldAttrs.postInstall or "") + ''
           wrapProgram \$out/bin/kakaotalk \

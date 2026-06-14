@@ -29,7 +29,7 @@ let
   };
 in
 stdenv.mkDerivation rec {
-  pname = "kakaotalk";
+  pname = "kakaotalk-bin";
   version = "3.7.0"; # Align with the current installer version major/minor
 
   src = installerSrc;

@@ -143,4 +143,3 @@ To make changes to `sommelier-rs` and test them in KakaoTalk (assuming the `somm
    ```bash
    journalctl --user -u sommelier-rs -f
    ```
-
