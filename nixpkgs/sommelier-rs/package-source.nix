@@ -1,22 +1,16 @@
 { lib
-, rustPlatform
-, fetchFromGitHub
-, pkg-config
 , libgbm
 , libxkbcommon
-, libdrm
+, pkg-config
+, rustPlatform
+, src
 }:
 
 rustPlatform.buildRustPackage rec {
   pname = "sommelier-rs";
   version = "0.1.1";
 
-  src = fetchFromGitHub {
-    owner = "google";
-    repo = "sommelier-rs";
-    rev = "virtwl-v0.1.1";
-    hash = "sha256-UgwN0DiurH8to28pVT23i7Jw9fbpu7ddFGmAu14Gk+0=";
-  };
+  inherit src;
 
   cargoLock = {
     lockFile = "${src}/Cargo.lock";
@@ -27,7 +21,6 @@ rustPlatform.buildRustPackage rec {
   buildInputs = [
     libgbm
     libxkbcommon
-    libdrm
   ];
 
   postInstall = ''

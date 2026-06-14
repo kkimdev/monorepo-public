@@ -1,9 +1,9 @@
 { lib
-, stdenv
 , fetchurl
-, makeWrapper
-, libxkbcommon
 , libgbm
+, libxkbcommon
+, makeWrapper
+, stdenv
 }:
 
 let

@@ -18,7 +18,25 @@
     },
     "root": {
       "inputs": {
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "sommelier-rs-src": "sommelier-rs-src"
+      }
+    },
+    "sommelier-rs-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1781216912,
+        "narHash": "sha256-9qzc0xqODQZao+rk71kexo8NDhDfvIteaeKYg+YkLk0=",
+        "owner": "google",
+        "repo": "sommelier-rs",
+        "rev": "16463fc6872b88433b3b3690f0b8e8c92e5556e6",
+        "type": "github"
+      },
+      "original": {
+        "owner": "google",
+        "ref": "virtwl",
+        "repo": "sommelier-rs",
+        "type": "github"
       }
     }
   },

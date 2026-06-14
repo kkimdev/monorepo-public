@@ -3,15 +3,21 @@
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
+    sommelier-rs-src = {
+      url = "github:google/sommelier-rs/virtwl";
+      flake = false;
+    };
   };
 
-  outputs = { self, nixpkgs }:
+  outputs = { self, nixpkgs, sommelier-rs-src }:
     let
       supportedSystems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
     in {
       overlays.default = final: prev: {
-        sommelier-rs = prev.callPackage ./package-source.nix {};
+        sommelier-rs = prev.callPackage ./package-source.nix {
+          src = sommelier-rs-src;
+        };
         sommelier-rs-bin = prev.callPackage ./package-bin.nix {};
       };
 
