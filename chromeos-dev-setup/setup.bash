@@ -172,13 +172,7 @@ in
       beekeeper-studio
       yt-dlp
       sommelier-rs
-      (kakaotalk-bin.overrideAttrs (oldAttrs: {
-        nativeBuildInputs = (oldAttrs.nativeBuildInputs or []) ++ [ pkgs.makeWrapper ];
-        postInstall = (oldAttrs.postInstall or "") + ''
-          wrapProgram \$out/bin/kakaotalk \
-            --set WAYLAND_DISPLAY "wayland-0"
-        '';
-      }))
+      kakaotalk-bin
 
       # Coding
       vscode
@@ -199,6 +193,8 @@ in
       GIT_USER_NAME = "$GIT_USER_NAME";
       GIT_USER_EMAIL = "$GIT_USER_EMAIL";
       CROS_SETUP_SCRIPT_FILE = "$CROS_SETUP_SCRIPT_FILE";
+      # wayland-0: host compositor (sommelier), wayland-1: custom sommelier-rs
+      WAYLAND_DISPLAY = "wayland-1";
     };
   };
 
