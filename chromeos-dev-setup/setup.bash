@@ -6,7 +6,6 @@ export CROS_SETUP_SCRIPT_FILE="$(readlink -f "${BASH_SOURCE[0]}")"
 
 # TODO
 # - [ ] https://github.com/sigoden/aichat setup
-# - [ ] https://github.com/tashfeenahmed/freellmapi setup
 
 # TODO: Fill out and execute these before running the script.
 # export GIT_USER_NAME=""
