@@ -451,8 +451,8 @@ in
     };
 
     nix-index = {
-      enableBashIntegration = false;
-      enableZshIntegration = false;
+      enableBashIntegration = true;
+      enableZshIntegration = true;
     };
   };
 
