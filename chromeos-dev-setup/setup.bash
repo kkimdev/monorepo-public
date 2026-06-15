@@ -15,6 +15,9 @@ sudo apt-get update -y
 sudo apt-get install uidmap -y
 sudo apt-get remove vim command-not-found -y
 
+# Add user to render group (required for GPU acceleration access in Crostini)
+sudo usermod -aG render "$USER"
+
 # INSTALL NIX (Only if missing)
 if ! command -v nix &> /dev/null; then
     echo "Nix not found. Installing via Determinate Systems..."
@@ -52,9 +55,14 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
       url = "github:kkimdev/monorepo-public/main?dir=nixpkgs/kakaotalk";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    codex-desktop-linux = {
+      url = "github:ilysenko/codex-desktop-linux";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { nixpkgs, home-manager, nix-index-database, sommelier-rs, kakaotalk, ... }:
+  outputs = { nixpkgs, home-manager, nix-index-database, sommelier-rs, kakaotalk, codex-desktop-linux, ... }@inputs:
     let
       system = builtins.currentSystem;
 
@@ -72,9 +80,12 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
           ];
         };
 
+        extraSpecialArgs = { inherit inputs; };
+
         modules = [
           ./home.nix
           nix-index-database.homeModules.default
+          codex-desktop-linux.homeManagerModules.default
           { programs.nix-index-database.comma.enable = true; }
         ];
       };
@@ -85,7 +96,7 @@ EOF
 # 7. GENERATE HOME.NIX
 rm -f "$CONF_DIR/home.nix"
 cat <<EOF > "$CONF_DIR/home.nix"
-{ config, pkgs, lib, ... }:
+{ config, pkgs, lib, inputs, ... }:
 
 let
   crosDesktopShareDir = "\${config.home.homeDirectory}/.local/share";
@@ -197,6 +208,7 @@ in
       # wayland-0: host compositor (sommelier), wayland-1: custom sommelier-rs
       WAYLAND_DISPLAY = "wayland-1";
       DISPLAY = ":1";
+      CODEX_LINUX_RENDERING_MODE = "wayland-gpu";
     };
   };
 
@@ -262,6 +274,17 @@ in
 
   programs = {
     home-manager.enable = true;
+
+    codexDesktopLinux = {
+      enable = true;
+      cliPackage = pkgs.codex;
+      computerUseUi.enable = true;
+      remoteMobileControl.enable = true;
+      remoteControl = {
+        enable = true;
+        package = pkgs.codex;
+      };
+    };
 
     bash = {
       enable = true;
@@ -527,6 +550,21 @@ in
   # https://discourse.nixos.org/t/rootless-podman-setup-with-home-manager/57905
   services.podman = {
     enable = true;
+  };
+
+  # Declarative Nix Settings / Cachix binary caches
+  nix = {
+    package = pkgs.nix;
+    settings = {
+      substituters = [
+        "https://cache.nixos.org"
+        "https://codex-desktop-linux.cachix.org"
+      ];
+      trusted-public-keys = [
+        "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+        "codex-desktop-linux.cachix.org-1:nX/xy6AdK9hQE24A8ALGjkCKj2ObFmcnemiL5Cid4nk="
+      ];
+    };
   };
 }
 

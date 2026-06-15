@@ -3,7 +3,7 @@
 
 ## Terminal App Nerd Font
 
-Sources
+References
 - https://vcfvct.wordpress.com/2021/11/14/chromeos-dev-setup/
 - https://www.reddit.com/r/Crostini/comments/s1dgvk/best_way_to_get_nerd_fonts_on_crostini/
 
@@ -43,11 +43,20 @@ echo "86400000" | sudo tee /usr/share/power_manager/keyboard_backlight_keep_on_m
 
 sudo restart powerd
 ```
+
+## Enable GPU Acceleration
+
+Reference: https://www.reddit.com/r/chromeos/comments/1u0niv3/crostini_linux_on_chromeos_is_stuck_using/
+
+1. Enable chrome://flags#crostini-gpu-support and reboot.
+2. Add user to `render` group, this is already included in [`./setup.bash`](./setup.bash)
+3. Run `, glxinfo -B | grep Accelerated` and confirm `Accelerated: yes`
+
 ## Troubleshooting
 
 ### HDMI Audio Output
 
-Source: https://github.com/sebanc/brunch/issues/2273
+Reference: https://github.com/sebanc/brunch/issues/2273
 
 1. `[Ctrl]+[Alt]+T` to open crosh terminal
 2. Type `shell` then `[Enter]`
