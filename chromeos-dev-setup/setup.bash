@@ -101,6 +101,10 @@ cat <<EOF > "$CONF_DIR/home.nix"
 let
   crosDesktopShareDir = "\${config.home.homeDirectory}/.local/share";
   nixProfileShareDir  = "\${config.home.homeDirectory}/.nix-profile/share";
+  # GSettings schema dirs for codex-desktop file dialog (GLib fatal crash fix)
+  # See also `GSETTINGS_SCHEMA_DIR` in the cros-garcon override below.
+  gtk3SchemaDir       = "\${pkgs.gtk3}/share/gsettings-schemas/gtk+3-\${lib.getVersion pkgs.gtk3}/glib-2.0/schemas";
+  gsettingsSchemaDir  = "\${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/gsettings-desktop-schemas-\${lib.getVersion pkgs.gsettings-desktop-schemas}/glib-2.0/schemas";
 
   myShellAliases = {
     sudo = "sudo env PATH=\\\\\"\$PATH\\\\\"";
@@ -132,7 +136,8 @@ let
       systemctl --user restart sommelier@0.service && \
       systemctl --user restart sommelier-x@0.service && \
       systemctl --user restart sommelier-x@1.service && \
-      systemctl --user restart sommelier-rs.service
+      systemctl --user restart sommelier-rs.service && \
+      systemctl --user restart cros-garcon.service
     '';
 
     # Re-run the full ChromeOS dev setup and reload the current shell so all
@@ -489,6 +494,9 @@ in
       Environment="WAYLAND_DISPLAY=wayland-1"
       Environment="DISPLAY=:1"
       Environment="CODEX_LINUX_RENDERING_MODE=wayland-gpu"
+      # GLib-GIO-ERROR: Settings schema 'org.gtk.Settings.FileChooser' is not installed
+      # codex-desktop crashes (exit 5) when opening a file dialog if these are missing.
+      Environment="GSETTINGS_SCHEMA_DIR=\${gtk3SchemaDir}:\${gsettingsSchemaDir}"
     '';
 
     # Chrome OS shortcuts in Linux apps
@@ -545,6 +553,18 @@ in
       chmod -R u+w "\${crosDesktopShareDir}/applications" "\${crosDesktopShareDir}/icons" 2>/dev/null || true
 
       # update-desktop-database "\${crosDesktopShareDir}/applications" 2>/dev/null || true
+    '';
+
+    # GLib-GIO-ERROR: Settings schema 'org.gtk.Settings.FileChooser' is not installed
+    # codex-desktop crashes (exit 5) when opening a file dialog if these are missing.
+    # We patch the desktop file's Exec line because cros-garcon's env may be stale.
+    patchCodexDesktopFile = lib.hm.dag.entryAfter ["linkDesktopApplications"] ''
+      desktop_file="\${crosDesktopShareDir}/applications/codex-desktop.desktop"
+      if [ -f "$desktop_file" ]; then
+        schema_dir="\${gtk3SchemaDir}:\${gsettingsSchemaDir}"
+        # Prepend GSETTINGS_SCHEMA_DIR to the existing env command
+        sed -i "s|^Exec=env |Exec=env GSETTINGS_SCHEMA_DIR=$schema_dir |" "$desktop_file"
+      fi
     '';
   };
 
