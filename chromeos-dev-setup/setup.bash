@@ -21,7 +21,7 @@ sudo usermod -aG render "$USER"
 # INSTALL NIX (Only if missing)
 if ! command -v nix &> /dev/null; then
     echo "Nix not found. Installing via Determinate Systems..."
-    curl --proto "=https" --tlsv1.2 -sSfL https://install.determinate.systems/nix | sh -s -- install --no-confirm
+    curl --proto "=https" --tlsv1.2 -sSfL https://install.determinate.systems/nix | sh -s -- install --no-confirm --extra-conf "trusted-users = root $USER"
     . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
 else
     echo "Nix is already installed."
@@ -37,7 +37,7 @@ rm -f "$CONF_DIR/flake.nix" "$CONF_DIR/flake.lock"
 cat <<'EOF' > "$CONF_DIR/flake.nix"
 {
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
+    nixpkgs.url = "https://flakehub.com/f/DeterminateSystems/nixpkgs-weekly/0.1";
     home-manager = {
       url = "github:nix-community/home-manager";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -193,6 +193,7 @@ in
       codex
       claude-code
       opencode
+      opencode-desktop
 
       # Fonts
       nerd-fonts.jetbrains-mono
@@ -487,6 +488,7 @@ in
       Environment="XDG_DATA_DIRS=%h/.nix-profile/share:%h/.local/share:%h/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share:/usr/share"
       Environment="WAYLAND_DISPLAY=wayland-1"
       Environment="DISPLAY=:1"
+      Environment="CODEX_LINUX_RENDERING_MODE=wayland-gpu"
     '';
 
     # Chrome OS shortcuts in Linux apps
@@ -574,7 +576,18 @@ echo "Activating Home Manager (Version $NIX_VER)..."
 nix shell nixpkgs#git --command \
   nix run --refresh github:nix-community/home-manager -- switch --flake "$CONF_DIR#$USER" --impure -b backup --refresh
 
-sudo chsh -s "$(which zsh)" "$USER"
+# Fix corrupted root shell (common Nix/Crostini issue)
+ROOT_SHELL="$(getent passwd root | cut -d: -f7)"
+if [ "$ROOT_SHELL" != "/bin/bash" ] && [ "$ROOT_SHELL" != "/bin/sh" ] && [ "$ROOT_SHELL" != "/usr/sbin/nologin" ]; then
+  sudo usermod -s /bin/bash root
+fi
+
+# Ensure target shell is in /etc/shells (required by chsh PAM)
+ZSH_PATH="$(which zsh)"
+if ! grep -qxF "$ZSH_PATH" /etc/shells 2>/dev/null; then
+  echo "$ZSH_PATH" | sudo tee -a /etc/shells > /dev/null
+fi
+sudo chsh -s "$ZSH_PATH" "$USER"
 
 echo "============================================================"
 echo "SUCCESS: Home Manager setup is fully activated!"
