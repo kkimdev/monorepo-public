@@ -211,6 +211,7 @@ in
       GIT_USER_NAME = "$GIT_USER_NAME";
       GIT_USER_EMAIL = "$GIT_USER_EMAIL";
       CROS_SETUP_SCRIPT_FILE = "$CROS_SETUP_SCRIPT_FILE";
+      GSETTINGS_SCHEMA_DIR = "\${gtk3SchemaDir}:\${gsettingsSchemaDir}";
       # wayland-0: host compositor (sommelier), wayland-1: custom sommelier-rs
       WAYLAND_DISPLAY = "wayland-1";
       DISPLAY = ":1";
@@ -553,18 +554,6 @@ in
       chmod -R u+w "\${crosDesktopShareDir}/applications" "\${crosDesktopShareDir}/icons" 2>/dev/null || true
 
       # update-desktop-database "\${crosDesktopShareDir}/applications" 2>/dev/null || true
-    '';
-
-    # GLib-GIO-ERROR: Settings schema 'org.gtk.Settings.FileChooser' is not installed
-    # codex-desktop crashes (exit 5) when opening a file dialog if these are missing.
-    # We patch the desktop file's Exec line because cros-garcon's env may be stale.
-    patchCodexDesktopFile = lib.hm.dag.entryAfter ["linkDesktopApplications"] ''
-      desktop_file="\${crosDesktopShareDir}/applications/codex-desktop.desktop"
-      if [ -f "$desktop_file" ]; then
-        schema_dir="\${gtk3SchemaDir}:\${gsettingsSchemaDir}"
-        # Prepend GSETTINGS_SCHEMA_DIR to the existing env command
-        sed -i "s|^Exec=env |Exec=env GSETTINGS_SCHEMA_DIR=$schema_dir |" "$desktop_file"
-      fi
     '';
   };
 
