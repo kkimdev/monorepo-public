@@ -2,7 +2,7 @@
   description = "Linux kernel development environment using latest LLVM";
 
   inputs = {
-    nixpkgs.url = "github:Nixos/nixpkgs/nixos-unstable";
+    nixpkgs.url = "https://flakehub.com/f/DeterminateSystems/nixpkgs-weekly/0.1";
     utils.url = "github:numtide/flake-utils";
   };
 

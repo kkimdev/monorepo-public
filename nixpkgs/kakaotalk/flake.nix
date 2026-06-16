@@ -2,7 +2,7 @@
   description = "KakaoTalk custom packages for monorepo-public";
 
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
+    nixpkgs.url = "https://flakehub.com/f/DeterminateSystems/nixpkgs-weekly/0.1";
   };
 
   outputs = { self, nixpkgs }:

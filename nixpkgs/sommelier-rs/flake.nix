@@ -2,7 +2,7 @@
   description = "Sommelier-RS custom packages for monorepo-public";
 
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
+    nixpkgs.url = "https://flakehub.com/f/DeterminateSystems/nixpkgs-weekly/0.1";
     sommelier-rs-src = {
       url = "github:google/sommelier-rs/virtwl";
       flake = false;
