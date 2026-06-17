@@ -60,9 +60,14 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
       url = "github:ilysenko/codex-desktop-linux";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    claude-desktop = {
+      url = "github:aaddrick/claude-desktop-debian";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { nixpkgs, home-manager, nix-index-database, sommelier-rs, kakaotalk, codex-desktop-linux, ... }@inputs:
+  outputs = { nixpkgs, home-manager, nix-index-database, sommelier-rs, kakaotalk, codex-desktop-linux, claude-desktop, ... }@inputs:
     let
       system = builtins.currentSystem;
 
@@ -77,6 +82,7 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
           overlays = [
             sommelier-rs.overlays.default
             kakaotalk.overlays.default
+            claude-desktop.overlays.default
           ];
         };
 
@@ -197,6 +203,7 @@ in
       antigravity-cli
       codex
       claude-code
+      claude-desktop
       opencode
       opencode-desktop
 
@@ -282,6 +289,24 @@ in
   programs = {
     home-manager.enable = true;
 
+    # codex-desktop known issues:
+    #
+    # 1. GLib-GIO-ERROR: Settings schema 'org.gtk.Settings.FileChooser' not found
+    #    → When opening a file dialog, GLib (from system electron) fails to find
+    #      gtk3's compiled GSettings schema. The schema lives under a Nix-specific
+    #      path (share/gsettings-schemas/gtk+3-<ver>/glib-2.0/schemas/) not in
+    #      any XDG_DATA_DIRS entry.
+    #    → Fix: GSETTINGS_SCHEMA_DIR is set in cros-garcon.service override
+    #      (see xdg.configFile section below). Requires cros-garcon restart to
+    #      take effect, included in `cros-reset` alias.
+    #
+    # 2. Re-launch hangs when X-closed (Electron single-instance lock)
+    #    → The X button hides to tray instead of quitting. Next launch sees the
+    #      stale instance via app.requestSingleInstanceLock() and blocks.
+    #    → Ctrl+Q works to actually quit. No config-side fix yet.
+    #    → Potential fix: wrap .desktop Exec in a script that uses xdotool to
+    #      detect a visible window, and only kills stale process if none found.
+    #      Applied via home.activation.patchCodexDesktopFile.
     codexDesktopLinux = {
       enable = true;
       cliPackage = pkgs.codex;
@@ -391,9 +416,7 @@ in
           email = "$GIT_USER_EMAIL";
         };
       };
-      # TODO: Confirm if this is correct.
       ignores = [
-        "*_personal/"
       ];
     };
 
