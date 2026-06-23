@@ -56,18 +56,29 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    codex-desktop-linux = {
-      url = "github:ilysenko/codex-desktop-linux";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
+    # TODO: Re-enable when upstream flake fixes stale Codex.dmg hash.
+    #   error: hash mismatch in fixed-output derivation '.../Codex.dmg.drv':
+    #     specified: sha256-c9hj/+uCB+9WbmmWAz/bFgcnLdHRdgrm3A7I7JxiOuo=
+    #     got:       sha256-feTM5exuOUeLnwYw4rkleq3R0C3WoP3ADC7N8PU2Ai0=
+    #   Track: https://github.com/ilysenko/codex-desktop-linux
+    # codex-desktop-linux = {
+    #   url = "github:ilysenko/codex-desktop-linux";
+    #   inputs.nixpkgs.follows = "nixpkgs";
+    # };
+
 
     claude-desktop = {
       url = "github:aaddrick/claude-desktop-debian";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    antigravity-nix = {
+      url = "github:jacopone/antigravity-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { nixpkgs, home-manager, nix-index-database, sommelier-rs, kakaotalk, codex-desktop-linux, claude-desktop, ... }@inputs:
+  outputs = { nixpkgs, home-manager, nix-index-database, sommelier-rs, kakaotalk, claude-desktop, antigravity-nix, ... }@inputs:
     let
       system = builtins.currentSystem;
 
@@ -83,6 +94,7 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
             sommelier-rs.overlays.default
             kakaotalk.overlays.default
             claude-desktop.overlays.default
+            antigravity-nix.overlays.default
           ];
         };
 
@@ -91,7 +103,8 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
         modules = [
           ./home.nix
           nix-index-database.homeModules.default
-          codex-desktop-linux.homeManagerModules.default
+          # TODO: Re-enable when codex-desktop-linux upstream fixes Codex.dmg hash mismatch.
+          # codex-desktop-linux.homeManagerModules.default
           { programs.nix-index-database.comma.enable = true; }
         ];
       };
@@ -184,6 +197,7 @@ in
       killall
       podman-compose
       podman-tui
+      xdg-utils
 
       ## Already included via other lines.
       # nix-direnv
@@ -199,9 +213,11 @@ in
 
       # Coding
       vscode
-      antigravity
-      antigravity-cli
-      codex
+      google-antigravity-no-fhs
+      google-antigravity-ide
+      google-antigravity-cli
+      # TODO: Re-enable when codex-desktop-linux upstream fixes Codex.dmg hash mismatch.
+      # codex
       claude-code
       claude-desktop
       opencode
@@ -223,6 +239,10 @@ in
       WAYLAND_DISPLAY = "wayland-1";
       DISPLAY = ":1";
       CODEX_LINUX_RENDERING_MODE = "wayland-gpu";
+      # Web search provider selection. Required for non-opencode providers (model-gateway).
+      # See monorepo/model_index/WEB_SEARCH.md.
+      # OPENCODE_ENABLE_EXA = "true";
+      OPENCODE_ENABLE_PARALLEL = "true";
     };
   };
 
@@ -289,34 +309,30 @@ in
   programs = {
     home-manager.enable = true;
 
-    # codex-desktop known issues:
+    # TODO: Re-enable when codex-desktop-linux upstream fixes stale Codex.dmg hash.
+    #   The computerUseUi and remoteMobileControl sub-packages fetch Codex.dmg
+    #   from OpenAI servers as a fixed-output derivation, and the hash is stale.
+    #   Track: https://github.com/ilysenko/codex-desktop-linux
+    #
+    # codex-desktop known issues (for reference when re-enabling):
     #
     # 1. GLib-GIO-ERROR: Settings schema 'org.gtk.Settings.FileChooser' not found
-    #    → When opening a file dialog, GLib (from system electron) fails to find
-    #      gtk3's compiled GSettings schema. The schema lives under a Nix-specific
-    #      path (share/gsettings-schemas/gtk+3-<ver>/glib-2.0/schemas/) not in
-    #      any XDG_DATA_DIRS entry.
     #    → Fix: GSETTINGS_SCHEMA_DIR is set in cros-garcon.service override
-    #      (see xdg.configFile section below). Requires cros-garcon restart to
-    #      take effect, included in `cros-reset` alias.
+    #      (see xdg.configFile section below).
     #
     # 2. Re-launch hangs when X-closed (Electron single-instance lock)
-    #    → The X button hides to tray instead of quitting. Next launch sees the
-    #      stale instance via app.requestSingleInstanceLock() and blocks.
     #    → Ctrl+Q works to actually quit. No config-side fix yet.
-    #    → Potential fix: wrap .desktop Exec in a script that uses xdotool to
-    #      detect a visible window, and only kills stale process if none found.
-    #      Applied via home.activation.patchCodexDesktopFile.
-    codexDesktopLinux = {
-      enable = true;
-      cliPackage = pkgs.codex;
-      computerUseUi.enable = true;
-      remoteMobileControl.enable = true;
-      remoteControl = {
-        enable = true;
-        package = pkgs.codex;
-      };
-    };
+    #
+    # codexDesktopLinux = {
+    #   enable = true;
+    #   cliPackage = pkgs.codex;
+    #   computerUseUi.enable = true;
+    #   remoteMobileControl.enable = true;
+    #   remoteControl = {
+    #     enable = true;
+    #     package = pkgs.codex;
+    #   };
+    # };
 
     bash = {
       enable = true;
@@ -448,7 +464,7 @@ in
       enable = true;
       git = {
         enable = false;
-        diffToolMode = false;
+        mode = "external";
       };
     };
 
@@ -560,6 +576,9 @@ in
 
     # Share VS Code settings with Antigravity via symlink
     ".config/Antigravity/User/settings.json" = {
+      source = config.lib.file.mkOutOfStoreSymlink "$HOME/.config/Code/User/settings.json";
+    };
+    ".antigravity-ide/User/settings.json" = {
       source = config.lib.file.mkOutOfStoreSymlink "$HOME/.config/Code/User/settings.json";
     };
 
