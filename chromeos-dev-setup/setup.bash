@@ -98,8 +98,10 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
             # codex-desktop has no overlays output; import its package directly
             # and override Codex.dmg hash when upstream goes stale.
             # Set codexDmgHashOverride above to the actual hash.
+            # Note: don't override pkgs.codex — that's the CLI from nixpkgs.
+            # The desktop app is always added fresh from the flake's packages.
             (final: prev: {
-              codex = codex-desktop-linux.packages.${system}.codex-desktop.overrideAttrs (old:
+              codex-desktop-app = codex-desktop-linux.packages.${system}.codex-desktop.overrideAttrs (old:
                 nixpkgs.lib.optionalAttrs (codexDmgHashOverride != null) {
                   outputHash = codexDmgHashOverride;
                 }
@@ -228,9 +230,9 @@ in
       google-antigravity-no-fhs
       google-antigravity-ide
       google-antigravity-cli
-      codex
       claude-code
       claude-desktop
+      codex
       opencode
       opencode-desktop
 
@@ -645,6 +647,8 @@ sudo chsh -s "$ZSH_PATH" "$USER"
 # Keep wayland-0 (host compositor), clean up wayland-1 and wayland-2 which we manage
 echo "Cleaning up stale Wayland sockets..."
 rm -f /run/user/"$(id -u)"/wayland-{1,2}.lock /run/user/"$(id -u)"/wayland-{1,2} 2>/dev/null || true
+echo "Restarting compositors to recreate sockets..."
+systemctl --user restart sommelier-rs.service sommelier@1.service 2>/dev/null || true
 
 echo "============================================================"
 echo "SUCCESS: Home Manager setup is fully activated!"
