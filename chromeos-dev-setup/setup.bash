@@ -6,6 +6,31 @@ export CROS_SETUP_SCRIPT_FILE="$(readlink -f "${BASH_SOURCE[0]}")"
 
 # TODO
 # - [ ] https://github.com/sigoden/aichat setup
+#
+# ── W1 "ignoring untrusted substituter 'https://codex-desktop-linux.cachix.org'" ──
+#  Rank 1: Add user to trusted-users in /etc/nix/nix.custom.conf
+#    sudo bash -c 'grep -qxF "trusted-users = $USER" /etc/nix/nix.custom.conf 2>/dev/null || echo "trusted-users = $USER" >> /etc/nix/nix.custom.conf'
+#    (Line 24 adds this at install time, but if Nix was pre-existing it's a no-op.)
+#  Rank 2: Trust codex cache via extra-trusted-substituters in nix.custom.conf
+#    sudo bash -c 'grep -qxF "extra-trusted-substituters = https://codex-desktop-linux.cachix.org" /etc/nix/nix.custom.conf 2>/dev/null || echo "extra-trusted-substituters = https://codex-desktop-linux.cachix.org" >> /etc/nix/nix.custom.conf'
+#    sudo bash -c 'grep -qxF "extra-trusted-public-keys = codex-desktop-linux.cachix.org-1:nX/xy6AdK9hQE24A8ALGjkCKj2ObFmcnemiL5Cid4nk=" /etc/nix/nix.custom.conf 2>/dev/null || echo "extra-trusted-public-keys = codex-desktop-linux.cachix.org-1:nX/xy6AdK9hQE24A8ALGjkCKj2ObFmcnemiL5Cid4nk=" >> /etc/nix/nix.custom.conf'
+#  Rank 3: Ignore
+#
+# ── W2 "GitHub API rate limit exceeded (HTTP 403)" ──
+#  Rank 1: Add access-tokens to /etc/nix/nix.custom.conf
+#    Create PAT at https://github.com/settings/tokens (no scopes needed), then:
+#    export GITHUB_TOKEN=ghp_xxxx
+#    grep -qxF "access-tokens = github.com=$GITHUB_TOKEN" /etc/nix/nix.custom.conf 2>/dev/null || echo "access-tokens = github.com=$GITHUB_TOKEN" >> /etc/nix/nix.custom.conf
+#  Rank 2: Ignore
+#
+# ── W3 "unknown setting 'eval-cores'" / "unknown setting 'lazy-trees'" ──
+#  Rank 1: Ignore — Nix 2.34.7 supports both; warnings are transient (HM internals, Determinate config)
+#  Rank 2: Upgrade Nix — sudo determinate-nixd upgrade (unreliable, failed earlier due to download error)
+#  Rank 3: Override in nix.custom.conf — same values already in /etc/nix/nix.conf, won't suppress
+#
+# ── W4 "Using 'builtins.derivation' to create a derivation named 'options.json'" ──
+#  Rank 1: Ignore — upstream home-manager internal, harmless
+#  Rank 2: Update home-manager flake input — nix flake update home-manager (may break unrelated deps)
 
 # TODO: Fill out and execute these before running the script.
 # export GIT_USER_NAME=""
