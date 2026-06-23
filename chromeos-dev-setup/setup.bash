@@ -240,7 +240,7 @@ in
       DISPLAY = ":1";
       CODEX_LINUX_RENDERING_MODE = "wayland-gpu";
       # Web search provider selection. Required for non-opencode providers (model-gateway).
-      # See monorepo/model_index/WEB_SEARCH.md.
+      # See ../scratch-monorepo/model_gateway/WEB_SEARCH.md.
       # OPENCODE_ENABLE_EXA = "true";
       OPENCODE_ENABLE_PARALLEL = "true";
     };
