@@ -331,6 +331,7 @@ in
     #
     codexDesktopLinux = {
       enable = true;
+      cliPackage = pkgs.codex;
       # computerUseUi and remoteMobileControl disabled due to buildEnv path conflicts
       # with codex-desktop (overlapping 'plugins/chrome/scripts/browser-client.mjs').
       # computerUseUi.enable = true;
