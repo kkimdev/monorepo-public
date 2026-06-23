@@ -99,7 +99,7 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
             # Override Codex.dmg hash when upstream goes stale
             # Set codexDmgHashOverride above to the actual hash.
             (final: prev: {
-              codex = prev.codex.overrideAttrs (old: lib.optionalAttrs (codexDmgHashOverride != null) {
+              codex = prev.codex.overrideAttrs (old: nixpkgs.lib.optionalAttrs (codexDmgHashOverride != null) {
                 outputHash = codexDmgHashOverride;
               });
             })
@@ -128,7 +128,7 @@ let
   crosDesktopShareDir = "\${config.home.homeDirectory}/.local/share";
   nixProfileShareDir  = "\${config.home.homeDirectory}/.nix-profile/share";
   # GSettings schema dirs for codex-desktop file dialog (GLib fatal crash fix)
-  # See also `GSETTINGS_SCHEMA_DIR` in the cros-garcon override below.
+  # See also \`GSETTINGS_SCHEMA_DIR\` in the cros-garcon override below.
   gtk3SchemaDir       = "\${pkgs.gtk3}/share/gsettings-schemas/gtk+3-\${lib.getVersion pkgs.gtk3}/glib-2.0/schemas";
   gsettingsSchemaDir  = "\${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/gsettings-desktop-schemas-\${lib.getVersion pkgs.gsettings-desktop-schemas}/glib-2.0/schemas";
 
