@@ -151,7 +151,10 @@ let
     '';
 
     cros-reset = ''
+      # Clean up stale sockets before restarting (keep wayland-0, it's the host compositor)
+      rm -f /run/user/\$UID/wayland-{1,2}.lock /run/user/\$UID/wayland-{1,2} 2>/dev/null; \
       systemctl --user daemon-reload && \
+      systemctl --user reset-failed sommelier@1.service 2>/dev/null; \
       systemctl --user restart sommelier@0.service && \
       systemctl --user restart sommelier-x@0.service && \
       systemctl --user restart sommelier-x@1.service && \
@@ -235,8 +238,8 @@ in
       GIT_USER_EMAIL = "$GIT_USER_EMAIL";
       CROS_SETUP_SCRIPT_FILE = "$CROS_SETUP_SCRIPT_FILE";
       GSETTINGS_SCHEMA_DIR = "\${gtk3SchemaDir}:\${gsettingsSchemaDir}";
-      # wayland-0: host compositor (sommelier), wayland-1: custom sommelier-rs
-      WAYLAND_DISPLAY = "wayland-1";
+      # wayland-0: host compositor (sommelier), wayland-1: Crostini default sommelier@1, wayland-2: custom sommelier-rs
+      WAYLAND_DISPLAY = "wayland-2";
       DISPLAY = ":1";
       CODEX_LINUX_RENDERING_MODE = "wayland-gpu";
       # Web search provider selection. Required for non-opencode providers (model-gateway).
@@ -256,7 +259,7 @@ in
     Service = {
       # Use the absolute path from the derivation defined above
       ExecStart =
-        "\${pkgs.sommelier-rs}/bin/sommelier-rs wayland-1";
+        "\${pkgs.sommelier-rs}/bin/sommelier-rs wayland-2";
       Restart = "always";
       RestartSec = "5";
       Environment = [
@@ -531,7 +534,7 @@ in
       [Service]
       Environment="PATH=%h/.nix-profile/bin:/usr/local/sbin:/usr/local/bin:/usr/local/games:/usr/sbin:/usr/bin:/usr/games:/sbin:/bin"
       Environment="XDG_DATA_DIRS=%h/.nix-profile/share:%h/.local/share:%h/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share:/usr/share"
-      Environment="WAYLAND_DISPLAY=wayland-1"
+      Environment="WAYLAND_DISPLAY=wayland-2"
       Environment="DISPLAY=:1"
       Environment="CODEX_LINUX_RENDERING_MODE=wayland-gpu"
       # GLib-GIO-ERROR: Settings schema 'org.gtk.Settings.FileChooser' is not installed
@@ -557,13 +560,6 @@ in
       Environment="SOMMELIER_SCALE=1.0"
     '';
 
-    # Disable system sommelier@1 by overriding it to run /bin/true
-    "systemd/user/sommelier@1.service.d/override.conf".text = ''
-      [Service]
-      ExecStart=
-      ExecStart=\${pkgs.coreutils}/bin/true
-      Restart=no
-    '';
   };
 
   home.file = {
@@ -639,6 +635,11 @@ if ! grep -qxF "$ZSH_PATH" /etc/shells 2>/dev/null; then
   echo "$ZSH_PATH" | sudo tee -a /etc/shells > /dev/null
 fi
 sudo chsh -s "$ZSH_PATH" "$USER"
+
+# Clean up stale Wayland sockets that may conflict from previous runs
+# Keep wayland-0 (host compositor), clean up wayland-1 and wayland-2 which we manage
+echo "Cleaning up stale Wayland sockets..."
+rm -f /run/user/"$(id -u)"/wayland-{1,2}.lock /run/user/"$(id -u)"/wayland-{1,2} 2>/dev/null || true
 
 echo "============================================================"
 echo "SUCCESS: Home Manager setup is fully activated!"
