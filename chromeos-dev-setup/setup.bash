@@ -95,13 +95,15 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
             kakaotalk.overlays.default
             claude-desktop.overlays.default
             antigravity-nix.overlays.default
-            codex-desktop-linux.overlays.default
-            # Override Codex.dmg hash when upstream goes stale
+            # codex-desktop has no overlays output; import its package directly
+            # and override Codex.dmg hash when upstream goes stale.
             # Set codexDmgHashOverride above to the actual hash.
             (final: prev: {
-              codex = prev.codex.overrideAttrs (old: nixpkgs.lib.optionalAttrs (codexDmgHashOverride != null) {
-                outputHash = codexDmgHashOverride;
-              });
+              codex = codex-desktop-linux.packages.${system}.codex-desktop.overrideAttrs (old:
+                nixpkgs.lib.optionalAttrs (codexDmgHashOverride != null) {
+                  outputHash = codexDmgHashOverride;
+                }
+              );
             })
           ];
         };
@@ -329,13 +331,14 @@ in
     #
     codexDesktopLinux = {
       enable = true;
-      cliPackage = pkgs.codex;
-      computerUseUi.enable = true;
-      remoteMobileControl.enable = true;
-      remoteControl = {
-        enable = true;
-        package = pkgs.codex;
-      };
+      # computerUseUi and remoteMobileControl disabled due to buildEnv path conflicts
+      # with codex-desktop (overlapping 'plugins/chrome/scripts/browser-client.mjs').
+      # computerUseUi.enable = true;
+      # remoteMobileControl.enable = true;
+      # remoteControl = {
+      #   enable = true;
+      #   package = pkgs.codex;
+      # };
     };
 
     bash = {
