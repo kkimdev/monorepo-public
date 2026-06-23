@@ -56,15 +56,10 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    # TODO: Re-enable when upstream flake fixes stale Codex.dmg hash.
-    #   error: hash mismatch in fixed-output derivation '.../Codex.dmg.drv':
-    #     specified: sha256-c9hj/+uCB+9WbmmWAz/bFgcnLdHRdgrm3A7I7JxiOuo=
-    #     got:       sha256-feTM5exuOUeLnwYw4rkleq3R0C3WoP3ADC7N8PU2Ai0=
-    #   Track: https://github.com/ilysenko/codex-desktop-linux
-    # codex-desktop-linux = {
-    #   url = "github:ilysenko/codex-desktop-linux";
-    #   inputs.nixpkgs.follows = "nixpkgs";
-    # };
+    codex-desktop-linux = {
+      url = "github:ilysenko/codex-desktop-linux";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
 
 
     claude-desktop = {
@@ -78,12 +73,17 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
     };
   };
 
-  outputs = { nixpkgs, home-manager, nix-index-database, sommelier-rs, kakaotalk, claude-desktop, antigravity-nix, ... }@inputs:
+  outputs = { nixpkgs, home-manager, nix-index-database, sommelier-rs, kakaotalk, codex-desktop-linux, claude-desktop, antigravity-nix, ... }@inputs:
     let
       system = builtins.currentSystem;
 
       # Dynamically grab the current user directly from the environment inside Nix
       username = builtins.getEnv "USER";
+
+      # codex-desktop Codex.dmg hash override
+      # When upstream hash goes stale, replace `null` with the actual SHA256 hash
+      # from the build error message ("got: sha256-<hash>").
+      codexDmgHashOverride = null;
 
     in {
       homeConfigurations."${username}" = home-manager.lib.homeManagerConfiguration {
@@ -95,6 +95,14 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
             kakaotalk.overlays.default
             claude-desktop.overlays.default
             antigravity-nix.overlays.default
+            codex-desktop-linux.overlays.default
+            # Override Codex.dmg hash when upstream goes stale
+            # Set codexDmgHashOverride above to the actual hash.
+            (final: prev: {
+              codex = prev.codex.overrideAttrs (old: lib.optionalAttrs (codexDmgHashOverride != null) {
+                outputHash = codexDmgHashOverride;
+              });
+            })
           ];
         };
 
@@ -103,8 +111,7 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
         modules = [
           ./home.nix
           nix-index-database.homeModules.default
-          # TODO: Re-enable when codex-desktop-linux upstream fixes Codex.dmg hash mismatch.
-          # codex-desktop-linux.homeManagerModules.default
+          codex-desktop-linux.homeManagerModules.default
           { programs.nix-index-database.comma.enable = true; }
         ];
       };
@@ -219,8 +226,7 @@ in
       google-antigravity-no-fhs
       google-antigravity-ide
       google-antigravity-cli
-      # TODO: Re-enable when codex-desktop-linux upstream fixes Codex.dmg hash mismatch.
-      # codex
+      codex
       claude-code
       claude-desktop
       opencode
@@ -312,12 +318,7 @@ in
   programs = {
     home-manager.enable = true;
 
-    # TODO: Re-enable when codex-desktop-linux upstream fixes stale Codex.dmg hash.
-    #   The computerUseUi and remoteMobileControl sub-packages fetch Codex.dmg
-    #   from OpenAI servers as a fixed-output derivation, and the hash is stale.
-    #   Track: https://github.com/ilysenko/codex-desktop-linux
-    #
-    # codex-desktop known issues (for reference when re-enabling):
+    # codex-desktop known issues (for reference):
     #
     # 1. GLib-GIO-ERROR: Settings schema 'org.gtk.Settings.FileChooser' not found
     #    → Fix: GSETTINGS_SCHEMA_DIR is set in cros-garcon.service override
@@ -326,16 +327,16 @@ in
     # 2. Re-launch hangs when X-closed (Electron single-instance lock)
     #    → Ctrl+Q works to actually quit. No config-side fix yet.
     #
-    # codexDesktopLinux = {
-    #   enable = true;
-    #   cliPackage = pkgs.codex;
-    #   computerUseUi.enable = true;
-    #   remoteMobileControl.enable = true;
-    #   remoteControl = {
-    #     enable = true;
-    #     package = pkgs.codex;
-    #   };
-    # };
+    codexDesktopLinux = {
+      enable = true;
+      cliPackage = pkgs.codex;
+      computerUseUi.enable = true;
+      remoteMobileControl.enable = true;
+      remoteControl = {
+        enable = true;
+        package = pkgs.codex;
+      };
+    };
 
     bash = {
       enable = true;
