@@ -96,7 +96,9 @@ stop on stopping system-services
 task
 script
     sleep 10
+    echo "=== HDMI Audio Script Started ==="
     /usr/bin/amixer -c $CARD_NUM sset IEC958 on
+    echo "=== HDMI Audio Script Finished ==="
 end script
 EOF
 
