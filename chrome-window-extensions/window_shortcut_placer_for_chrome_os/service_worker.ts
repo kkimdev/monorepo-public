@@ -2,8 +2,15 @@ interface StorageOptions {
     avoidChromeOSSnap?: boolean;
 }
 
-// Prevent re-entering our own snap-state-breaking update
-const breakingSnap = new Set<number>();
+interface SnapBounds {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+}
+
+const snapAtBounds = new Map<number, SnapBounds>();
+const pendingRestore = new Set<number>();
 
 interface Point {
     x: number;
@@ -41,6 +48,14 @@ async function getClosestDisplay(window: chrome.windows.Window): Promise<chrome.
     return closestDisplay;
 }
 
+function isSnapPosition(window: chrome.windows.Window, display: chrome.system.display.DisplayInfo): boolean {
+    const wa = display.workArea;
+    const halfSnapWidth = Math.floor(wa.width / 2);
+    const isLeft = window.left === wa.left && window.width === halfSnapWidth;
+    const isRight = window.left === wa.left + wa.width - halfSnapWidth && window.width === halfSnapWidth;
+    return isLeft || isRight;
+}
+
 async function place(positionNumber: number): Promise<chrome.windows.Window> {
     const focusedWindow = await chrome.windows.getLastFocused();
     const display = await getClosestDisplay(focusedWindow);
@@ -71,6 +86,15 @@ async function place(positionNumber: number): Promise<chrome.windows.Window> {
         state: "normal",
     };
 
+    console.log("Placing window", focusedWindow.id, "to", placingBounds);
+
+    snapAtBounds.set(focusedWindow.id, {
+        left: placingBounds.left!,
+        top: placingBounds.top!,
+        width: placingBounds.width!,
+        height: placingBounds.height!,
+    });
+
     return chrome.windows.update(focusedWindow.id, placingBounds);
 }
 
@@ -78,39 +102,57 @@ async function place(positionNumber: number): Promise<chrome.windows.Window> {
 chrome.commands.onCommand.addListener(command => {
     const position = parseInt(command.slice(-1));
     if (!isNaN(position)) {
+        console.log('Command received:', command);
         place(position);
     }
 });
 
-// Break ChromeOS snap state whenever a window enters it.
-// ChromeOS Snap Groups form only when windows are in snapped state.
-// By breaking the state immediately, we prevent Snap Groups from forming,
-// which avoids the bug where closing a snap partner restores the other
-// window to full size.
-chrome.windows.onBoundsChanged.addListener(async (windowId: number) => {
-    if (breakingSnap.has(windowId)) return;
-
+// Detect Snap Groups restore: when a snapped window's partner closes,
+// ChromeOS restores the remaining window to its pre-snap bounds.
+// We detect this by tracking windows at snap positions and checking
+// if a bounds change immediately follows a window close.
+chrome.windows.onBoundsChanged.addListener(async (window: chrome.windows.Window) => {
     const options: StorageOptions = await chrome.storage.sync.get({
         avoidChromeOSSnap: true
     });
     if (!options.avoidChromeOSSnap) return;
 
-    try {
-        const win = await chrome.windows.get(windowId);
-        if (!win || win.state !== "snapped") return;
+    // If a window closure was detected, check if this window needs re-snapping
+    if (pendingRestore.has(window.id)) {
+        pendingRestore.delete(window.id);
+        const snapInfo = snapAtBounds.get(window.id);
+        if (snapInfo) {
+            console.log("Snap restore detected, re-snapping window", window.id);
+            await chrome.windows.update(window.id, {
+                left: snapInfo.left,
+                top: snapInfo.top,
+                width: snapInfo.width,
+                height: snapInfo.height,
+                state: "normal",
+            });
+            return;
+        }
+    }
 
-        breakingSnap.add(windowId);
-        await chrome.windows.update(windowId, {
-            left: win.left,
-            top: win.top,
-            width: win.width,
-            height: win.height,
-            state: "normal",
+    // Track windows at snap positions
+    const display = await getClosestDisplay(window);
+    if (isSnapPosition(window, display)) {
+        snapAtBounds.set(window.id, {
+            left: window.left,
+            top: window.top,
+            width: window.width,
+            height: window.height,
         });
-    } catch {
-        // Window may have closed during async operations
-    } finally {
-        breakingSnap.delete(windowId);
+    }
+});
+
+// When any window closes, mark remaining snapped windows as potentially needing restore
+chrome.windows.onRemoved.addListener(windowId => {
+    snapAtBounds.delete(windowId);
+    for (const snappedId of snapAtBounds.keys()) {
+        if (snappedId !== windowId) {
+            pendingRestore.add(snappedId);
+        }
     }
 });
 
