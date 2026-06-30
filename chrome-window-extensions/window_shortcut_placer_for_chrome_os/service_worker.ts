@@ -1,3 +1,7 @@
+interface StorageOptions {
+    avoidChromeOSSnap?: boolean;
+}
+
 // Prevent re-entering our own snap-state-breaking update
 const breakingSnap = new Set<number>();
 
@@ -86,6 +90,11 @@ chrome.commands.onCommand.addListener(command => {
 chrome.windows.onBoundsChanged.addListener(async (windowId: number) => {
     if (breakingSnap.has(windowId)) return;
 
+    const options: StorageOptions = await chrome.storage.sync.get({
+        avoidChromeOSSnap: true
+    });
+    if (!options.avoidChromeOSSnap) return;
+
     try {
         const win = await chrome.windows.get(windowId);
         if (!win || win.state !== "snapped") return;
@@ -107,6 +116,7 @@ chrome.windows.onBoundsChanged.addListener(async (windowId: number) => {
 
 chrome.runtime.onInstalled.addListener(details => {
     if (details.reason === "install") {
+        chrome.storage.sync.set({ avoidChromeOSSnap: true });
         chrome.tabs.create({ url: "chrome://extensions/shortcuts" });
     }
 });
