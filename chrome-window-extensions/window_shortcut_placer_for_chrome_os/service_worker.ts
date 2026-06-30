@@ -138,11 +138,13 @@ chrome.windows.onBoundsChanged.addListener(async (window: chrome.windows.Window)
     }
 });
 
-// When any window closes, mark remaining snapped windows as potentially needing restore
+// When a snapped window closes, mark remaining snapped windows as potentially needing restore.
+// Non-snapped window closures are ignored to avoid false positives.
 chrome.windows.onRemoved.addListener(windowId => {
+    const wasSnapped = snapAtBounds.has(windowId);
     snapAtBounds.delete(windowId);
-    for (const snappedId of snapAtBounds.keys()) {
-        if (snappedId !== windowId) {
+    if (wasSnapped) {
+        for (const snappedId of snapAtBounds.keys()) {
             pendingRestore.add(snappedId);
         }
     }
