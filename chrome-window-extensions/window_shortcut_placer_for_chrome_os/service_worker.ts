@@ -87,14 +87,6 @@ async function place(positionNumber: number): Promise<chrome.windows.Window> {
     };
 
     console.log("Placing window", focusedWindow.id, "to", placingBounds);
-
-    snapAtBounds.set(focusedWindow.id, {
-        left: placingBounds.left!,
-        top: placingBounds.top!,
-        width: placingBounds.width!,
-        height: placingBounds.height!,
-    });
-
     return chrome.windows.update(focusedWindow.id, placingBounds);
 }
 
