@@ -48,11 +48,13 @@ async function getClosestDisplay(window: chrome.windows.Window): Promise<chrome.
     return closestDisplay;
 }
 
-// Matches ChromeOS GetSnappedWindowAxisLength() in ash/wm/window_positioning_utils.cc
-// which uses static_cast<int>(axis_length / 2) (C++ truncation toward zero,
-// equivalent to Math.floor for positive values). The left/right snap widths
-// are both Math.floor(wa.width / 2); the right window's left offset is
-// wa.left + Math.ceil(wa.width / 2) = wa.left + wa.width - halfSnapWidth.
+// Matches ChromeOS GetSnappedWindowAxisLength() in
+// https://source.chromium.org/chromium/chromium/src/+/main:ash/wm/window_positioning_utils.cc
+// which uses static_cast<int>(snap_ratio * work_area_axis_length) (C++ truncation
+// toward zero, equivalent to Math.floor for positive values). For the default
+// snap_ratio=0.5, left/right snap widths are both Math.floor(wa.width / 2);
+// the right window's left offset is wa.left + Math.ceil(wa.width / 2) =
+// wa.left + wa.width - halfSnapWidth.
 function isSnapPosition(window: chrome.windows.Window, display: chrome.system.display.DisplayInfo): boolean {
     const wa = display.workArea;
     const halfSnapWidth = Math.floor(wa.width / 2);
@@ -71,8 +73,8 @@ async function place(positionNumber: number): Promise<chrome.windows.Window> {
     let width = wa.width;
     let height = wa.height;
 
-    // Must match isSnapPosition() and ChromeOS ash/wm/window_positioning_utils.cc
-    // GetSnappedWindowAxisLength(): static_cast<int>(axis_length / 2)
+    // Must match isSnapPosition() and ChromeOS GetSnappedWindowAxisLength():
+    // https://source.chromium.org/chromium/chromium/src/+/main:ash/wm/window_positioning_utils.cc
     const halfSnapWidth = Math.floor(wa.width / 2);
     const halfSnapHeight = Math.floor(wa.height / 2);
 
