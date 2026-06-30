@@ -148,6 +148,7 @@ chrome.windows.onRemoved.addListener(windowId => {
     if (wasSnapped) {
         for (const snappedId of snapAtBounds.keys()) {
             pendingRestore.add(snappedId);
+            setTimeout(() => pendingRestore.delete(snappedId), 500);
         }
     }
 });
