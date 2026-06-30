@@ -1,3 +1,15 @@
+## Recommended Brunch Framework Options
+Reference: https://github.com/sebanc/brunch/blob/main/Readme/troubleshooting-and-faqs.md#brunch-configuration-menu
+
+General
+- Kernel: `6.12`
+- Kernel Options: `enable_crosh_sudo`, `pwa`
+- Boot verbose mode: `yes`
+
+Lenovo Thinkbook Specific
+- Kernel Options: `acpi_power_button` to make power button power menu work.
+- Kernel Commandline Parameters: `enforce_hyperthreading=1 initcall_blacklist=ucsi_acpi_platform_driver_init modprobe.blacklist=ucsi_acpi` to fix sleep mode.
+
 ## Terminal App Settings
 
 Navigate to `chrome-untrusted://terminal/html/terminal_settings.html`
