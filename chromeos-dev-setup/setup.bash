@@ -247,7 +247,7 @@ in
       inkscape
       beekeeper-studio
       yt-dlp
-      sommelier-rs
+      sommelier-rs-bin
       kakaotalk-bin
 
       # Coding
@@ -294,7 +294,7 @@ in
     Service = {
       # Use the absolute path from the derivation defined above
       ExecStart =
-        "\${pkgs.sommelier-rs}/bin/sommelier-rs wayland-2";
+        "\${pkgs.sommelier-rs-bin}/bin/sommelier-rs wayland-2";
       Restart = "always";
       RestartSec = "5";
       Environment = [

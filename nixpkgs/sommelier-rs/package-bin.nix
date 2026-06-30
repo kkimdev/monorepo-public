@@ -13,16 +13,16 @@ let
   }.${stdenv.hostPlatform.system} or (throw "Unsupported system architecture: ${stdenv.hostPlatform.system}");
 
   shaMap = {
-    "x86_64"  = "sha256-zztkv98J8hpVXCXfUnjSaPKaPua44e56yyO/jUwtFzY";
-    "aarch64" = "sha256-PLACE_ARM64_SHA256_HERE_IF_AVAILABLE";
+    "x86_64"  = "sha256-TkZjFjdUXdJx0BBjv+aEYJ0jFD9dNrha7aash/HQ70A";
+    "aarch64" = "sha256-uo2JJGGPuQonh3i3jwlktSPX3JPUHw9NQG0xpQ/VlOE";
   };
 in
 stdenv.mkDerivation rec {
   pname = "sommelier-rs";
-  version = "0.1.1";
+  version = "0.2.0";
 
   src = fetchurl {
-    url = "https://github.com/google/sommelier-rs/releases/download/virtwl-v0.1.1/sommelier_rs_virtwl-v0.1.1-${targetCpu}";
+    url = "https://github.com/google/sommelier-rs/releases/download/virtwl-v0.2.0/sommelier_rs_virtwl-v0.2.0-${targetCpu}";
     sha256 = shaMap.${targetCpu};
   };
 
