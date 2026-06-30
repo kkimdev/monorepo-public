@@ -126,7 +126,7 @@ chrome.windows.onBoundsChanged.addListener(async (window: chrome.windows.Window)
         }
     }
 
-    // Track windows at snap positions
+    // Track windows at snap positions; clear stale entries when moved away
     const display = await getClosestDisplay(window);
     if (isSnapPosition(window, display)) {
         snapAtBounds.set(window.id, {
@@ -135,6 +135,8 @@ chrome.windows.onBoundsChanged.addListener(async (window: chrome.windows.Window)
             width: window.width,
             height: window.height,
         });
+    } else {
+        snapAtBounds.delete(window.id);
     }
 });
 
