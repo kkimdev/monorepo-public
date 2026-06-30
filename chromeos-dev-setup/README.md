@@ -80,6 +80,8 @@ Reference: https://github.com/sebanc/brunch/issues/2273
 ```bash
 CARD_NUM=$(aplay -l | grep -i "HDMI" | head -n 1 | cut -d" " -f2 | tr -d ":")
 CARD_NUM=${CARD_NUM:-0}
+echo "Checking status for Card: $CARD_NUM"
+sudo amixer -c $CARD_NUM get IEC958
 sudo amixer -c $CARD_NUM sset IEC958 on
 echo "One-time activation complete for Card: $CARD_NUM"
 ```
