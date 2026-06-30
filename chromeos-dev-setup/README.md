@@ -1,5 +1,9 @@
 ## Terminal App Settings
-![image](https://github.com/kkimdev/os-setup/assets/503414/bded2e48-5274-4541-aef7-cdf24a1b9888)
+
+Navigate to `chrome-untrusted://terminal/html/terminal_settings.html`
+
+![Terminal App Keyboard & mouse tab](Terminal%20App%20Keyboard%20&%20mouse%20tab.png)
+![Terminal App behavior tab](Terminal%20App%20behavior%20tab.png)
 
 ## Terminal App Nerd Font
 
