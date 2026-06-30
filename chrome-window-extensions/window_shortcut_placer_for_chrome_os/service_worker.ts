@@ -1,9 +1,6 @@
-// Define an interface for our storage options for type safety.
-interface StorageOptions {
-    avoidChromeOSSnap?: boolean;
-}
+// Prevent re-entering our own snap-state-breaking update
+const breakingSnap = new Set<number>();
 
-// Your existing helper functions (no changes needed)
 interface Point {
     x: number;
     y: number;
@@ -41,11 +38,6 @@ async function getClosestDisplay(window: chrome.windows.Window): Promise<chrome.
 }
 
 async function place(positionNumber: number): Promise<chrome.windows.Window> {
-    // 1. Get user settings from storage. We default to 'true' to enable the fix.
-    const options: StorageOptions = await chrome.storage.sync.get({
-        avoidChromeOSSnap: true
-    });
-
     const focusedWindow = await chrome.windows.getLastFocused();
     const display = await getClosestDisplay(focusedWindow);
 
@@ -62,27 +54,10 @@ async function place(positionNumber: number): Promise<chrome.windows.Window> {
     const isTopHalf = [7, 8, 9].includes(positionNumber);
     const isBottomHalf = [1, 2, 3].includes(positionNumber);
 
-    // --- Standard Placement Logic ---
     if (isRightHalf) left += halfWidth;
     if (isBottomHalf) top += halfHeight;
     if (isLeftHalf || isRightHalf) width = halfWidth;
     if (isTopHalf || isBottomHalf) height = halfHeight;
-
-    // --- ChromeOS Snap Fix Logic ---
-    // If the option is enabled AND this is a left/right half window
-    if (options.avoidChromeOSSnap && (isLeftHalf || isRightHalf)) {
-        console.log("Applying ChromeOS snap fix...");
-        // Use the "Overlap" method for maximum screen real estate.
-        if (isLeftHalf) {
-            // Make it 1px wider than half
-            width = halfWidth + 1;
-        }
-        if (isRightHalf) {
-            // Start it 1px to the left and make it 1px wider
-            left = (display.workArea.left + halfWidth) - 1;
-            width = halfWidth + 1;
-        }
-    }
 
     const placingBounds: chrome.windows.UpdateInfo = {
         top: Math.round(top),
@@ -92,7 +67,6 @@ async function place(positionNumber: number): Promise<chrome.windows.Window> {
         state: "normal",
     };
 
-    console.log("Placing window", focusedWindow.id, "to", placingBounds);
     return chrome.windows.update(focusedWindow.id, placingBounds);
 }
 
@@ -100,14 +74,39 @@ async function place(positionNumber: number): Promise<chrome.windows.Window> {
 chrome.commands.onCommand.addListener(command => {
     const position = parseInt(command.slice(-1));
     if (!isNaN(position)) {
-        console.log('Command received:', command);
         place(position);
+    }
+});
+
+// Break ChromeOS snap state whenever a window enters it.
+// ChromeOS Snap Groups form only when windows are in snapped state.
+// By breaking the state immediately, we prevent Snap Groups from forming,
+// which avoids the bug where closing a snap partner restores the other
+// window to full size.
+chrome.windows.onBoundsChanged.addListener(async (windowId: number) => {
+    if (breakingSnap.has(windowId)) return;
+
+    try {
+        const win = await chrome.windows.get(windowId);
+        if (!win || win.state !== "snapped") return;
+
+        breakingSnap.add(windowId);
+        await chrome.windows.update(windowId, {
+            left: win.left,
+            top: win.top,
+            width: win.width,
+            height: win.height,
+            state: "normal",
+        });
+    } catch {
+        // Window may have closed during async operations
+    } finally {
+        breakingSnap.delete(windowId);
     }
 });
 
 chrome.runtime.onInstalled.addListener(details => {
     if (details.reason === "install") {
-        chrome.storage.sync.set({ avoidChromeOSSnap: true });
         chrome.tabs.create({ url: "chrome://extensions/shortcuts" });
     }
 });
