@@ -60,23 +60,25 @@ async function place(positionNumber: number): Promise<chrome.windows.Window> {
     const focusedWindow = await chrome.windows.getLastFocused();
     const display = await getClosestDisplay(focusedWindow);
 
-    let left = display.workArea.left;
-    let top = display.workArea.top;
-    let width = display.workArea.width;
-    let height = display.workArea.height;
+    const wa = display.workArea;
+    let left = wa.left;
+    let top = wa.top;
+    let width = wa.width;
+    let height = wa.height;
 
-    const halfWidth = display.workArea.width / 2;
-    const halfHeight = display.workArea.height / 2;
+    // ChromeOS GetSnappedWindowAxisLength() truncates: static_cast<int>(axis_length / 2)
+    const halfSnapWidth = Math.floor(wa.width / 2);
+    const halfSnapHeight = Math.floor(wa.height / 2);
 
     const isLeftHalf = [1, 4, 7].includes(positionNumber);
     const isRightHalf = [3, 6, 9].includes(positionNumber);
     const isTopHalf = [7, 8, 9].includes(positionNumber);
     const isBottomHalf = [1, 2, 3].includes(positionNumber);
 
-    if (isRightHalf) left += halfWidth;
-    if (isBottomHalf) top += halfHeight;
-    if (isLeftHalf || isRightHalf) width = halfWidth;
-    if (isTopHalf || isBottomHalf) height = halfHeight;
+    if (isRightHalf) left += wa.width - halfSnapWidth;
+    if (isBottomHalf) top += halfSnapHeight;
+    if (isLeftHalf || isRightHalf) width = halfSnapWidth;
+    if (isTopHalf || isBottomHalf) height = halfSnapHeight;
 
     const placingBounds: chrome.windows.UpdateInfo = {
         top: Math.round(top),
