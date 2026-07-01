@@ -132,6 +132,26 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
                 }
               );
             })
+
+            # opencode-desktop: nixpkgs generates "opencode-desktop.desktop"
+            # with StartupWMClass=OpenCode, but the Electron app sends
+            # app_id "ai.opencode.desktop" (from setAppUserModelId).
+            # Fix the desktop file name and StartupWMClass to match.
+            (final: prev: {
+              opencode-desktop = prev.opencode-desktop.overrideAttrs (oldAttrs: {
+                desktopItems = final.lib.optional final.stdenvNoCC.hostPlatform.isLinux (
+                  final.makeDesktopItem {
+                    name = "ai.opencode.desktop";
+                    desktopName = "OpenCode";
+                    exec = "opencode-desktop %U";
+                    icon = "opencode-desktop";
+                    startupWMClass = "ai.opencode.desktop";
+                    categories = [ "Development" ];
+                    mimeTypes = [ "x-scheme-handler/opencode" ];
+                  }
+                );
+              });
+            })
           ];
         };
 
@@ -237,6 +257,7 @@ in
       podman-compose
       podman-tui
       xdg-utils
+      gh
 
       ## Already included via other lines.
       # nix-direnv
