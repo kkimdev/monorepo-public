@@ -70,6 +70,78 @@ Reference: https://www.reddit.com/r/chromeos/comments/1u0niv3/crostini_linux_on_
 
 ## Troubleshooting
 
+### Internal Microphone Not Working in Chrome
+
+**Symptom:** Internal mic works at ALSA level (`arecord`) but not in Chrome.
+
+**Root cause:** Chrome uses CRAS (ChromeOS Audio Server) which may route the "default" capture device to a PCM node or channel that doesn't carry the internal mic signal. The dedicated DMIC PCM exists but is not selected by default.
+
+**Diagnosis:**
+
+1. `[Ctrl]+[Alt]+T` → `shell`
+2. Find the DMIC device and set environment variables:
+   ```bash
+   arecord -l
+   ```
+   ```
+   **** List of CAPTURE Hardware Devices ****
+   card 0: sofhdadsp [sof-hda-dsp], device 0: HDA Analog (*) []
+   card 0: sofhdadsp [sof-hda-dsp], device 6: DMIC (*) []           ← DMIC_DEV=6
+   card 0: sofhdadsp [sof-hda-dsp], device 7: DMIC16kHz (*) []
+   card 1: U20 [USB PHY 2.0], device 0: USB Audio [USB Audio]
+   ```
+   Note the **DMIC device number** (6 above), then find its CRAS ID:
+   ```bash
+   cras_test_client --dump_s
+   ```
+   ```
+   Input Devices:
+           ID      MaxCha  LastOpen        Name
+           13      2       UNK             sof-hda-dsp: :0,7
+           12      2       UNK             sof-hda-dsp: :0,6     ← matches device 6 → DMIC_CRAS_ID=12
+           8       2       OK              sof-hda-dsp: :0,0
+   ```
+   Set variables for the rest of the steps:
+   ```bash
+   DMIC_DEV=6          # from arecord -l, the DMIC device number
+   DMIC_CRAS_ID=12     # from cras_test_client, the CRAS device ID for :0,6
+   ```
+
+3. Test the DMIC directly:
+   ```bash
+   arecord -D plughw:0,$DMIC_DEV -d 3 -c 2 -f S16_LE -r 48000 /tmp/test.wav && aplay /tmp/test.wav
+   ```
+4. Find kcontrols related to DMIC:
+   ```bash
+   amixer -c 0 contents | grep -i dmic
+   ```
+5. One-time fix:
+   ```bash
+   amixer -c 0 cset name='Dmic0 Capture Switch' on,on  # adjust name if different
+   cras_test_client --select_input $DMIC_CRAS_ID:0
+   ```
+6. If working, permanently enable at boot via Upstart job:
+   ```bash
+   sudo bash <<SCRIPT
+   cat > /etc/init/internal-mic.conf <<'CONF'
+   description "Fix Internal Mic Routing at Boot"
+   author "User"
+   start on started system-services
+   stop on stopping system-services
+   task
+   script
+       sleep 5
+       /usr/bin/amixer -c 0 cset name='Dmic0 Capture Switch' on,on
+       /usr/bin/cras_test_client --select_input $DMIC_CRAS_ID:0
+   end script
+   CONF
+
+   chmod 644 /etc/init/internal-mic.conf
+   initctl reload-configuration
+   initctl start internal-mic
+   echo "Permanent mic fix created"
+   SCRIPT
+   ```
 ### HDMI Audio Output
 
 Reference: https://github.com/sebanc/brunch/issues/2273
