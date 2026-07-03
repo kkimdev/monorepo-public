@@ -91,21 +91,21 @@ Then test in Chrome. If it works, create a permanent Upstart job:
 sudo tee /etc/init/internal-mic.conf > /dev/null <<'CONF'
 description "Fix Internal Mic Routing at Boot"
 author "User"
-start on started system-services
-stop on stopping system-services
+start on started cras
 task
 script
-    sleep 5
+    sleep 3
     CARD=$(arecord -l | grep DMIC | head -1 | sed 's/.*card \([0-9]*\).*/\1/')
     DMIC=$(cras_test_client --dump_s | grep "sof-hda-dsp: :$CARD,6" | awk '{print $1}')
-    /usr/bin/amixer -c $CARD cset name='Dmic0 Capture Switch' on,on
-    /usr/bin/cras_test_client --select_input $DMIC:0
+    logger "internal-mic: CARD=$CARD DMIC=$DMIC"
+    /usr/bin/amixer -c $CARD cset name='Dmic0 Capture Switch' on,on && logger "internal-mic: amixer OK" || logger "internal-mic: amixer FAILED"
+    /usr/bin/cras_test_client --select_input $DMIC:0 && logger "internal-mic: select_input OK" || logger "internal-mic: select_input FAILED"
 end script
 CONF
 
 sudo chmod 644 /etc/init/internal-mic.conf
 sudo /sbin/initctl reload-configuration
-sudo /sbin/initctl start internal-mic
+sudo /sbin/initctl start internal-mic         # first time; use restart after reboot
 echo "Permanent mic fix created"
 ```
 
@@ -114,6 +114,11 @@ Verify the fix is active (no reboot needed):
 CARD=$(arecord -l | grep DMIC | head -1 | sed 's/.*card \([0-9]*\).*/\1/')
 amixer -c $CARD cget name='Dmic0 Capture Switch'                 # should show "values=on,on"
 cras_test_client --dump_s | grep -A40 "Input Nodes" | grep "\*"   # should show * on the DMIC node
+```
+
+To debug if it fails after reboot:
+```bash
+grep "internal-mic" /var/log/syslog | tail -5
 ```
 
 > **Notes:**
