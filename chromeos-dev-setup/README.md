@@ -118,7 +118,7 @@ cras_test_client --dump_s | grep -A40 "Input Nodes" | grep "\*"   # should show 
 
 To debug if it fails after reboot:
 ```bash
-grep "internal-mic" /var/log/syslog | tail -5
+sudo grep "internal-mic" /var/log/messages | tail -5
 ```
 
 > **Notes:**
@@ -139,28 +139,32 @@ sudo amixer -c $CARD_NUM get IEC958
 sudo amixer -c $CARD_NUM sset IEC958 on
 echo "One-time activation complete for Card: $CARD_NUM"
 ```
-4. If HDMI output is working, copy-paste the following to permanently enable.
+4. If HDMI output is working, create a permanent Upstart job:
 ```bash
-sudo bash -c "
-cat <<EOF > /etc/init/hdmi-audio.conf
-description \"Activate HDMI Audio at Boot\"
-author \"User\"
+sudo tee /etc/init/hdmi-audio.conf > /dev/null <<'CONF'
+description "Activate HDMI Audio at Boot"
+author "User"
 start on started system-services
 stop on stopping system-services
 task
 script
     sleep 10
-    echo "=== HDMI Audio Script Started ==="
-    /usr/bin/amixer -c $CARD_NUM sset IEC958 on
-    echo "=== HDMI Audio Script Finished ==="
+    CARD=$(aplay -l | grep -i HDMI | head -1 | sed 's/.*card \([0-9]*\).*/\1/')
+    CARD=${CARD:-0}
+    logger "hdmi-audio: CARD=$CARD Starting"
+    /usr/bin/amixer -c $CARD sset IEC958 on && logger "hdmi-audio: amixer OK" || logger "hdmi-audio: amixer FAILED"
 end script
-EOF
+CONF
 
-chmod 644 /etc/init/hdmi-audio.conf
-initctl reload-configuration
-initctl start hdmi-audio
-echo \"Permanent boot job created for Card: $CARD_NUM\"
-"
+sudo chmod 644 /etc/init/hdmi-audio.conf
+sudo /sbin/initctl reload-configuration
+sudo /sbin/initctl start hdmi-audio
+echo "Permanent HDMI fix created"
+```
+
+To debug if it fails after reboot:
+```bash
+sudo grep "hdmi-audio" /var/log/messages | tail -5
 ```
 
 ## References
