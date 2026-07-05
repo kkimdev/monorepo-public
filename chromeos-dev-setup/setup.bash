@@ -133,6 +133,13 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
               );
             })
 
+            # TODO: #538256 is merged (Jul 3, 2026). Once it lands in the
+            # DeterminateSystems nixpkgs-weekly channel we use, remove
+            # this entire overlay.
+            #   To check: nix flake metadata https://flakehub.com/f/DeterminateSystems/nixpkgs-weekly/0.1 |
+            #     grep Revision | awk '{print $2}' to get the current commit,
+            #     then curl -s "https://api.github.com/repos/NixOS/nixpkgs/compare/<current>...4ca51c8" |
+            #     jq -r '.status' (behind/identical = fixed)
             # opencode-desktop: nixpkgs generates "opencode-desktop.desktop"
             # with StartupWMClass=OpenCode, but the Electron app sends
             # app_id "ai.opencode.desktop" (from setAppUserModelId).
@@ -536,6 +543,8 @@ in
     fzf = {
       enable = true;
       enableBashIntegration = true;
+      enableZshIntegration = true;
+      historyWidget.command = "";
     };
 
     zoxide = {
