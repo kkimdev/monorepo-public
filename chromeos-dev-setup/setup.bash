@@ -123,7 +123,6 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
             # codex-desktop has no overlays output; import its package directly
             # and override Codex.dmg hash when upstream goes stale.
             # Set codexDmgHashOverride above to the actual hash.
-            # Note: don't override pkgs.codex — that's the CLI from nixpkgs.
             # The desktop app is always added fresh from the flake's packages.
             (final: prev: {
               codex-desktop-app = codex-desktop-linux.packages.${system}.codex-desktop.overrideAttrs (old:
@@ -131,6 +130,15 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
                   outputHash = codexDmgHashOverride;
                 }
               );
+              # TODO(https://github.com/openai/codex/issues/28978): Remove this overlay once
+              # upstream ships a fixed CLI (>=0.140.0) that matches the Desktop's rmcp
+              # version, OR the Desktop stops injecting codex_app tools without inputSchema
+              # at thread/start.
+              # Pin codex CLI to v0.137.0 (pre-rmcp 1.7.0, no strict inputSchema check).
+              codex = prev.symlinkJoin {
+                name = "codex-0.137.0";
+                paths = [ (builtins.storePath "/nix/store/a43n7vrdfh42mdbrbmhjayjr4hxafspb-codex-0.137.0") ];
+              };
             })
 
             # TODO: #538256 is merged (Jul 3, 2026). Once it lands in the
@@ -684,7 +692,7 @@ EOF
 
 echo "Activating Home Manager (Version $NIX_VER)..."
 nix shell nixpkgs#git --command \
-  nix run --refresh github:nix-community/home-manager -- switch --flake "$CONF_DIR#$USER" --impure -b backup --refresh
+  nix run github:nix-community/home-manager -- switch --flake "$CONF_DIR#$USER" --impure -b backup
 
 # Fix corrupted root shell (common Nix/Crostini issue)
 ROOT_SHELL="$(getent passwd root | cut -d: -f7)"
