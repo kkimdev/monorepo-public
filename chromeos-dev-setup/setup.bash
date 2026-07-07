@@ -124,20 +124,35 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
             # and override Codex.dmg hash when upstream goes stale.
             # Set codexDmgHashOverride above to the actual hash.
             # The desktop app is always added fresh from the flake's packages.
+            # NOTE: `codex-desktop-app` was originally defined here via overrideAttrs
+            # for Codex.dmg hash pinning, but it's unused -- the home-manager module
+            # (`nix/home-manager-module.nix`) picks up `flakePackages.codex-desktop`
+            # directly from the flake, then wraps it with `withCodexCliPath` using
+            # `cliPackage = pkgs.codex` from the config below. That wrapping is what
+            # bakes CODEX_CLI_PATH into the launcher; this overlay entry is dead code.
+            # Kept here (commented) for reference in case flake pinning is ever needed.
+            # codex-desktop-app = codex-desktop-linux.packages.${system}.codex-desktop.overrideAttrs (old:
+            #   nixpkgs.lib.optionalAttrs (codexDmgHashOverride != null) {
+            #     outputHash = codexDmgHashOverride;
+            #   }
+            # );
             (final: prev: {
-              codex-desktop-app = codex-desktop-linux.packages.${system}.codex-desktop.overrideAttrs (old:
-                nixpkgs.lib.optionalAttrs (codexDmgHashOverride != null) {
-                  outputHash = codexDmgHashOverride;
-                }
-              );
-              # TODO(https://github.com/openai/codex/issues/28978): Remove this overlay once
-              # upstream ships a fixed CLI (>=0.140.0) that matches the Desktop's rmcp
-              # version, OR the Desktop stops injecting codex_app tools without inputSchema
-              # at thread/start.
-              # Pin codex CLI to v0.137.0 (pre-rmcp 1.7.0, no strict inputSchema check).
-              codex = prev.symlinkJoin {
-                name = "codex-0.137.0";
-                paths = [ (builtins.storePath "/nix/store/a43n7vrdfh42mdbrbmhjayjr4hxafspb-codex-0.137.0") ];
+              # Pin codex CLI to v0.142.5 — the Desktop injects codex_app dynamic tools
+              # at thread/start, and CLIs before 0.142.0 reject these tools for missing
+              # inputSchema (rust serde required field check). Upstream fixed this in
+              # the 0.142.x series (https://github.com/openai/codex/issues/28978).
+              codex = prev.stdenv.mkDerivation {
+                pname = "codex";
+                version = "0.142.5";
+                src = prev.fetchurl {
+                  url = "https://github.com/openai/codex/releases/download/rust-v0.142.5/codex-x86_64-unknown-linux-musl.tar.gz";
+                  hash = "sha256-y5M+w8thv0tfyI7s9eYUmCn6phclNbbvCvsBVL60qrg=";
+                };
+                sourceRoot = ".";
+                installPhase = ''
+                  mkdir -p $out/bin
+                  mv codex-x86_64-unknown-linux-musl $out/bin/codex
+                '';
               };
             })
 
