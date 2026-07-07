@@ -328,6 +328,7 @@ in
       WAYLAND_DISPLAY = "wayland-2";
       DISPLAY = ":1";
       CODEX_LINUX_RENDERING_MODE = "wayland-gpu";
+      CODEX_LINUX_DISABLE_EXTERNAL_OPEN_PATCH = "1";
       # Web search provider selection. Required for non-opencode providers (model-gateway).
       # See ../scratch-monorepo/model_gateway/WEB_SEARCH.md.
       # OPENCODE_ENABLE_EXA = "true";
@@ -623,6 +624,7 @@ in
       Environment="WAYLAND_DISPLAY=wayland-2"
       Environment="DISPLAY=:1"
       Environment="CODEX_LINUX_RENDERING_MODE=wayland-gpu"
+      Environment="CODEX_LINUX_DISABLE_EXTERNAL_OPEN_PATCH=1"
       # GLib-GIO-ERROR: Settings schema 'org.gtk.Settings.FileChooser' is not installed
       # codex-desktop crashes (exit 5) when opening a file dialog if these are missing.
       Environment="GSETTINGS_SCHEMA_DIR=\${gtk3SchemaDir}:\${gsettingsSchemaDir}"
