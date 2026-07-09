@@ -91,13 +91,16 @@ Then test in Chrome. If it works, create a permanent Upstart job:
 sudo tee /etc/init/internal-mic.conf > /dev/null <<'CONF'
 description "Fix Internal Mic Routing at Boot"
 author "User"
-start on started cras or startup
+start on started failsafe
 task
 script
-    sleep 3
-    CARD=$(arecord -l | grep DMIC | head -1 | sed 's/.*card \([0-9]*\).*/\1/')
-    DMIC=$(cras_test_client --dump_s | grep "sof-hda-dsp: :$CARD,6" | awk '{print $1}')
-    logger "internal-mic: CARD=$CARD DMIC=$DMIC"
+    for i in $(seq 1 30); do
+        CARD=$(arecord -l | grep DMIC | head -1 | sed 's/.*card \([0-9]*\).*/\1/')
+        DMIC=$(cras_test_client --dump_s | grep "sof-hda-dsp: :$CARD,6" | awk '{print $1}')
+        logger "internal-mic: attempt=$i CARD=$CARD DMIC=$DMIC"
+        [ -n "$CARD" ] && [ -n "$DMIC" ] && break
+        sleep 2
+    done
     /usr/bin/amixer -c $CARD cset name='Dmic0 Capture Switch' on,on && logger "internal-mic: amixer OK" || logger "internal-mic: amixer FAILED"
     /usr/bin/cras_test_client --select_input $DMIC:0 && logger "internal-mic: select_input OK" || logger "internal-mic: select_input FAILED"
 end script
@@ -105,7 +108,7 @@ CONF
 
 sudo chmod 644 /etc/init/internal-mic.conf
 sudo /sbin/initctl reload-configuration
-sudo /sbin/initctl start internal-mic         # first time; use restart after reboot
+sudo /sbin/initctl start internal-mic
 echo "Permanent mic fix created"
 ```
 
@@ -118,9 +121,11 @@ cras_test_client --dump_s | grep -A40 "Input Nodes" | grep "\*"   # should show 
 
 To debug if it fails after reboot:
 ```bash
-sudo grep "internal-mic" /var/log/messages | tail -5
+sudo grep "internal-mic" /var/log/messages | tail -10
 ```
 
+> **Why `started failsafe`?** Custom `/etc/init/*.conf` files on Brunch are loaded during `boot-services`, which fires *after* `started cras` — so `started cras or startup` is missed. `failsafe` is the last boot event and guarantees ALSA/CRAS are ready. The retry loop handles the remaining race where the DMIC device isn't enumerated yet at `failsafe` time.
+>
 > **Notes:**
 > - Assumes DMIC is ALSA PCM device 6 (standard for Intel SOF HDA). If different, change `6` after `:,$CARD,` to the correct device number from `arecord -l`.
 > - Assumes kcontrol name is `Dmic0 Capture Switch` (standard Intel naming). If `amixer` errors, find the correct name with `amixer -c $CARD contents | grep -i dmic | grep Switch`.
