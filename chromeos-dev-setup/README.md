@@ -91,7 +91,7 @@ Then test in Chrome. If it works, create a permanent Upstart job:
 sudo tee /etc/init/internal-mic.conf > /dev/null <<'CONF'
 description "Fix Internal Mic Routing at Boot"
 author "User"
-start on started failsafe
+start on started system-services
 task
 script
     for i in $(seq 1 30); do
