@@ -9,8 +9,13 @@ export CROS_SETUP_SCRIPT_FILE="$(readlink -f "${BASH_SOURCE[0]}")"
 #
 # ── W1 "ignoring untrusted substituter 'https://codex-desktop-linux.cachix.org'" ──
 #  Rank 1: Add user to trusted-users in /etc/nix/nix.custom.conf
-#    sudo bash -c 'grep -qxF "trusted-users = $USER" /etc/nix/nix.custom.conf 2>/dev/null || echo "trusted-users = $USER" >> /etc/nix/nix.custom.conf'
-#    (Line 24 adds this at install time, but if Nix was pre-existing it's a no-op.)
+#    NOTE: Must expand $USER in the OUTER shell. Using `sudo bash -c '...$USER...'`
+#    is a trap: single quotes block outer expansion and the inner bash runs under
+#    sudo's env_reset, where $USER=root — so it writes `trusted-users = root` (no-op).
+#    grep runs as the regular user (file is 644); only the write needs sudo.
+#    grep -qxF "trusted-users = $USER" /etc/nix/nix.custom.conf 2>/dev/null || echo "trusted-users = $USER" | sudo tee -a /etc/nix/nix.custom.conf > /dev/null
+#    sudo systemctl restart nix-daemon   # daemon caches nix.conf at startup; required for trusted-users/substituters changes
+#    (Line 49 adds this at install time, but if Nix was pre-existing the if-branch is skipped.)
 #  Rank 2: Trust codex cache via extra-trusted-substituters in nix.custom.conf
 #    sudo bash -c 'grep -qxF "extra-trusted-substituters = https://codex-desktop-linux.cachix.org" /etc/nix/nix.custom.conf 2>/dev/null || echo "extra-trusted-substituters = https://codex-desktop-linux.cachix.org" >> /etc/nix/nix.custom.conf'
 #    sudo bash -c 'grep -qxF "extra-trusted-public-keys = codex-desktop-linux.cachix.org-1:nX/xy6AdK9hQE24A8ALGjkCKj2ObFmcnemiL5Cid4nk=" /etc/nix/nix.custom.conf 2>/dev/null || echo "extra-trusted-public-keys = codex-desktop-linux.cachix.org-1:nX/xy6AdK9hQE24A8ALGjkCKj2ObFmcnemiL5Cid4nk=" >> /etc/nix/nix.custom.conf'
@@ -105,11 +110,6 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
       # Dynamically grab the current user directly from the environment inside Nix
       username = builtins.getEnv "USER";
 
-      # codex-desktop Codex.dmg hash override
-      # When upstream hash goes stale, replace `null` with the actual SHA256 hash
-      # from the build error message ("got: sha256-<hash>").
-      codexDmgHashOverride = null;
-
     in {
       homeConfigurations."${username}" = home-manager.lib.homeManagerConfiguration {
         pkgs = import nixpkgs {
@@ -120,22 +120,6 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
             kakaotalk.overlays.default
             claude-desktop.overlays.default
             antigravity-nix.overlays.default
-            # codex-desktop has no overlays output; import its package directly
-            # and override Codex.dmg hash when upstream goes stale.
-            # Set codexDmgHashOverride above to the actual hash.
-            # The desktop app is always added fresh from the flake's packages.
-            # NOTE: `codex-desktop-app` was originally defined here via overrideAttrs
-            # for Codex.dmg hash pinning, but it's unused -- the home-manager module
-            # (`nix/home-manager-module.nix`) picks up `flakePackages.codex-desktop`
-            # directly from the flake, then wraps it with `withCodexCliPath` using
-            # `cliPackage = pkgs.codex` from the config below. That wrapping is what
-            # bakes CODEX_CLI_PATH into the launcher; this overlay entry is dead code.
-            # Kept here (commented) for reference in case flake pinning is ever needed.
-            # codex-desktop-app = codex-desktop-linux.packages.${system}.codex-desktop.overrideAttrs (old:
-            #   nixpkgs.lib.optionalAttrs (codexDmgHashOverride != null) {
-            #     outputHash = codexDmgHashOverride;
-            #   }
-            # );
             (final: prev: {
               # Pin codex CLI to v0.142.5 — the Desktop injects codex_app dynamic tools
               # at thread/start, and CLIs before 0.142.0 reject these tools for missing
