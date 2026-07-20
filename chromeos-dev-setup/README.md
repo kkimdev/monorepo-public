@@ -72,11 +72,13 @@ Reference: https://www.reddit.com/r/chromeos/comments/1u0niv3/crostini_linux_on_
 
 ### Internal Microphone Not Working in Chrome
 
+**Known to affect:** ThinkBook 16 G6 IRL
+
 **Symptom:** Internal mic works at ALSA level (`arecord`) but not in Chrome.
 
 **Root cause:** Chrome uses CRAS (ChromeOS Audio Server) which may route the "default" capture device to a PCM node or channel that doesn't carry the internal mic signal. The dedicated DMIC PCM exists but is not selected by default.
 
-**Quick test** — one-liner to detect and apply the fix:
+**Steps to fix:**
 ```bash
 CARD=$(arecord -l | grep DMIC | head -1 | sed 's/.*card \([0-9]*\).*/\1/')
 DMIC=$(cras_test_client --dump_s | grep "sof-hda-dsp: :$CARD,6" | awk '{print $1}')
@@ -129,7 +131,10 @@ sudo grep "internal-mic" /var/log/messages | tail -10
 > **Notes:**
 > - Assumes DMIC is ALSA PCM device 6 (standard for Intel SOF HDA). If different, change `6` after `:,$CARD,` to the correct device number from `arecord -l`.
 > - Assumes kcontrol name is `Dmic0 Capture Switch` (standard Intel naming). If `amixer` errors, find the correct name with `amixer -c $CARD contents | grep -i dmic | grep Switch`.
-### HDMI Audio Output
+
+### HDMI Audio Output Not Working
+
+**Known to affect:** ThinkBook 16 G6 IRL
 
 Reference: https://github.com/sebanc/brunch/issues/2273
 
@@ -171,6 +176,43 @@ To debug if it fails after reboot:
 ```bash
 sudo grep "hdmi-audio" /var/log/messages | tail -5
 ```
+
+### Touchpad initial touch delay and tap suppression
+
+**Known to affect:** ThinkBook 16 G9 AHP
+
+**Symptom:** The first ~0.2s of each touch is ignored — cursor only begins moving ~0.2s after touchdown, and tap-to-click fails intermittently (taps either complete before the delay expires or are suppressed when preceded by finger motion). Even very light touches work after the delay, confirming the issue is time-based, not pressure-based.
+
+**Root cause:** The gestures library `ImmediateInterpreter` uses conservative timeouts that don't suit this hardware: `Change Timeout` (0.2s) holds a newly-landed finger in a "pending" state before committing to pointer movement, while `Motion Tap Prevent Timeout` prevents taps from registering when preceded by recent motion. Zeroing both removes these artificial delays.
+
+**Steps to fix:**
+
+1. Enable `chrome://flags/#gesture-properties-dbus-service` → **Enabled** → Restart Chrome.
+2. Open crosh with `Ctrl+Alt+T` (`gesture_prop` is a crosh built-in; no `shell` needed).
+3. Find the touchpad device ID and check current timeout values:
+   ```
+   crosh> gesture_prop devices
+   crosh> gesture_prop get <device_id> "Change Timeout"
+   crosh> gesture_prop get <device_id> "Motion Tap Prevent Timeout"
+   ```
+4. Zero both timeout properties:
+   ```
+   crosh> gesture_prop set <device_id> "Change Timeout" array:double:0.0
+   crosh> gesture_prop set <device_id> "Motion Tap Prevent Timeout" array:double:0.0
+   ```
+
+Verify the fix is active (no reboot needed):
+```
+crosh> gesture_prop get <device_id> "Change Timeout"              # should show 0.0
+crosh> gesture_prop get <device_id> "Motion Tap Prevent Timeout"  # should show 0.0
+```
+Cursor should respond instantly after touchdown, and tap-to-click should work reliably even when preceded by finger motion.
+
+> **Notes:**
+> - On the affected ThinkBook 16 G9 AHP, `Change Timeout` (0.2s) and `Motion Tap Prevent Timeout` both caused delays; setting both to 0.0 fixed the touchpad.
+> - Value syntax uses dbus-send format: `array:double:0.0` (floats), `array:boolean:false` (bools), `array:int32:1` (ints), comma-separated for multiple values.
+> - Changes take effect immediately but **do not persist across reboots**. A startup script running after Chrome starts is required for persistence.
+> - If further tuning is needed, check `Scroll Probe Max Time`, `Tap Timeout`, `Tap Pause`, `Keyboard Touchpad No Press Time`.
 
 ## References
 - https://old.reddit.com/r/Crostini/wiki/index
