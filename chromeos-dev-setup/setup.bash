@@ -720,6 +720,13 @@ rm -f /run/user/"$(id -u)"/wayland-{1,2}.lock /run/user/"$(id -u)"/wayland-{1,2}
 echo "Restarting compositors to recreate sockets..."
 systemctl --user restart sommelier-rs.service sommelier@1.service 2>/dev/null || true
 
+# Crostini's OpenSSH build may reject the system GSSAPIAuthentication directive
+# and warn on every SSH or Git invocation. Remove only active occurrences.
+if grep -qiE '^[[:space:]]*GSSAPIAuthentication[[:space:]]' /etc/ssh/ssh_config; then
+  echo "Cleaning up unsupported GSSAPI option from system SSH config..."
+  sudo sed -i '/^[[:space:]]*gssapiauthentication[[:space:]]/Id' /etc/ssh/ssh_config
+fi
+
 echo "============================================================"
 echo "SUCCESS: Home Manager setup is fully activated!"
 echo "Your original configs were safely backed up as *.backup"
