@@ -34,6 +34,14 @@ await term_.prefs_.set('user-css-text', '@font-face {font-family: "JetBrainsMono
 
 [`./setup.bash`](./setup.bash)
 
+Use `cros-setup` to reapply the configuration without restarting user services
+or replacing the current shell. Home Manager prints any service restart
+suggestions instead of interrupting ongoing terminal or GUI work.
+
+Use the existing `cros-reset` command later to deliberately restart the
+compositor stack and apply deferred GUI-service changes. Running `cros-reset`
+closes Linux GUI applications.
+
 ## SSH Key Generation & Github Registration
 ```bash
 

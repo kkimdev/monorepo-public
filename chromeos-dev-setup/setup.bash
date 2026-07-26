@@ -232,15 +232,16 @@ let
       systemctl --user restart cros-garcon.service
     '';
 
-    # Re-run the full ChromeOS dev setup and reload the current shell so all
-    # new paths, aliases, and env vars take effect immediately.
-    # The path to setup.bash is baked in at generation time so this alias
-    # works from any directory.
-    cros-setup = "bash \"\$CROS_SETUP_SCRIPT_FILE\" && exec \"\$(readlink -f /proc/\$\$/exe)\"";
+    # Reapply the configuration without restarting services or replacing this shell.
+    cros-setup = "bash \"\$CROS_SETUP_SCRIPT_FILE\"";
   };
 in
 {
   nixpkgs.config.allowUnfree = true;
+
+  # Defer all service restarts so configuration updates do not interrupt work.
+  # Use cros-reset later to deliberately restart the compositor stack.
+  systemd.user.startServices = "suggest";
 
   home = {
     username = "$USER";
@@ -713,13 +714,6 @@ if ! grep -qxF "$ZSH_PATH" /etc/shells 2>/dev/null; then
 fi
 sudo chsh -s "$ZSH_PATH" "$USER"
 
-# Clean up stale Wayland sockets that may conflict from previous runs
-# Keep wayland-0 (host compositor), clean up wayland-1 and wayland-2 which we manage
-echo "Cleaning up stale Wayland sockets..."
-rm -f /run/user/"$(id -u)"/wayland-{1,2}.lock /run/user/"$(id -u)"/wayland-{1,2} 2>/dev/null || true
-echo "Restarting compositors to recreate sockets..."
-systemctl --user restart sommelier-rs.service sommelier@1.service 2>/dev/null || true
-
 # Crostini's OpenSSH build may reject the system GSSAPIAuthentication directive
 # and warn on every SSH or Git invocation. Remove only active occurrences.
 if grep -qiE '^[[:space:]]*GSSAPIAuthentication[[:space:]]' /etc/ssh/ssh_config; then
@@ -731,6 +725,5 @@ echo "============================================================"
 echo "SUCCESS: Home Manager setup is fully activated!"
 echo "Your original configs were safely backed up as *.backup"
 echo "Modify your packages anytime in: $CONF_DIR/home.nix"
+echo "Service restarts were deferred. Run cros-reset later when interruption is safe."
 echo "============================================================"
-
-# exec "$(readlink -f /proc/$PPID/exe)"
