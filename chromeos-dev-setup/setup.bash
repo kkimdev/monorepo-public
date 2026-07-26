@@ -395,14 +395,13 @@ in
     codexDesktopLinux = {
       enable = true;
       cliPackage = pkgs.codex;
-      # computerUseUi and remoteMobileControl disabled due to buildEnv path conflicts
-      # with codex-desktop (overlapping 'plugins/chrome/scripts/browser-client.mjs').
+      # Keep Computer Use UI disabled because enabling both package variants causes
+      # overlapping browser plugin paths in the Home Manager profile.
       # computerUseUi.enable = true;
-      # remoteMobileControl.enable = true;
-      # remoteControl = {
-      #   enable = true;
-      #   package = pkgs.codex;
-      # };
+      remoteMobileControl.enable = true;
+      # Keep the declarative remote-control service disabled because Codex Desktop
+      # already owns the app-server control socket in this Crostini environment.
+      # remoteControl.enable = true;
     };
 
     bash = {
@@ -648,6 +647,12 @@ in
     };
     ".antigravity-ide/User/settings.json" = {
       source = config.lib.file.mkOutOfStoreSymlink "$HOME/.config/Code/User/settings.json";
+    };
+
+    # Let the Nix-managed Codex CLI satisfy the remote-mobile cold-start hook's
+    # managed runtime path without bootstrapping the standalone updater.
+    ".codex/packages/standalone/current/codex" = {
+      source = "\${pkgs.codex}/bin/codex";
     };
 
     # TODO
