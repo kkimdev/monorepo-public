@@ -139,11 +139,21 @@ CONF
 
 sudo chmod 644 /etc/init/internal-mic.conf
 sudo /sbin/initctl reload-configuration
-sudo /sbin/initctl start internal-mic
 echo "Permanent mic fix created"
 ```
 
-Verify the fix is active (no reboot needed):
+Test the Upstart job immediately without rebooting:
+```bash
+sudo /sbin/initctl stop internal-mic 2>/dev/null || true
+sudo /sbin/initctl start internal-mic
+sudo /sbin/initctl status internal-mic
+sudo grep "internal-mic" /var/log/messages | tail -30
+```
+
+`internal-mic stop/waiting` is expected after a successful run because the job is
+declared as a one-time `task`. The logs should contain `verification OK`.
+
+Verify that the job selected the correct CRAS input:
 ```bash
 PAIR=$(arecord -l | sed -n 's/^card \([0-9][0-9]*\):.*device \([0-9][0-9]*\): DMIC.*/\1 \2/p' | head -1)
 CARD=${PAIR%% *}
