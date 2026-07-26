@@ -80,11 +80,17 @@ Reference: https://www.reddit.com/r/chromeos/comments/1u0niv3/crostini_linux_on_
 
 **Steps to fix:**
 ```bash
-CARD=$(arecord -l | grep DMIC | head -1 | sed 's/.*card \([0-9]*\).*/\1/')
-DMIC=$(cras_test_client --dump_s | grep "sof-hda-dsp: :$CARD,6" | awk '{print $1}')
-amixer -c $CARD cset name='Dmic0 Capture Switch' on,on
-cras_test_client --select_input $DMIC:0
-echo "Applied: card=$CARD DMIC_CRAS_ID=$DMIC"
+PAIR=$(arecord -l | sed -n 's/^card \([0-9][0-9]*\):.*device \([0-9][0-9]*\): DMIC.*/\1 \2/p' | head -1)
+CARD=${PAIR%% *}
+DEVICE=${PAIR#* }
+DMIC=$(cras_test_client --dump_s | awk -v target=":$CARD,$DEVICE" '
+  /^Input Devices:/ { in_inputs=1; next }
+  /^Input Nodes:/ { in_inputs=0 }
+  in_inputs && index($0, target) { print $1; exit }
+')
+amixer -c "$CARD" cset name='Dmic0 Capture Switch' on,on
+cras_test_client --select_input "$DMIC:0"
+echo "Applied: ALSA=$CARD,$DEVICE CRAS_NODE=$DMIC:0"
 ```
 
 Then test in Chrome. If it works, create a permanent Upstart job:
@@ -93,18 +99,41 @@ Then test in Chrome. If it works, create a permanent Upstart job:
 sudo tee /etc/init/internal-mic.conf > /dev/null <<'CONF'
 description "Fix Internal Mic Routing at Boot"
 author "User"
-start on started system-services
+start on started failsafe
 task
 script
     for i in $(seq 1 30); do
-        CARD=$(arecord -l | grep DMIC | head -1 | sed 's/.*card \([0-9]*\).*/\1/')
-        DMIC=$(cras_test_client --dump_s | grep "sof-hda-dsp: :$CARD,6" | awk '{print $1}')
-        logger "internal-mic: attempt=$i CARD=$CARD DMIC=$DMIC"
-        [ -n "$CARD" ] && [ -n "$DMIC" ] && break
+        PAIR=$(arecord -l | sed -n 's/^card \([0-9][0-9]*\):.*device \([0-9][0-9]*\): DMIC.*/\1 \2/p' | head -1)
+        CARD=${PAIR%% *}
+        DEVICE=${PAIR#* }
+        DMIC=$(cras_test_client --dump_s | awk -v target=":$CARD,$DEVICE" '
+            /^Input Devices:/ { in_inputs=1; next }
+            /^Input Nodes:/ { in_inputs=0 }
+            in_inputs && index($0, target) { print $1; exit }
+        ')
+        logger "internal-mic: attempt=$i CARD=$CARD DEVICE=$DEVICE DMIC=$DMIC"
+        [ -n "$CARD" ] && [ -n "$DEVICE" ] && [ -n "$DMIC" ] && break
         sleep 2
     done
-    /usr/bin/amixer -c $CARD cset name='Dmic0 Capture Switch' on,on && logger "internal-mic: amixer OK" || logger "internal-mic: amixer FAILED"
-    /usr/bin/cras_test_client --select_input $DMIC:0 && logger "internal-mic: select_input OK" || logger "internal-mic: select_input FAILED"
+    if [ -z "$CARD" ] || [ -z "$DEVICE" ] || [ -z "$DMIC" ]; then
+        logger "internal-mic: discovery FAILED CARD=$CARD DEVICE=$DEVICE DMIC=$DMIC"
+        exit 1
+    fi
+    /usr/bin/amixer -c "$CARD" cset name='Dmic0 Capture Switch' on,on && logger "internal-mic: amixer OK" || logger "internal-mic: amixer FAILED"
+    /usr/bin/cras_test_client --select_input "$DMIC:0" && logger "internal-mic: select_input OK node=$DMIC:0" || logger "internal-mic: select_input FAILED node=$DMIC:0"
+
+    sleep 1
+    ACTIVE=$(cras_test_client --dump_s | awk '
+        /^Input Nodes:/ { in_nodes=1; next }
+        /^Attached clients:/ { in_nodes=0 }
+        in_nodes && $2 ~ /^[0-9]+:[0-9]+$/ && $0 ~ /X\*/ { print $2; exit }
+    ')
+    if [ "$ACTIVE" = "$DMIC:0" ]; then
+        logger "internal-mic: verification OK active=$ACTIVE"
+    else
+        logger "internal-mic: verification FAILED expected=$DMIC:0 active=$ACTIVE"
+        exit 1
+    fi
 end script
 CONF
 
@@ -116,9 +145,32 @@ echo "Permanent mic fix created"
 
 Verify the fix is active (no reboot needed):
 ```bash
-CARD=$(arecord -l | grep DMIC | head -1 | sed 's/.*card \([0-9]*\).*/\1/')
-amixer -c $CARD cget name='Dmic0 Capture Switch'                 # should show "values=on,on"
-cras_test_client --dump_s | grep -A40 "Input Nodes" | grep "\*"   # should show * on the DMIC node
+PAIR=$(arecord -l | sed -n 's/^card \([0-9][0-9]*\):.*device \([0-9][0-9]*\): DMIC.*/\1 \2/p' | head -1)
+CARD=${PAIR%% *}
+DEVICE=${PAIR#* }
+STATE=$(cras_test_client --dump_s)
+DMIC=$(printf '%s\n' "$STATE" | awk -v target=":$CARD,$DEVICE" '
+  /^Input Devices:/ { in_inputs=1; next }
+  /^Input Nodes:/ { in_inputs=0 }
+  in_inputs && index($0, target) { print $1; exit }
+')
+EXPECTED="$DMIC:0"
+ACTIVE=$(printf '%s\n' "$STATE" | awk '
+  /^Input Nodes:/ { in_nodes=1; next }
+  /^Attached clients:/ { in_nodes=0 }
+  in_nodes && $2 ~ /^[0-9]+:[0-9]+$/ && $0 ~ /X\*/ { print $2; exit }
+')
+
+amixer -c "$CARD" cget name='Dmic0 Capture Switch' | grep 'values='
+echo "Expected CRAS input: $EXPECTED (ALSA hw:$CARD,$DEVICE)"
+echo "Active CRAS input:   $ACTIVE"
+
+if [ -n "$DMIC" ] && [ "$ACTIVE" = "$EXPECTED" ]; then
+  echo "PASS: CRAS is using the dedicated DMIC"
+else
+  echo "FAIL: CRAS is not using the dedicated DMIC"
+  echo "Repair with: cras_test_client --select_input $EXPECTED"
+fi
 ```
 
 To debug if it fails after reboot:
@@ -129,7 +181,6 @@ sudo grep "internal-mic" /var/log/messages | tail -10
 > **Why `started failsafe`?** Custom `/etc/init/*.conf` files on Brunch are loaded during `boot-services`, which fires *after* `started cras` — so `started cras or startup` is missed. `failsafe` is the last boot event and guarantees ALSA/CRAS are ready. The retry loop handles the remaining race where the DMIC device isn't enumerated yet at `failsafe` time.
 >
 > **Notes:**
-> - Assumes DMIC is ALSA PCM device 6 (standard for Intel SOF HDA). If different, change `6` after `:,$CARD,` to the correct device number from `arecord -l`.
 > - Assumes kcontrol name is `Dmic0 Capture Switch` (standard Intel naming). If `amixer` errors, find the correct name with `amixer -c $CARD contents | grep -i dmic | grep Switch`.
 
 ### HDMI Audio Output Not Working
