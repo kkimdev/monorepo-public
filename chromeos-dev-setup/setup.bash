@@ -221,7 +221,7 @@ let
     '';
 
     cros-reset = ''
-      # Clean up stale sockets before restarting (keep wayland-0, it's the host compositor)
+      # Clean stale sockets; restart Garcon asynchronously because it owns the invoking shell.
       rm -f /run/user/\$UID/wayland-{1,2}.lock /run/user/\$UID/wayland-{1,2} 2>/dev/null; \
       systemctl --user daemon-reload && \
       systemctl --user reset-failed sommelier@1.service 2>/dev/null; \
@@ -229,7 +229,7 @@ let
       systemctl --user restart sommelier-x@0.service && \
       systemctl --user restart sommelier-x@1.service && \
       systemctl --user restart sommelier-rs.service && \
-      systemctl --user restart cros-garcon.service
+      systemctl --user restart --no-block cros-garcon.service
     '';
 
     # Reapply the configuration without restarting services or replacing this shell.
