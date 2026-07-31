@@ -43,7 +43,7 @@ export CROS_SETUP_SCRIPT_FILE="$(readlink -f "${BASH_SOURCE[0]}")"
 
 sudo apt-get update -y
 sudo apt-get install uidmap -y
-sudo apt-get remove vim command-not-found -y
+sudo apt-get remove vim vim-tiny command-not-found -y
 
 # Add user to render group (required for GPU acceleration access in Crostini)
 sudo usermod -aG render "$USER"
@@ -305,6 +305,7 @@ in
     sessionVariables = {
       NIXPKGS_ALLOW_UNFREE = "1";
       EDITOR = "code --wait --new-window";
+      VISUAL = "code --wait --new-window";
       GIT_USER_NAME = "$GIT_USER_NAME";
       GIT_USER_EMAIL = "$GIT_USER_EMAIL";
       CROS_SETUP_SCRIPT_FILE = "$CROS_SETUP_SCRIPT_FILE";
