@@ -44,6 +44,7 @@ export CROS_SETUP_SCRIPT_FILE="$(readlink -f "${BASH_SOURCE[0]}")"
 sudo apt-get update -y
 sudo apt-get install uidmap -y
 sudo apt-get remove vim vim-tiny command-not-found -y
+sudo apt autoremove
 
 # Add user to render group (required for GPU acceleration access in Crostini)
 sudo usermod -aG render "$USER"
@@ -257,6 +258,10 @@ in
       delta
       micro
       direnv
+      # zplug uses Perl to strip ANSI escape sequences in its global logs.
+      # Keep Perl in the Home Manager profile so project Nix shells can
+      # filter host PATH entries such as /usr/bin without breaking zplug.
+      perl
       bat
       btop
       fzf
