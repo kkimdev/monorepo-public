@@ -6,7 +6,7 @@
       "name": "keyboard-navigator",
       "devDependencies": {
         "bun-types": "latest",
-        "playwright": "latest",
+        "playwright": "1.58.2",
         "tsx": "latest",
       },
     },
