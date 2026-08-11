@@ -295,7 +295,7 @@ in
       inkscape
       beekeeper-studio
       yt-dlp
-      sommelier-rs-bin
+      sommelier-rs
       kakaotalk-bin
 
       # Coding
@@ -322,8 +322,8 @@ in
       GIT_USER_EMAIL = "$GIT_USER_EMAIL";
       CROS_SETUP_SCRIPT_FILE = "$CROS_SETUP_SCRIPT_FILE";
       GSETTINGS_SCHEMA_DIR = "\${gtk3SchemaDir}:\${gsettingsSchemaDir}";
-      # wayland-0: host compositor (sommelier), wayland-1: Crostini default sommelier@1, wayland-2: custom sommelier-rs
-      WAYLAND_DISPLAY = "wayland-2";
+      # wayland-0: Crostini default high-density Sommelier, wayland-1: low-density Sommelier, wayland-2: custom sommelier-rs
+      WAYLAND_DISPLAY = "wayland-0";
       DISPLAY = ":1";
       CODEX_LINUX_RENDERING_MODE = "wayland-gpu";
       CODEX_LINUX_DISABLE_EXTERNAL_OPEN_PATCH = "1";
@@ -342,9 +342,9 @@ in
       Requires = [ "sommelier@0.service" ];
     };
     Service = {
-      # Use the absolute path from the derivation defined above
+      # Proxy clients on wayland-2 to Crostini's fast host-facing wayland-0.
       ExecStart =
-        "\${pkgs.sommelier-rs-bin}/bin/sommelier-rs wayland-2";
+        "\${pkgs.sommelier-rs}/bin/sommelier-rs --local-compositor %t/wayland-0 --gpu-accel wayland-2";
       Restart = "always";
       RestartSec = "5";
       Environment = [
@@ -618,7 +618,7 @@ in
       [Service]
       Environment="PATH=%h/.nix-profile/bin:/usr/local/sbin:/usr/local/bin:/usr/local/games:/usr/sbin:/usr/bin:/usr/games:/sbin:/bin"
       Environment="XDG_DATA_DIRS=%h/.nix-profile/share:%h/.local/share:%h/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share:/usr/share"
-      Environment="WAYLAND_DISPLAY=wayland-2"
+      Environment="WAYLAND_DISPLAY=wayland-0"
       Environment="DISPLAY=:1"
       Environment="CODEX_LINUX_RENDERING_MODE=wayland-gpu"
       Environment="CODEX_LINUX_DISABLE_EXTERNAL_OPEN_PATCH=1"

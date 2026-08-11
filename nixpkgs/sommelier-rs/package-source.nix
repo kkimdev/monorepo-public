@@ -8,7 +8,7 @@
 
 rustPlatform.buildRustPackage rec {
   pname = "sommelier-rs";
-  version = "0.2.0";
+  version = "0.2.1";
 
   inherit src;
 
@@ -29,7 +29,7 @@ rustPlatform.buildRustPackage rec {
 
   meta = with lib; {
     description = "A Wayland compositor for running Wayland applications inside Wine/virtwl";
-    homepage = "https://github.com/google/sommelier-rs";
+    homepage = "https://github.com/kkimdev/sommelier-rs";
     license = licenses.asl20;
     platforms = platforms.linux;
     mainProgram = "sommelier";
