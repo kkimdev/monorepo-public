@@ -102,9 +102,14 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
       url = "github:jacopone/antigravity-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    orca-ide = {
+      url = "github:kkimdev/monorepo-public/main?dir=nixpkgs/orca-ide";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { nixpkgs, home-manager, nix-index-database, sommelier-rs, kakaotalk, codex-desktop-linux, claude-desktop, antigravity-nix, ... }@inputs:
+  outputs = { nixpkgs, home-manager, nix-index-database, sommelier-rs, kakaotalk, codex-desktop-linux, claude-desktop, antigravity-nix, orca-ide, ... }@inputs:
     let
       system = builtins.currentSystem;
 
@@ -121,6 +126,7 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
             kakaotalk.overlays.default
             claude-desktop.overlays.default
             antigravity-nix.overlays.default
+            orca-ide.overlays.default
             (final: prev: {
               # Pin codex CLI to v0.142.5 — the Desktop injects codex_app dynamic tools
               # at thread/start, and CLIs before 0.142.0 reject these tools for missing
@@ -284,6 +290,7 @@ in
       # podman
 
       # Apps
+      orca-ide
       chromium
       inkscape
       beekeeper-studio
