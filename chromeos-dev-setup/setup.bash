@@ -78,7 +78,7 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
     nix-index-database.inputs.nixpkgs.follows = "nixpkgs";
 
     sommelier-rs = {
-      url = "git+https://github.com/kkimdev/monorepo-public.git?ref=refs/heads/fix/crostini-ime-source&dir=nixpkgs/sommelier-rs";
+      url = "github:kkimdev/monorepo-public/main?dir=nixpkgs/sommelier-rs";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
