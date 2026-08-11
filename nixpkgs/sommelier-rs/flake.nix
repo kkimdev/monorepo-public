@@ -4,7 +4,7 @@
   inputs = {
     nixpkgs.url = "https://flakehub.com/f/DeterminateSystems/nixpkgs-weekly/0.1";
     sommelier-rs-src = {
-      url = "git+https://github.com/kkimdev/sommelier-rs.git?ref=refs/heads/fix/crostini-ime-state-machine";
+      url = "git+https://github.com/kkimdev/sommelier-rs.git?ref=refs/heads/virtwl";
       flake = false;
     };
   };

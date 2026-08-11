@@ -23,16 +23,16 @@
     "sommelier-rs-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1786420071,
-        "narHash": "sha256-vdi/QO9CQV4NtCCeaKt6FrkvKiOpAhTsPC25oZNq3O0=",
-        "ref": "refs/heads/fix/crostini-ime-state-machine",
-        "rev": "4eb5017e88aa02cf19797150d6a7879bcabb0dce",
-        "revCount": 23,
+        "lastModified": 1786438278,
+        "narHash": "sha256-usxivaYjy9SF8ZY46A5BnZrHepQYvKwh1j2ksA8iBDM=",
+        "ref": "refs/heads/virtwl",
+        "rev": "0af8d1ac4a30dcd28be394e1cabb833fb277ca64",
+        "revCount": 28,
         "type": "git",
         "url": "https://github.com/kkimdev/sommelier-rs.git"
       },
       "original": {
-        "ref": "refs/heads/fix/crostini-ime-state-machine",
+        "ref": "refs/heads/virtwl",
         "type": "git",
         "url": "https://github.com/kkimdev/sommelier-rs.git"
       }
