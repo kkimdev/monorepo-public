@@ -78,7 +78,7 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
     nix-index-database.inputs.nixpkgs.follows = "nixpkgs";
 
     sommelier-rs = {
-      url = "github:kkimdev/monorepo-public/main?dir=nixpkgs/sommelier-rs";
+      url = "git+https://github.com/kkimdev/monorepo-public.git?ref=refs/heads/fix/crostini-ime-source&dir=nixpkgs/sommelier-rs";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
@@ -239,15 +239,16 @@ let
       systemctl --user restart cros-garcon.service
     '';
 
-    # Reapply the configuration without restarting services or replacing this shell.
-    cros-setup = "bash \"\$CROS_SETUP_SCRIPT_FILE\"";
+    # Reapply configuration without restarting services, then update this shell
+    # so subsequently launched applications use the custom proxy.
+    cros-setup = "bash \"\$CROS_SETUP_SCRIPT_FILE\" && export WAYLAND_DISPLAY=wayland-2";
   };
 in
 {
   nixpkgs.config.allowUnfree = true;
 
-  # Defer all service restarts so configuration updates do not interrupt work.
-  # Use cros-reset later to deliberately restart the compositor stack.
+  # Keep cros-setup interruption-free. Updated units take effect on the next
+  # login or when cros-reset is explicitly run.
   systemd.user.startServices = "suggest";
 
   home = {
@@ -323,7 +324,7 @@ in
       CROS_SETUP_SCRIPT_FILE = "$CROS_SETUP_SCRIPT_FILE";
       GSETTINGS_SCHEMA_DIR = "\${gtk3SchemaDir}:\${gsettingsSchemaDir}";
       # wayland-0: Crostini default high-density Sommelier, wayland-1: low-density Sommelier, wayland-2: custom sommelier-rs
-      WAYLAND_DISPLAY = "wayland-0";
+      WAYLAND_DISPLAY = "wayland-2";
       DISPLAY = ":1";
       CODEX_LINUX_RENDERING_MODE = "wayland-gpu";
       CODEX_LINUX_DISABLE_EXTERNAL_OPEN_PATCH = "1";
@@ -618,7 +619,7 @@ in
       [Service]
       Environment="PATH=%h/.nix-profile/bin:/usr/local/sbin:/usr/local/bin:/usr/local/games:/usr/sbin:/usr/bin:/usr/games:/sbin:/bin"
       Environment="XDG_DATA_DIRS=%h/.nix-profile/share:%h/.local/share:%h/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share:/usr/share"
-      Environment="WAYLAND_DISPLAY=wayland-0"
+      Environment="WAYLAND_DISPLAY=wayland-2"
       Environment="DISPLAY=:1"
       Environment="CODEX_LINUX_RENDERING_MODE=wayland-gpu"
       Environment="CODEX_LINUX_DISABLE_EXTERNAL_OPEN_PATCH=1"
@@ -714,6 +715,16 @@ echo "Activating Home Manager (Version $NIX_VER)..."
 nix shell nixpkgs#git --command \
   nix run github:nix-community/home-manager -- switch --flake "$CONF_DIR#$USER" --impure -b backup
 
+# Verify installation without changing the state of running desktop services.
+if [ ! -x "$HOME/.nix-profile/bin/sommelier-rs" ]; then
+  echo "ERROR: sommelier-rs was not installed in the Home Manager profile." >&2
+  exit 1
+fi
+if [ ! -e "$HOME/.config/systemd/user/sommelier-rs.service" ]; then
+  echo "ERROR: sommelier-rs.service was not installed." >&2
+  exit 1
+fi
+
 # Fix corrupted root shell (common Nix/Crostini issue)
 ROOT_SHELL="$(getent passwd root | cut -d: -f7)"
 if [ "$ROOT_SHELL" != "/bin/bash" ] && [ "$ROOT_SHELL" != "/bin/sh" ] && [ "$ROOT_SHELL" != "/usr/sbin/nologin" ]; then
@@ -738,5 +749,6 @@ echo "============================================================"
 echo "SUCCESS: Home Manager setup is fully activated!"
 echo "Your original configs were safely backed up as *.backup"
 echo "Modify your packages anytime in: $CONF_DIR/home.nix"
-echo "Service restarts were deferred. Run cros-reset later when interruption is safe."
+echo "wayland-2 is configured as the default without restarting running services."
+echo "Run cros-reset later only if you want launcher services to switch immediately."
 echo "============================================================"
