@@ -251,8 +251,8 @@ in
 {
   nixpkgs.config.allowUnfree = true;
 
-  # Keep cros-setup interruption-free. Updated units take effect on the next
-  # login or when cros-reset is explicitly run.
+  # Keep cros-setup interruption-free. cros-reset starts only inactive services;
+  # updated running units take effect on the next login or after cros-hard-reset.
   systemd.user.startServices = "suggest";
 
   home = {
@@ -754,5 +754,6 @@ echo "SUCCESS: Home Manager setup is fully activated!"
 echo "Your original configs were safely backed up as *.backup"
 echo "Modify your packages anytime in: $CONF_DIR/home.nix"
 echo "wayland-2 is configured as the default without restarting running services."
-echo "Run cros-reset later only if you want launcher services to switch immediately."
+echo "Run cros-reset to start inactive launcher services without interrupting apps."
+echo "Run cros-hard-reset only when a full GUI-disrupting reset is required."
 echo "============================================================"
