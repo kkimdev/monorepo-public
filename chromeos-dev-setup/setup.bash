@@ -228,9 +228,10 @@ let
     '';
 
     cros-reset = ''
-      # Clean up stale sockets before restarting (keep wayland-0, it's the host compositor)
+      echo "Restarting deferred user services..." && \
       rm -f /run/user/\$UID/wayland-{1,2}.lock /run/user/\$UID/wayland-{1,2} 2>/dev/null; \
       systemctl --user daemon-reload && \
+      systemctl --user restart atuin-daemon.service && \
       systemctl --user reset-failed sommelier@1.service 2>/dev/null; \
       systemctl --user restart sommelier@0.service && \
       systemctl --user restart sommelier-x@0.service && \
