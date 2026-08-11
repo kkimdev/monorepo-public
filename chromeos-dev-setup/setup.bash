@@ -228,16 +228,19 @@ let
     '';
 
     cros-reset = ''
-      echo "Restarting deferred user services..." && \
+      echo "Ensuring deferred user services are running..." && \
+      systemctl --user daemon-reload && \
+      systemctl --user reset-failed atuin-daemon.service sommelier@0.service sommelier@1.service sommelier-x@0.service sommelier-x@1.service sommelier-rs.service cros-garcon.service && \
+      systemctl --user start atuin-daemon.service sommelier@0.service sommelier@1.service sommelier-x@0.service sommelier-x@1.service sommelier-rs.service cros-garcon.service
+    '';
+
+    cros-hard-reset = ''
+      echo "Hard-resetting Crostini user services; running GUI apps will close..." && \
+      systemctl --user stop cros-garcon.service sommelier-rs.service sommelier-x@1.service sommelier-x@0.service sommelier@1.service sommelier@0.service atuin-daemon.service && \
       rm -f /run/user/\$UID/wayland-{1,2}.lock /run/user/\$UID/wayland-{1,2} 2>/dev/null; \
       systemctl --user daemon-reload && \
-      systemctl --user restart atuin-daemon.service && \
-      systemctl --user reset-failed sommelier@1.service 2>/dev/null; \
-      systemctl --user restart sommelier@0.service && \
-      systemctl --user restart sommelier-x@0.service && \
-      systemctl --user restart sommelier-x@1.service && \
-      systemctl --user restart sommelier-rs.service && \
-      systemctl --user restart cros-garcon.service
+      systemctl --user reset-failed atuin-daemon.service sommelier@0.service sommelier@1.service sommelier-x@0.service sommelier-x@1.service sommelier-rs.service cros-garcon.service && \
+      systemctl --user start atuin-daemon.service sommelier@0.service sommelier@1.service sommelier-x@0.service sommelier-x@1.service sommelier-rs.service cros-garcon.service
     '';
 
     # Reapply configuration without restarting services, then update this shell
