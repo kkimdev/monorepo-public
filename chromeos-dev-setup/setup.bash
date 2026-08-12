@@ -411,9 +411,10 @@ in
     # 2. Re-launch hangs when X-closed (Electron single-instance lock)
     #    → Ctrl+Q works to actually quit. No config-side fix yet.
     #
+    # The current codex-desktop-linux module discovers the CLI from PATH;
+    # keep the Nix-managed codex package in home.packages above.
     codexDesktopLinux = {
       enable = true;
-      cliPackage = pkgs.codex;
       # Keep Computer Use UI disabled because enabling both package variants causes
       # overlapping browser plugin paths in the Home Manager profile.
       # computerUseUi.enable = true;
