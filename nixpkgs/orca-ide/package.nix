@@ -34,10 +34,16 @@ appimageTools.wrapType2 {
   # include procps.
   extraPkgs = _: [ procps ];
 
-  # The AppImage FHS hides Crostini's host browser integration files. Expose
-  # only the URL handler and desktop entry used by xdg-open; try-bind keeps
-  # the package portable on Linux systems without ChromeOS integration.
+  # The AppImage FHS hides Crostini's host browser integration files. Make
+  # temporary overlays for their parent directories first because the FHS root
+  # is read-only and bubblewrap otherwise cannot create file-bind destinations.
+  # try-bind keeps the package portable on Linux systems without ChromeOS
+  # integration.
   extraBwrapArgs = [
+    "--overlay-src /usr/bin"
+    "--tmp-overlay /usr/bin"
+    "--overlay-src /usr/share/applications"
+    "--tmp-overlay /usr/share/applications"
     "--ro-bind-try /usr/bin/garcon-url-handler /usr/bin/garcon-url-handler"
     "--ro-bind-try /usr/share/applications/garcon_host_browser.desktop /usr/share/applications/garcon_host_browser.desktop"
   ];
