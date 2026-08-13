@@ -25,27 +25,6 @@ let
     pname = "orca-ide";
     inherit version src;
   };
-  crostiniBrowserIntegration = stdenv.mkDerivation {
-    pname = "crostini-garcon-browser-integration";
-    version = "1";
-    dontUnpack = true;
-    installPhase = ''
-      install -Dm755 /dev/stdin "$out/bin/garcon-url-handler" <<'EOF'
-      #!/bin/sh
-      exec /opt/google/cros-containers/bin/garcon --client --url "$@"
-      EOF
-
-      install -Dm644 /dev/stdin "$out/share/applications/garcon_host_browser.desktop" <<'EOF'
-      [Desktop Entry]
-      Name=Chrome OS Host Browser
-      Exec=garcon-url-handler %U
-      MimeType=x-scheme-handler/http;x-scheme-handler/https;x-scheme-handler/ftp;x-scheme-handler/mailto;
-      Type=Application
-      NoDisplay=true
-      OnlyShowIn=Never
-      EOF
-    '';
-  };
 in
 appimageTools.wrapType2 {
   pname = "orca-ide";
@@ -53,9 +32,7 @@ appimageTools.wrapType2 {
 
   # Orca enumerates processes with `ps`; the default AppImage FHS does not
   # include procps.
-  # Keep the Crostini handler inside the FHS instead of overlaying /usr/bin:
-  # the latter hides the FHS-provided ldconfig and breaks AppImage startup.
-  extraPkgs = _: [ procps crostiniBrowserIntegration ];
+  extraPkgs = _: [ procps ];
 
   # AppImages do not export their desktop metadata through wrapType2, so copy
   # the upstream launcher and icon into the Nix profile for desktop discovery.

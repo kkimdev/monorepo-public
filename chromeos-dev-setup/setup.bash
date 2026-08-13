@@ -197,6 +197,10 @@ cat <<EOF > "$CONF_DIR/home.nix"
 let
   crosDesktopShareDir = "\${config.home.homeDirectory}/.local/share";
   nixProfileShareDir  = "\${config.home.homeDirectory}/.nix-profile/share";
+  # This file is evaluated with --impure on the host. Do not install a
+  # Crostini-specific browser default on ordinary Linux systems.
+  isCrostini = builtins.pathExists "/opt/google/cros-containers/bin/garcon"
+    && builtins.pathExists "/usr/share/applications/garcon_host_browser.desktop";
   # GSettings schema dirs for codex-desktop file dialog (GLib fatal crash fix)
   # See also \`GSETTINGS_SCHEMA_DIR\` in the cros-garcon override below.
   gtk3SchemaDir       = "\${pkgs.gtk3}/share/gsettings-schemas/gtk+3-\${lib.getVersion pkgs.gtk3}/glib-2.0/schemas";
@@ -390,7 +394,9 @@ in
 
   xdg.mimeApps = {
     enable = true;
-    defaultApplications = {
+    # Crostini's host-browser desktop entry is installed below only when the
+    # same host integration files are present.
+    defaultApplications = lib.optionalAttrs isCrostini {
       "text/html" = [ "garcon_host_browser.desktop" ];
       "x-scheme-handler/http" = [ "garcon_host_browser.desktop" ];
       "x-scheme-handler/https" = [ "garcon_host_browser.desktop" ];
@@ -686,6 +692,13 @@ in
 
       cp -rL "\${nixProfileShareDir}/applications/." "\${crosDesktopShareDir}/applications/"
       cp -rL "\${nixProfileShareDir}/icons/."        "\${crosDesktopShareDir}/icons/"
+      if [ -r "/usr/share/applications/garcon_host_browser.desktop" ] &&
+         [ -x "/opt/google/cros-containers/bin/garcon" ]; then
+        cp -L "/usr/share/applications/garcon_host_browser.desktop" \
+          "\${crosDesktopShareDir}/applications/garcon_host_browser.desktop"
+      else
+        rm -f "\${crosDesktopShareDir}/applications/garcon_host_browser.desktop"
+      fi
       chmod -R u+w "\${crosDesktopShareDir}/applications" "\${crosDesktopShareDir}/icons" 2>/dev/null || true
 
       # update-desktop-database "\${crosDesktopShareDir}/applications" 2>/dev/null || true
