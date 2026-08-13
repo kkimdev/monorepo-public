@@ -25,6 +25,27 @@ let
     pname = "orca-ide";
     inherit version src;
   };
+  crostiniBrowserIntegration = stdenv.mkDerivation {
+    pname = "crostini-garcon-browser-integration";
+    version = "1";
+    dontUnpack = true;
+    installPhase = ''
+      install -Dm755 /dev/stdin "$out/bin/garcon-url-handler" <<'EOF'
+      #!/bin/sh
+      exec /opt/google/cros-containers/bin/garcon --client --url "$@"
+      EOF
+
+      install -Dm644 /dev/stdin "$out/share/applications/garcon_host_browser.desktop" <<'EOF'
+      [Desktop Entry]
+      Name=Chrome OS Host Browser
+      Exec=garcon-url-handler %U
+      MimeType=x-scheme-handler/http;x-scheme-handler/https;x-scheme-handler/ftp;x-scheme-handler/mailto;
+      Type=Application
+      NoDisplay=true
+      OnlyShowIn=Never
+      EOF
+    '';
+  };
 in
 appimageTools.wrapType2 {
   pname = "orca-ide";
@@ -32,21 +53,9 @@ appimageTools.wrapType2 {
 
   # Orca enumerates processes with `ps`; the default AppImage FHS does not
   # include procps.
-  extraPkgs = _: [ procps ];
-
-  # The AppImage FHS hides Crostini's host browser integration files. Make
-  # temporary overlays for their parent directories first because the FHS root
-  # is read-only and bubblewrap otherwise cannot create file-bind destinations.
-  # try-bind keeps the package portable on Linux systems without ChromeOS
-  # integration.
-  extraBwrapArgs = [
-    "--overlay-src /usr/bin"
-    "--tmp-overlay /usr/bin"
-    "--overlay-src /usr/share/applications"
-    "--tmp-overlay /usr/share/applications"
-    "--ro-bind-try /usr/bin/garcon-url-handler /usr/bin/garcon-url-handler"
-    "--ro-bind-try /usr/share/applications/garcon_host_browser.desktop /usr/share/applications/garcon_host_browser.desktop"
-  ];
+  # Keep the Crostini handler inside the FHS instead of overlaying /usr/bin:
+  # the latter hides the FHS-provided ldconfig and breaks AppImage startup.
+  extraPkgs = _: [ procps crostiniBrowserIntegration ];
 
   # AppImages do not export their desktop metadata through wrapType2, so copy
   # the upstream launcher and icon into the Nix profile for desktop discovery.
