@@ -34,6 +34,14 @@ appimageTools.wrapType2 {
   # include procps.
   extraPkgs = _: [ procps ];
 
+  # The AppImage FHS hides Crostini's host browser integration files. Expose
+  # only the URL handler and desktop entry used by xdg-open; try-bind keeps
+  # the package portable on Linux systems without ChromeOS integration.
+  extraBwrapArgs = [
+    "--ro-bind-try /usr/bin/garcon-url-handler /usr/bin/garcon-url-handler"
+    "--ro-bind-try /usr/share/applications/garcon_host_browser.desktop /usr/share/applications/garcon_host_browser.desktop"
+  ];
+
   # AppImages do not export their desktop metadata through wrapType2, so copy
   # the upstream launcher and icon into the Nix profile for desktop discovery.
   extraInstallCommands = ''
