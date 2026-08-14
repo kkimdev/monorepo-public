@@ -42,12 +42,47 @@ export CROS_SETUP_SCRIPT_FILE="$(readlink -f "${BASH_SOURCE[0]}")"
 # export GIT_USER_EMAIL="" # Use private email from https://github.com/settings/emails
 
 sudo apt-get update -y
-sudo apt-get install uidmap -y
+sudo apt-get install uidmap cros-im -y
 sudo apt-get remove vim vim-tiny command-not-found -y
 sudo apt autoremove
 
 # Add user to render group (required for GPU acceleration access in Crostini)
 sudo usermod -aG render "$USER"
+
+# cros-im is installed by ChromeOS on supported containers, but install it
+# explicitly above so a fresh or older Crostini image gets the GTK/Qt bridge
+# that both X11 (through Xwayland) and Wayland applications use.
+CROS_IM_GTK3_MODULE="$(dpkg -L cros-im | awk '/\/gtk-3\.0\/.*\/immodules\/im-cros-gtk3\.so$/ { print; exit }')"
+CROS_IM_GTK4_MODULE="$(dpkg -L cros-im | awk '/\/gtk-4\.0\/.*\/immodules\/libim-cros-gtk4\.so$/ { print; exit }')"
+CROS_IM_QT5_MODULE="$(dpkg -L cros-im | awk '/\/qt5\/plugins\/platforminputcontexts\/libcrosplatforminputcontextplugin\.so$/ { print; exit }')"
+CROS_IM_GTK3_CACHE="$(find /usr/lib -type f -path '*/gtk-3.0/*/immodules.cache' -print -quit 2>/dev/null || true)"
+CROS_IM_GTK4_PATH="$(find /usr/lib -type d -path '*/gtk-4.0' -print -quit 2>/dev/null || true)"
+
+if [ -z "$CROS_IM_GTK3_MODULE" ] || [ -z "$CROS_IM_GTK4_MODULE" ] || [ -z "$CROS_IM_QT5_MODULE" ]; then
+    echo "ERROR: cros-im did not install all expected GTK3/GTK4/Qt5 modules." >&2
+    echo "Why: GTK and Qt applications need the ChromeOS IME bridge on both display backends." >&2
+    echo "Fix: verify that the Crostini apt repository provides cros-im, then rerun this setup." >&2
+    exit 1
+fi
+if [ -z "$CROS_IM_GTK3_CACHE" ] || ! grep -q 'im-cros-gtk3\.so' "$CROS_IM_GTK3_CACHE"; then
+    echo "ERROR: GTK3's cros-im module cache is missing or does not list im-cros-gtk3.so." >&2
+    echo "Why: GTK3 loads cros-im through GTK_IM_MODULE_FILE, including for X11/Xwayland apps." >&2
+    echo "Fix: install/reinstall libgtk-3-0 and cros-im, then rerun this setup." >&2
+    exit 1
+fi
+if [ -z "$CROS_IM_GTK4_PATH" ]; then
+    echo "ERROR: could not locate GTK4's module parent directory under /usr/lib." >&2
+    echo "Why: GTK4 needs GTK_PATH to discover the system cros-im module from Nix applications." >&2
+    echo "Fix: verify that the cros-im GTK4 package is installed, then rerun this setup." >&2
+    exit 1
+fi
+
+echo "Using ChromeOS IME modules:"
+echo "  GTK3: $CROS_IM_GTK3_MODULE"
+echo "  GTK3 cache: $CROS_IM_GTK3_CACHE"
+echo "  GTK4: $CROS_IM_GTK4_MODULE"
+echo "  GTK4 search path: $CROS_IM_GTK4_PATH"
+echo "  Qt5: $CROS_IM_QT5_MODULE"
 
 # INSTALL NIX (Only if missing)
 if ! command -v nix &> /dev/null; then
@@ -331,6 +366,13 @@ in
       GIT_USER_EMAIL = "$GIT_USER_EMAIL";
       CROS_SETUP_SCRIPT_FILE = "$CROS_SETUP_SCRIPT_FILE";
       GSETTINGS_SCHEMA_DIR = "\${gtk3SchemaDir}:\${gsettingsSchemaDir}";
+      # GTK accepts a colon-separated fallback list. GTK3 cros-im is named
+      # "cros"; some distributed GTK4 builds are registered as "test-cros".
+      # Keeping both IDs makes the same environment work with either build.
+      GTK_IM_MODULE = "cros:test-cros";
+      GTK_IM_MODULE_FILE = "$CROS_IM_GTK3_CACHE";
+      GTK_PATH = "$CROS_IM_GTK4_PATH";
+      QT_IM_MODULE = "cros";
       # wayland-0: Crostini default high-density Sommelier, wayland-1: low-density Sommelier, wayland-2: custom sommelier-rs
       WAYLAND_DISPLAY = "wayland-2";
       DISPLAY = ":1";
@@ -632,6 +674,10 @@ in
       Environment="XDG_DATA_DIRS=%h/.nix-profile/share:%h/.local/share:%h/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share:/usr/share"
       Environment="WAYLAND_DISPLAY=wayland-2"
       Environment="DISPLAY=:1"
+      Environment="GTK_IM_MODULE=cros:test-cros"
+      Environment="GTK_IM_MODULE_FILE=$CROS_IM_GTK3_CACHE"
+      Environment="GTK_PATH=$CROS_IM_GTK4_PATH"
+      Environment="QT_IM_MODULE=cros"
       Environment="CODEX_LINUX_RENDERING_MODE=wayland-gpu"
       Environment="CODEX_LINUX_DISABLE_EXTERNAL_OPEN_PATCH=1"
       # GLib-GIO-ERROR: Settings schema 'org.gtk.Settings.FileChooser' is not installed
@@ -740,6 +786,13 @@ if [ ! -x "$HOME/.nix-profile/bin/sommelier-rs" ]; then
 fi
 if [ ! -e "$HOME/.config/systemd/user/sommelier-rs.service" ]; then
   echo "ERROR: sommelier-rs.service was not installed." >&2
+  exit 1
+fi
+if ! grep -q 'GTK_IM_MODULE=cros:test-cros' \
+    "$HOME/.config/systemd/user/cros-garcon.service.d/override.conf"; then
+  echo "ERROR: cros-garcon IME environment override was not installed." >&2
+  echo "Why: applications launched from the ChromeOS launcher would miss cros-im." >&2
+  echo "Fix: rerun Home Manager activation with this setup script." >&2
   exit 1
 fi
 
