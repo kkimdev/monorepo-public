@@ -23,11 +23,11 @@
     "sommelier-rs-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1786438278,
-        "narHash": "sha256-usxivaYjy9SF8ZY46A5BnZrHepQYvKwh1j2ksA8iBDM=",
+        "lastModified": 1786674728,
+        "narHash": "sha256-tBSdsfxjpGFh8WKCxkRAObtCo2Ny8iYapPyjy/y/hQI=",
         "ref": "refs/heads/virtwl",
-        "rev": "0af8d1ac4a30dcd28be394e1cabb833fb277ca64",
-        "revCount": 28,
+        "rev": "15275ab7cc3bd3aba2189f302544f46386230a71",
+        "revCount": 31,
         "type": "git",
         "url": "https://github.com/kkimdev/sommelier-rs.git"
       },

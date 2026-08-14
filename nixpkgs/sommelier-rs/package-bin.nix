@@ -1,12 +1,15 @@
 { lib
 , fetchurl
+, libdrm
 , libgbm
 , libxkbcommon
-, makeWrapper
+, patchelf
 , stdenv
 }:
 
 let
+  # Keep the prebuilt package on the last verified upstream release until the
+  # personal virtwl-v0.2.1 release exists and its SRI hashes are recorded.
   targetCpu = {
     "x86_64-linux"  = "x86_64";
     "aarch64-linux" = "aarch64";
@@ -28,7 +31,7 @@ stdenv.mkDerivation rec {
 
   dontUnpack = true;
 
-  nativeBuildInputs = [ makeWrapper ];
+  nativeBuildInputs = [ patchelf ];
 
   installPhase = ''
     mkdir -p $out/bin
@@ -38,13 +41,13 @@ stdenv.mkDerivation rec {
 
   postFixup = ''
     patchelf --set-interpreter $(cat ${stdenv.cc}/nix-support/dynamic-linker) \
-      --set-rpath ${lib.makeLibraryPath [ libxkbcommon libgbm ]} \
+      --set-rpath ${lib.makeLibraryPath [ libdrm libgbm libxkbcommon ]} \
       $out/bin/sommelier-rs
   '';
 
   meta = with lib; {
     description = "Sommelier-RS Wayland Compositor (prebuilt binary)";
-    homepage = "https://github.com/google/sommelier-rs";
+    homepage = "https://github.com/kkimdev/sommelier-rs";
     license = licenses.asl20;
     platforms = [ "x86_64-linux" "aarch64-linux" ];
     mainProgram = "sommelier-rs";
