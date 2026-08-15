@@ -113,7 +113,7 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
     nix-index-database.inputs.nixpkgs.follows = "nixpkgs";
 
     sommelier-rs = {
-      url = "github:kkimdev/monorepo-public/main?dir=nixpkgs/sommelier-rs";
+      url = "github:kkimdev/sommelier-rs/virtwl";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
@@ -339,7 +339,7 @@ in
       inkscape
       beekeeper-studio
       yt-dlp
-      sommelier-rs
+      sommelier-rs-bin
       kakaotalk-bin
 
       # Coding
@@ -395,12 +395,12 @@ in
     Service = {
       # Proxy clients on wayland-2 to Crostini's fast host-facing wayland-0.
       ExecStart =
-        "\${pkgs.sommelier-rs}/bin/sommelier-rs --local-compositor %t/wayland-0 --gpu-accel wayland-2";
+        "\${pkgs.sommelier-rs-bin}/bin/sommelier-rs --local-compositor %t/wayland-0 --gpu-accel wayland-2";
       Restart = "always";
       RestartSec = "5";
       Environment = [
         "RUST_LOG=info"
-        "SOMMELIER_ACCELERATORS=Super_L,<Alt>bracketleft,<Alt>bracketright,<Alt>minus,<Alt>equal,<Alt>1,<Alt>2,<Alt>3,<Alt>4,<Alt>5,<Alt>6,<Alt>7,<Alt>8,<Alt>9,print,<Control>space"
+        "SOMMELIER_ACCELERATORS=Super_L,<Alt>bracketleft,<Alt>bracketright,<Alt>minus,<Alt>equal,<Alt>1,<Alt>2,<Alt>3,<Alt>4,<Alt>5,<Alt>6,<Alt>7,<Alt>8,<Alt>9,print,<Control>space,<Control><Shift>space"
       ];
     };
     Install = {
@@ -690,11 +690,11 @@ in
     # https://issuetracker.google.com/issues/149234835#comment14
     "systemd/user/sommelier@.service.d/cros-sommelier-override.conf".text = ''
       [Service]
-      Environment="SOMMELIER_ACCELERATORS=Super_L,<Alt>bracketleft,<Alt>bracketright,<Alt>minus,<Alt>equal,<Alt>1,<Alt>2,<Alt>3,<Alt>4,<Alt>5,<Alt>6,<Alt>7,<Alt>8,<Alt>9,print,<Control>space"
+      Environment="SOMMELIER_ACCELERATORS=Super_L,<Alt>bracketleft,<Alt>bracketright,<Alt>minus,<Alt>equal,<Alt>1,<Alt>2,<Alt>3,<Alt>4,<Alt>5,<Alt>6,<Alt>7,<Alt>8,<Alt>9,print,<Control>space,<Control><Shift>space"
     '';
     "systemd/user/sommelier-x@.service.d/cros-sommelier-x-override.conf".text = ''
       [Service]
-      Environment="SOMMELIER_ACCELERATORS=Super_L,<Alt>bracketleft,<Alt>bracketright,<Alt>minus,<Alt>equal,<Alt>1,<Alt>2,<Alt>3,<Alt>4,<Alt>5,<Alt>6,<Alt>7,<Alt>8,<Alt>9,print,<Control>space"
+      Environment="SOMMELIER_ACCELERATORS=Super_L,<Alt>bracketleft,<Alt>bracketright,<Alt>minus,<Alt>equal,<Alt>1,<Alt>2,<Alt>3,<Alt>4,<Alt>5,<Alt>6,<Alt>7,<Alt>8,<Alt>9,print,<Control>space,<Control><Shift>space"
     '';
 
     # Override sommelier-x@1 to run at scale 1.0 (high-density)
