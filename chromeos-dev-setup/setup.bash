@@ -76,6 +76,12 @@ if [ -z "$CROS_IM_GTK4_PATH" ]; then
     echo "Fix: verify that the cros-im GTK4 package is installed, then rerun this setup." >&2
     exit 1
 fi
+if [ ! -c /dev/wl0 ]; then
+    echo "ERROR: Crostini's VirtWL device /dev/wl0 is unavailable." >&2
+    echo "Why: sommelier-rs connects directly to VirtWL so ChromeOS IME protocols remain available." >&2
+    echo "Fix: start this setup inside a supported Crostini container." >&2
+    exit 1
+fi
 
 echo "Using ChromeOS IME modules:"
 echo "  GTK3: $CROS_IM_GTK3_MODULE"
@@ -366,10 +372,10 @@ in
       GIT_USER_EMAIL = "$GIT_USER_EMAIL";
       CROS_SETUP_SCRIPT_FILE = "$CROS_SETUP_SCRIPT_FILE";
       GSETTINGS_SCHEMA_DIR = "\${gtk3SchemaDir}:\${gsettingsSchemaDir}";
-      # GTK accepts a colon-separated fallback list. GTK3 cros-im is named
-      # "cros"; some distributed GTK4 builds are registered as "test-cros".
-      # Keeping both IDs makes the same environment work with either build.
-      GTK_IM_MODULE = "cros:test-cros";
+      # Native Wayland clients use GTK's text-input-v3 module through
+      # sommelier-rs. X11/Xwayland cannot use that module and falls back to the
+      # ChromeOS GTK bridge; some GTK4 builds register it as "test-cros".
+      GTK_IM_MODULE = "wayland:cros:test-cros";
       GTK_IM_MODULE_FILE = "$CROS_IM_GTK3_CACHE";
       GTK_PATH = "$CROS_IM_GTK4_PATH";
       QT_IM_MODULE = "cros";
@@ -388,14 +394,14 @@ in
   systemd.user.services.sommelier-rs = {
     Unit = {
       Description = "Sommelier-RS Wayland Compositor";
-      # Ensure it starts after the basic user session and wayland-0 host compositor are ready
-      After = [ "debian-fixup.service" "sommelier@0.service" ];
-      Requires = [ "sommelier@0.service" ];
+      After = [ "debian-fixup.service" ];
     };
     Service = {
-      # Proxy clients on wayland-2 to Crostini's fast host-facing wayland-0.
+      # Without --local-compositor, sommelier-rs connects directly to /dev/wl0.
+      # The nested wayland-0 path hides ChromeOS keyboard/text-input extensions,
+      # preventing host IME switching and GTK text-input-v3 activation.
       ExecStart =
-        "\${pkgs.sommelier-rs-bin}/bin/sommelier-rs --local-compositor %t/wayland-0 --gpu-accel wayland-2";
+        "\${pkgs.sommelier-rs-bin}/bin/sommelier-rs --gpu-accel wayland-2";
       Restart = "always";
       RestartSec = "5";
       Environment = [
@@ -674,7 +680,7 @@ in
       Environment="XDG_DATA_DIRS=%h/.nix-profile/share:%h/.local/share:%h/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share:/usr/share"
       Environment="WAYLAND_DISPLAY=wayland-2"
       Environment="DISPLAY=:1"
-      Environment="GTK_IM_MODULE=cros:test-cros"
+      Environment="GTK_IM_MODULE=wayland:cros:test-cros"
       Environment="GTK_IM_MODULE_FILE=$CROS_IM_GTK3_CACHE"
       Environment="GTK_PATH=$CROS_IM_GTK4_PATH"
       Environment="QT_IM_MODULE=cros"
@@ -788,10 +794,19 @@ if [ ! -e "$HOME/.config/systemd/user/sommelier-rs.service" ]; then
   echo "ERROR: sommelier-rs.service was not installed." >&2
   exit 1
 fi
-if ! grep -q 'GTK_IM_MODULE=cros:test-cros' \
+if grep -q -- '--local-compositor' \
+    "$HOME/.config/systemd/user/sommelier-rs.service" ||
+   ! grep -q -- '--gpu-accel wayland-2' \
+    "$HOME/.config/systemd/user/sommelier-rs.service"; then
+  echo "ERROR: sommelier-rs.service is not configured for direct VirtWL access." >&2
+  echo "Why: nesting through wayland-0 hides ChromeOS keyboard and text-input extensions." >&2
+  echo "Fix: rerun Home Manager activation with this setup script." >&2
+  exit 1
+fi
+if ! grep -q 'GTK_IM_MODULE=wayland:cros:test-cros' \
     "$HOME/.config/systemd/user/cros-garcon.service.d/override.conf"; then
   echo "ERROR: cros-garcon IME environment override was not installed." >&2
-  echo "Why: applications launched from the ChromeOS launcher would miss cros-im." >&2
+  echo "Why: Wayland apps need text-input-v3 while X11 apps need the cros-im fallback." >&2
   echo "Fix: rerun Home Manager activation with this setup script." >&2
   exit 1
 fi
