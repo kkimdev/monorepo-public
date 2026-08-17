@@ -3,10 +3,10 @@
 The package was verified from this directory with:
 
 ```sh
-nix develop -c true
-nix build --repair --print-build-logs
-nix flake check --no-build
-nix store verify --recursive "$(readlink -f result)"
+nix fmt .
+nix build --print-build-logs
+nix flake check --no-build --all-systems
+nix flake check --print-build-logs
 ```
 
 The build completed with `auto-patchelf: 0 dependencies could not be
@@ -20,13 +20,13 @@ satisfied`. The install check and additional smoke checks passed:
 - With `XDG_DATA_DIRS` unset, the wrapper still retains `/usr/share` for host
   desktop/MIME/portal discovery.
 - PyGObject/AT-SPI imports successfully during `installCheckPhase`.
-- The package's portable `at-spi2-core` rebuild contains no
-  `/run/current-system`, `dbus-broker-launch`, or `SystemdService=` reference;
-  its D-Bus service activates the Nix-patched `at-spi-bus-launcher` directly.
-- The final closure contains only the portable `at-spi2-core` and GTK3
-  variants. Electron's generated RPATH was normalized after `autoPatchelfHook`
-  so it points to those portable paths instead of retaining stock nixpkgs
-  copies.
+- The package uses stock binary-cache GTK3 and `at-spi2-core` outputs. A small
+  source-free service wrapper redirects the launcher's NixOS-only
+  `/run/current-system/sw/bin/dbus-daemon` lookup without rebuilding either
+  package.
+- `libredirect` is scoped to `at-spi-bus-launcher`. Inspection of the live
+  accessibility `dbus-daemon` environment confirms that `LD_PRELOAD` and
+  `NIX_REDIRECTS` are removed before the daemon starts.
 - The packaged `runtime.py` sidecar returns its Linux handshake JSON and a
   real `list_apps` response from dynamically allocated Xvfb and a private
   `dbus-run-session`.
@@ -50,10 +50,32 @@ satisfied`. The install check and additional smoke checks passed:
   background, nudge, and release-list entrypoints return before Orca's direct
   GitHub release preflight or auxiliary update requests.
 - The direct closure contains no AppImage launcher/runtime environment,
-  bubblewrap, or bwrap process; format names retained in upstream updater
+  bubblewrap, or bwrap dependency; format names retained in upstream updater
   source are unreachable from the Nix updater export.
+- The x86_64 closure is approximately 1.1 GiB. Its largest paths are the
+  upstream Orca/Electron payload (about 532 MiB), Python (about 135 MiB), and
+  stock GTK3 (about 42 MiB); no dependency was source-rebuilt just to reduce
+  this size.
+- `nix fmt .` uses `nixfmt-tree`, and the flake quality check runs formatting,
+  `deadnix`, and `statix`.
 - x86_64 and aarch64 package expressions evaluate successfully; aarch64
   builds are omitted by `nix flake check --no-build` on this x86_64 host.
+
+The host-namespace regression check also passed:
+
+```text
+$ cat /proc/self/uid_map
+0 0 4294967295
+$ stat -Lc '%U:%G %a' ~/.ssh/config
+root:root 444
+$ ssh -G github.com >/dev/null && echo SSH_CONFIG_OK
+SSH_CONFIG_OK
+```
+
+Together with the absence of a namespace wrapper, this confirms that the
+package launcher does not enter the portable-Nix/AppImage user namespace that
+previously exposed Nix store ownership as `nobody:nobody`. Electron may still
+use its own Chromium sandbox namespaces.
 
 The profile installation path was also smoke-tested with a fresh temporary
 profile:

@@ -16,24 +16,22 @@ replacing the host's DBus session or URL opener.
 The Debian metadata also lists `xvfb`; the production sidecar never starts a
 virtual display, so Xvfb is kept only as a build-time install-check input.
 
-Because the stock nixpkgs `at-spi2-core` launcher is configured for NixOS, the
-expression overrides its Meson configuration to use the package's own
-`dbus-daemon` and disables the systemd broker path. The wrapper adds the
-resulting `share/dbus-1/services` directory to `XDG_DATA_DIRS`, which makes
-activation portable for a newly started session bus. It cannot alter service
-directories of an already-running host bus. The post-install service-file
-normalization also removes `SystemdService=at-spi-dbus-bus.service`; this keeps
-a systemd-integrated non-NixOS bus on the portable `Exec=` activation path.
-The wrapper also appends `/usr/local/share:/usr/share` when the caller has no
-`XDG_DATA_DIRS`, preserving normal host desktop/MIME/portal discovery in
-minimal launchers.
+The stock nixpkgs `at-spi2-core` launcher is configured with a NixOS-only
+`/run/current-system/sw/bin/dbus-daemon` path. The expression keeps the cached
+AT-SPI and GTK packages and adds a source-free `orca-at-spi2-service` shim.
+The shim scopes `libredirect` to `at-spi-bus-launcher`, translating only that
+lookup to the Nix D-Bus executable. Its D-Bus wrapper unsets `LD_PRELOAD` and
+`NIX_REDIRECTS` before starting the accessibility daemon, preventing either
+variable from reaching the daemon or services it activates.
 
-GTK3 and the GTK app-indicator dependencies are overridden to consume that
-portable AT-SPI package as well. Since `autoPatchelfHook` searches propagated
-inputs and can otherwise select the stock variants for Electron's generated
-RPATH, a post-hook normalization rewrites only those RPATH entries to the
-portable paths. The final package closure therefore contains one GTK/AT-SPI
-implementation rather than a mixed stock/portable pair.
+The shim publishes its `org.a11y.Bus.service` directory through
+`XDG_DATA_DIRS` for newly started session buses and omits the optional
+`SystemdService=` hint. It cannot alter service directories of an
+already-running host bus. The application wrapper also appends
+`/usr/local/share:/usr/share` when the caller has no `XDG_DATA_DIRS`,
+preserving normal host desktop/MIME/portal discovery in minimal launchers.
+No GTK, AT-SPI, app-indicator, or D-Bus source package is overridden, so this
+expression does not force source rebuilds of that stack.
 
 ## Architecture
 
@@ -53,6 +51,7 @@ The `.deb` is used as a fixed upstream archive, not as a system package.
 The intended gates are:
 
 ```sh
+nix fmt .
 nix flake check
 nix build
 ```
@@ -77,8 +76,12 @@ After a successful build, inspect that the package has:
 - a dynamically allocated Xvfb plus private `dbus-run-session` successfully
   runs the sidecar's real `list_apps` operation; the build log shows
   activation of both `org.a11y.Bus` and `org.a11y.atspi.Registry`.
-- the final closure contains only the portable `at-spi2-core` and GTK3
-  variants; its Electron RPATH points to those same paths.
+- the final closure uses the stock binary-cache `at-spi2-core` and GTK3 paths;
+- `org.a11y.Bus` activates through the service shim, while the final
+  accessibility `dbus-daemon` process contains neither `LD_PRELOAD` nor
+  `NIX_REDIRECTS`;
+- `nix flake check` runs `nixfmt`, `deadnix`, and `statix` checks over the
+  package expressions;
 - the Electron GUI starts under Nix-provided Xvfb without `--no-sandbox`
   (the smoke invocation uses `--disable-gpu` because Xvfb has no GPU); the
   package does not set the Debian `chrome-sandbox` setuid bit. A host that
@@ -102,12 +105,28 @@ that disable unprivileged user namespaces, the upstream Electron fallback may
 require `--no-sandbox`, which is a host security-policy issue rather than a
 Debian/AppImage packaging issue.
 
-The current host session bus does not advertise `org.a11y.Bus`. Adding the
-package's service directory to the application's `XDG_DATA_DIRS` cannot change
-an already-running D-Bus daemon, and the wrapper intentionally does not create
-a per-process private bus. Therefore live accessibility actions still require
-the target desktop's normal AT-SPI stack (or a fresh login/session bus that
-starts with the Nix profile visible). Portal URL opening and Wayland input also
-need one final check in the target Linux desktop session. The package's Python
-imports, typelibs, real X11 AT-SPI initialization on an isolated private bus,
-CLI, and ELF closure are verified during the Nix build.
+An already-running host session bus does not rescan `XDG_DATA_DIRS`. Adding
+the package's service directory to the application environment therefore
+cannot repair a bus that started without `org.a11y.Bus`, and the wrapper
+intentionally does not create a per-process private bus. Live accessibility
+actions require the target desktop's normal AT-SPI stack or a fresh
+login/session bus that starts with the Nix profile visible. Portal URL opening
+and Wayland input also need one final check in the target Linux desktop
+session. Python imports, typelibs, real X11 AT-SPI initialization on an
+isolated private bus, CLI behavior, and the ELF closure are verified during
+the Nix build.
+
+The x86_64 runtime closure is approximately 1.1 GiB. About 532 MiB is the
+upstream Orca/Electron payload, 135 MiB is Python, and 42 MiB is stock GTK3.
+The remaining clipboard, URL-opening, desktop, and accessibility dependencies
+back declared functionality. There is no currently identified reduction that
+both preserves those features and retains binary-cache reuse.
+
+## Next steps
+
+- Exercise portal URL opening and Wayland Computer Use in the target desktop
+  session.
+- After the next upstream Orca release, update `version`, both fixed source
+  hashes, and the updater-patch/install-check markers together.
+- Recheck the closure breakdown when nixpkgs changes the Python, GTK, or
+  desktop-helper dependency graphs.
