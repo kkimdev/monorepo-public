@@ -4,7 +4,6 @@
   fetchurl,
   makeDesktopItem,
   buildPackages,
-  wrapGAppsHook3,
   alsa-lib,
   at-spi2-core,
   cairo,
@@ -18,12 +17,11 @@
   glib,
   gtk3,
   libappindicator,
-  libdbusmenu-gtk3,
   libdrm,
   libgbm,
   libGL,
+  libredirect,
   libsecret,
-  libindicator-gtk3,
   libuuid,
   libX11,
   libXcomposite,
@@ -43,6 +41,7 @@
   pango,
   procps,
   python3,
+  runCommand,
   systemdLibs,
   udev,
   wayland,
@@ -70,69 +69,42 @@ let
     sources.${stdenv.hostPlatform.system}
       or (throw "orca-deb-bin: unsupported system ${stdenv.hostPlatform.system}");
 
-  # Nixpkgs builds at-spi2-core for NixOS and embeds
-  # /run/current-system/sw/bin/dbus-daemon in its launcher. A profile
-  # installation on a non-NixOS host has no such path, so rebuild this small
-  # daemon package with the already-pinned Nix dbus executable instead. This
-  # does not start a private bus or replace the host session bus; it only makes
-  # D-Bus activation of org.a11y.Bus portable.
-  atSpi2Core = at-spi2-core.overrideAttrs (oldAttrs: {
-    mesonFlags =
-      let
-        oldFlags = oldAttrs.mesonFlags or [ ];
-      in
-      lib.filter (
-        flag:
-        !(lib.hasPrefix "-Ddbus_daemon=" flag)
-        && !(lib.hasPrefix "-Ddbus_broker=" flag)
-        && flag != "-Duse_systemd=false"
-      ) oldFlags
-      ++ [
-        "-Ddbus_daemon=${dbus}/bin/dbus-daemon"
-        "-Duse_systemd=false"
-      ];
-    # The upstream D-Bus service file can still carry a SystemdService hint
-    # even when the build disables systemd support. On a non-NixOS host whose
-    # session bus is systemd-integrated, that hint makes activation prefer a
-    # unit that is not present in a Nix profile and can prevent Exec= from
-    # running. Keep activation self-contained and portable by removing only
-    # the optional systemd hint; the service's Exec= launcher remains.
-    postInstall =
-      (oldAttrs.postInstall or "")
-      + ''
-        if test -f "$out/share/dbus-1/services/org.a11y.Bus.service"; then
-          sed -i '/^SystemdService=/d' \
-            "$out/share/dbus-1/services/org.a11y.Bus.service"
-        fi
+  # Nixpkgs configures at-spi2-core with NixOS-only
+  # /run/current-system paths. Keep the cached package and redirect only the
+  # launcher's D-Bus executable lookup instead of rebuilding AT-SPI and every
+  # GTK package that propagates it. This wrapper is used only for activation
+  # of org.a11y.Bus and does not create a mount or user namespace.
+  atSpi2Service =
+    runCommand "orca-at-spi2-service"
+      {
+        nativeBuildInputs = [ buildPackages.makeWrapper ];
+      }
+      ''
+        mkdir -p "$out/libexec" "$out/share/dbus-1/services"
+        makeWrapper \
+          "${dbus}/bin/dbus-daemon" \
+          "$out/libexec/dbus-daemon" \
+          --unset LD_PRELOAD \
+          --unset NIX_REDIRECTS
+        makeWrapper \
+          "${at-spi2-core}/libexec/at-spi-bus-launcher" \
+          "$out/libexec/at-spi-bus-launcher" \
+          --prefix LD_PRELOAD : "${libredirect}/lib/libredirect.so" \
+          --prefix NIX_REDIRECTS : \
+            "/run/current-system/sw/bin/dbus-daemon=$out/libexec/dbus-daemon"
+        cat > "$out/share/dbus-1/services/org.a11y.Bus.service" <<EOF
+        [D-BUS Service]
+        Name=org.a11y.Bus
+        Exec=$out/libexec/at-spi-bus-launcher
+        EOF
       '';
-  });
-
-  # GTK3 propagates its AT-SPI implementation. Override the GTK stack that is
-  # placed in this application's closure as well, otherwise the normal
-  # nixpkgs GTK build pulls a second stock at-spi2-core with the NixOS-only
-  # `/run/current-system` launcher path.
-  gtk3Portable = gtk3.override {
-    at-spi2-atk = atSpi2Core;
-    atk = atSpi2Core;
-  };
-  libdbusmenuGtk3Portable = libdbusmenu-gtk3.override {
-    gtk3 = gtk3Portable;
-  };
-  libindicatorGtk3Portable = libindicator-gtk3.override {
-    gtk3 = gtk3Portable;
-  };
-  libappindicatorPortable = libappindicator.override {
-    gtk3 = gtk3Portable;
-    libdbusmenu-gtk3 = libdbusmenuGtk3Portable;
-    libindicator-gtk3 = libindicatorGtk3Portable;
-  };
 
   # Electron bundles a large amount of native code. Keep the runtime library
   # closure explicit so autoPatchelfHook can repair every ELF payload without
   # creating an FHS or bubblewrap environment.
   runtimeLibraries = [
     alsa-lib
-    atSpi2Core
+    at-spi2-core
     cairo
     cups
     dbus
@@ -141,8 +113,8 @@ let
     freetype
     gdk-pixbuf
     glib
-    gtk3Portable
-    libappindicatorPortable
+    gtk3
+    libappindicator
     libdrm
     libgbm
     libGL
@@ -184,14 +156,14 @@ let
     xdg-utils
   ];
   giTypelibPath = lib.makeSearchPath "lib/girepository-1.0" [
-    atSpi2Core
+    at-spi2-core
     gdk-pixbuf
     gobject-introspection
     glib
-    gtk3Portable
+    gtk3
   ];
 in
-stdenv.mkDerivation (finalAttrs: {
+stdenv.mkDerivation {
   pname = "orca-ide";
   inherit version;
   src = fetchurl source;
@@ -419,7 +391,7 @@ stdenv.mkDerivation (finalAttrs: {
     gappsWrapperArgs+=(
       --prefix PATH : ${lib.makeBinPath [ pythonWithAtspi ]}
       --suffix PATH : ${lib.makeBinPath desktopTools}
-      --prefix XDG_DATA_DIRS : ${atSpi2Core}/share
+      --prefix XDG_DATA_DIRS : ${atSpi2Service}/share:${at-spi2-core}/share
       # Keep the standard host desktop data roots even when a minimal launcher
       # did not export XDG_DATA_DIRS. This preserves host MIME handlers,
       # desktop entries, portals, and Crostini integration instead of making
@@ -436,35 +408,6 @@ stdenv.mkDerivation (finalAttrs: {
       --unset APPIMAGE
       --set NIXPKGS_ORCA_DISABLE_UPDATES 1
     )
-    # The inherited GTK setup hook can add the stock GTK gsettings directory
-    # before our portable override is appended. Replace that generated path
-    # in-place so the wrapper and closure agree on one GTK/AT-SPI stack.
-    for i in "''${!gappsWrapperArgs[@]}"; do
-      gappsWrapperArgs[$i]="$(printf '%s' "''${gappsWrapperArgs[$i]}" \
-        | sed "s#${gtk3}#${gtk3Portable}#g")"
-    done
-
-    # autoPatchelfHook runs from postFixupHooks. Append the RPATH rewrite
-    # there so it runs after autoPatchelf has selected its libraries.
-    rewritePortableRpath() {
-      while IFS= read -r -d "" elf; do
-        if ! patchelf --print-rpath "$elf" >/dev/null 2>&1; then
-          continue
-        fi
-        rpath="$(patchelf --print-rpath "$elf")"
-        portableRpath="$(printf "%s" "$rpath" \
-          | sed \
-            -e "s#${at-spi2-core}#${atSpi2Core}#g" \
-            -e "s#${gtk3}#${gtk3Portable}#g" \
-            -e "s#${libdbusmenu-gtk3}#${libdbusmenuGtk3Portable}#g" \
-            -e "s#${libindicator-gtk3}#${libindicatorGtk3Portable}#g" \
-            -e "s#${libappindicator}#${libappindicatorPortable}#g")"
-        if test "$portableRpath" != "$rpath"; then
-          patchelf --set-rpath "$portableRpath" "$elf"
-        fi
-      done < <(find "$out" -type f -print0)
-    }
-    postFixupHooks+=(rewritePortableRpath)
   '';
 
   # Only run the install check when the selected builder can execute the target
@@ -473,289 +416,344 @@ stdenv.mkDerivation (finalAttrs: {
   # foreign architecture.
   doInstallCheck = stdenv.buildPlatform.canExecute stdenv.hostPlatform;
   installCheckPhase = ''
-    runHook preInstallCheck
+        runHook preInstallCheck
 
-    test -x "$out/bin/orca-ide"
-    test -x "$out/bin/orca-cli"
-    # Do not shadow the GNOME Orca screen reader command on Linux.
-    test ! -e "$out/bin/orca"
-    test -x "$out/lib/orca-ide/orca-ide"
-    test -x "$out/lib/orca-ide/resources/bin/orca-ide"
-    test -f "$out/share/applications/orca-ide.desktop"
-    grep -Fq "Exec=orca-ide %U" "$out/share/applications/orca-ide.desktop"
-    ! grep -Fq "/opt/Orca" "$out/share/applications/orca-ide.desktop"
-    ! grep -Fq "AppRun" "$out/share/applications/orca-ide.desktop"
-    test ! -e "$out/lib/orca-ide/resources/package-type"
-    test ! -e "$out/lib/orca-ide/resources/app-update.yml"
-    test ! -e "$out/lib/orca-ide/resources/apparmor-profile"
-    test -f "$out/lib/orca-ide/resources/node_modules/electron-updater/out/NixDisabledUpdater.js"
-    grep -Fq 'NixDisabledUpdater' \
-      "$out/lib/orca-ide/resources/node_modules/electron-updater/out/NixDisabledUpdater.js"
-    grep -Fq 'NixDisabledUpdater' \
-      "$out/lib/orca-ide/resources/node_modules/electron-updater/out/main.js"
-    # The app-level preflight guards are byte-preserving edits inside app.asar;
-    # assert both exact markers so a future upstream payload cannot silently
-    # lose the Nix updater policy.
-    grep -a -Fq \
-      'if (process.env.NIXPKGS_ORCA_DISABLE_UPDATES === "1") return;' \
-      "$out/lib/orca-ide/resources/app.asar"
-    grep -a -Fq \
-      'if (process.env.NIXPKGS_ORCA_DISABLE_UPDATES === "1") {' \
-      "$out/lib/orca-ide/resources/app.asar"
-    grep -a -Fq \
-      'if (process.env.NIXPKGS_ORCA_DISABLE_UPDATES === "1") return false;' \
-      "$out/lib/orca-ide/resources/app.asar"
-    grep -a -Fq \
-      'async function listAvailableReleaseBuilds(channel)' \
-      "$out/lib/orca-ide/resources/app.asar"
-    grep -a -Fq 'return [];' "$out/lib/orca-ide/resources/app.asar"
-    grep -a -Fq \
-      'function quitAndInstall()' \
-      "$out/lib/orca-ide/resources/app.asar"
-    grep -a -Fq \
-      'function downloadUpdate()' \
-      "$out/lib/orca-ide/resources/app.asar"
-    grep -a -Fq \
-      'async function performQuitAndInstall()' \
-      "$out/lib/orca-ide/resources/app.asar"
-    # The byte-preserving patch also refreshes the modified entry's ASAR
-    # integrity metadata. Verify every packed entry in the installed archive,
-    # rather than relying only on Electron's launch behavior or checking the
-    # one entry that Nix edits. Entries marked `unpacked` live beside the ASAR
-    # and are checked separately below.
-    ${buildPackages.python3}/bin/python3 - \
-      "$out/lib/orca-ide/resources/app.asar" <<'PY'
-import hashlib
-import json
-import struct
-import sys
+        test -x "$out/bin/orca-ide"
+        test -x "$out/bin/orca-cli"
+        # Do not shadow the GNOME Orca screen reader command on Linux.
+        test ! -e "$out/bin/orca"
+        test -x "$out/lib/orca-ide/orca-ide"
+        test -x "$out/lib/orca-ide/resources/bin/orca-ide"
+        test -f "$out/share/applications/orca-ide.desktop"
+        grep -Fq "Exec=orca-ide %U" "$out/share/applications/orca-ide.desktop"
+        ! grep -Fq "/opt/Orca" "$out/share/applications/orca-ide.desktop"
+        ! grep -Fq "AppRun" "$out/share/applications/orca-ide.desktop"
+        test ! -e "$out/lib/orca-ide/resources/package-type"
+        test ! -e "$out/lib/orca-ide/resources/app-update.yml"
+        test ! -e "$out/lib/orca-ide/resources/apparmor-profile"
+        test -f "$out/lib/orca-ide/resources/node_modules/electron-updater/out/NixDisabledUpdater.js"
+        grep -Fq 'NixDisabledUpdater' \
+          "$out/lib/orca-ide/resources/node_modules/electron-updater/out/NixDisabledUpdater.js"
+        grep -Fq 'NixDisabledUpdater' \
+          "$out/lib/orca-ide/resources/node_modules/electron-updater/out/main.js"
+        # The app-level preflight guards are byte-preserving edits inside app.asar;
+        # assert both exact markers so a future upstream payload cannot silently
+        # lose the Nix updater policy.
+        grep -a -Fq \
+          'if (process.env.NIXPKGS_ORCA_DISABLE_UPDATES === "1") return;' \
+          "$out/lib/orca-ide/resources/app.asar"
+        grep -a -Fq \
+          'if (process.env.NIXPKGS_ORCA_DISABLE_UPDATES === "1") {' \
+          "$out/lib/orca-ide/resources/app.asar"
+        grep -a -Fq \
+          'if (process.env.NIXPKGS_ORCA_DISABLE_UPDATES === "1") return false;' \
+          "$out/lib/orca-ide/resources/app.asar"
+        grep -a -Fq \
+          'async function listAvailableReleaseBuilds(channel)' \
+          "$out/lib/orca-ide/resources/app.asar"
+        grep -a -Fq 'return [];' "$out/lib/orca-ide/resources/app.asar"
+        grep -a -Fq \
+          'function quitAndInstall()' \
+          "$out/lib/orca-ide/resources/app.asar"
+        grep -a -Fq \
+          'function downloadUpdate()' \
+          "$out/lib/orca-ide/resources/app.asar"
+        grep -a -Fq \
+          'async function performQuitAndInstall()' \
+          "$out/lib/orca-ide/resources/app.asar"
+        # The byte-preserving patch also refreshes the modified entry's ASAR
+        # integrity metadata. Verify every packed entry in the installed archive,
+        # rather than relying only on Electron's launch behavior or checking the
+        # one entry that Nix edits. Entries marked `unpacked` live beside the ASAR
+        # and are checked separately below.
+        ${buildPackages.python3}/bin/python3 - \
+          "$out/lib/orca-ide/resources/app.asar" <<'PY'
+    import hashlib
+    import json
+    import struct
+    import sys
 
-archive_path = sys.argv[1]
-with open(archive_path, "rb") as archive:
-    payload = archive.read()
-header_size = struct.unpack("<I", payload[12:16])[0]
-header = json.loads(payload[16 : 16 + header_size])
+    archive_path = sys.argv[1]
+    with open(archive_path, "rb") as archive:
+        payload = archive.read()
+    header_size = struct.unpack("<I", payload[12:16])[0]
+    header = json.loads(payload[16 : 16 + header_size])
 
-checked = 0
-
-
-def verify_files(node, path=""):
-    global checked
-    for name, entry in node.get("files", {}).items():
-        entry_path = f"{path}/{name}" if path else name
-        if "files" in entry:
-            verify_files(entry, entry_path)
-            continue
-        if entry.get("unpacked"):
-            continue
-        integrity = entry.get("integrity")
-        assert integrity and integrity["algorithm"] == "SHA256", entry_path
-        start = 16 + ((header_size + 3) & ~3) + int(entry["offset"])
-        size = int(entry["size"])
-        source = payload[start : start + size]
-        assert len(source) == size, entry_path
-        assert integrity["hash"] == hashlib.sha256(source).hexdigest(), entry_path
-        block_size = int(integrity["blockSize"])
-        expected_blocks = [
-            hashlib.sha256(source[offset : offset + block_size]).hexdigest()
-            for offset in range(0, max(len(source), 1), block_size)
-        ]
-        assert integrity["blocks"] == expected_blocks, entry_path
-        checked += 1
+    checked = 0
 
 
-verify_files(header)
-assert checked > 100, checked
-PY
-    test -f "${atSpi2Core}/share/dbus-1/services/org.a11y.Bus.service"
-    ! grep -Fq "SystemdService=" \
-      "${atSpi2Core}/share/dbus-1/services/org.a11y.Bus.service"
-    ! grep -R -a -Fq "/run/current-system" "${atSpi2Core}"
-    ! grep -R -a -Fq "dbus-broker-launch" "${atSpi2Core}"
-    grep -Fq "unset APPIMAGE" "$out/bin/orca-ide"
-    grep -Fq "unset APPIMAGE" "$out/bin/orca-cli"
-    # These upstream payload files are referenced by the asar-unpacked
-    # manifest. They must remain present even though Nix never executes Debian
-    # control maintainer scripts or these packaging hooks.
-    test -x "$out/lib/orca-ide/resources/app.asar.unpacked/resources/linux/packaging/after-install.sh"
-    test -x "$out/lib/orca-ide/resources/app.asar.unpacked/resources/linux/packaging/after-remove.sh"
+    def verify_files(node, path=""):
+        global checked
+        for name, entry in node.get("files", {}).items():
+            entry_path = f"{path}/{name}" if path else name
+            if "files" in entry:
+                verify_files(entry, entry_path)
+                continue
+            if entry.get("unpacked"):
+                continue
+            integrity = entry.get("integrity")
+            assert integrity and integrity["algorithm"] == "SHA256", entry_path
+            start = 16 + ((header_size + 3) & ~3) + int(entry["offset"])
+            size = int(entry["size"])
+            source = payload[start : start + size]
+            assert len(source) == size, entry_path
+            assert integrity["hash"] == hashlib.sha256(source).hexdigest(), entry_path
+            block_size = int(integrity["blockSize"])
+            expected_blocks = [
+                hashlib.sha256(source[offset : offset + block_size]).hexdigest()
+                for offset in range(0, max(len(source), 1), block_size)
+            ]
+            assert integrity["blocks"] == expected_blocks, entry_path
+            checked += 1
 
-    # This exercises the relocated upstream CLI launcher and Electron's
-    # ELECTRON_RUN_AS_NODE path without requiring a graphical display.
-    "$out/bin/orca-cli" --help > "$TMPDIR/orca-help.txt"
-    grep -Fq "Usage:" "$TMPDIR/orca-help.txt"
 
-    # Exercise the public wrapper itself. This proves that an inherited
-    # APPIMAGE value is removed and that `python3` resolves to the packaged
-    # PyGObject environment rather than an arbitrary host interpreter.
-    env -u XDG_DATA_DIRS \
-      APPIMAGE="/tmp/inherited-appimage-marker" \
-      ELECTRON_RUN_AS_NODE=1 \
-      "$out/bin/orca-ide" -e '
-        const { execFileSync } = require("node:child_process");
-        if (process.env.APPIMAGE !== undefined) {
-          throw new Error("APPIMAGE leaked through the Nix wrapper");
-        }
-        if (process.env.NIXPKGS_ORCA_DISABLE_UPDATES !== "1") {
-          throw new Error("Nix updater guard leaked through the wrapper");
-        }
-        if (!process.env.XDG_DATA_DIRS.split(":").includes("/usr/share")) {
-          throw new Error(`host desktop data root missing: \''${process.env.XDG_DATA_DIRS}`);
-        }
-        const executable = execFileSync("python3", [
-          "-c",
-          "import ctypes,gi,sys; ctypes.CDLL(\"libEGL.so.1\"); print(sys.executable)",
-        ], { encoding: "utf8" }).trim();
-        if (executable !== "${pythonWithAtspi}/bin/python3") {
-          throw new Error(`unexpected python3: \''${executable}`);
-        }
-        process.stdout.write(JSON.stringify({
-          appimage: process.env.APPIMAGE ?? null,
-          updates: process.env.NIXPKGS_ORCA_DISABLE_UPDATES ?? null,
-          python3: executable,
-        }));
-      ' > "$TMPDIR/orca-wrapper.json"
-    grep -Fq '"appimage":null' "$TMPDIR/orca-wrapper.json"
-    grep -Fq '"updates":"1"' "$TMPDIR/orca-wrapper.json"
-    grep -Fq "\"python3\":\"${pythonWithAtspi}/bin/python3\"" "$TMPDIR/orca-wrapper.json"
+    verify_files(header)
+    assert checked > 100, checked
+    PY
+        test -f "${atSpi2Service}/share/dbus-1/services/org.a11y.Bus.service"
+        ! grep -Fq "SystemdService=" \
+          "${atSpi2Service}/share/dbus-1/services/org.a11y.Bus.service"
+        grep -Fq "${libredirect}/lib/libredirect.so" \
+          "${atSpi2Service}/libexec/at-spi-bus-launcher"
+        grep -Fq \
+          "/run/current-system/sw/bin/dbus-daemon=${atSpi2Service}/libexec/dbus-daemon" \
+          "${atSpi2Service}/libexec/at-spi-bus-launcher"
+        grep -Fq "unset LD_PRELOAD" "${atSpi2Service}/libexec/dbus-daemon"
+        grep -Fq "unset NIX_REDIRECTS" "${atSpi2Service}/libexec/dbus-daemon"
+        grep -Fq "unset APPIMAGE" "$out/bin/orca-ide"
+        grep -Fq "unset APPIMAGE" "$out/bin/orca-cli"
+        # These upstream payload files are referenced by the asar-unpacked
+        # manifest. They must remain present even though Nix never executes Debian
+        # control maintainer scripts or these packaging hooks.
+        test -x "$out/lib/orca-ide/resources/app.asar.unpacked/resources/linux/packaging/after-install.sh"
+        test -x "$out/lib/orca-ide/resources/app.asar.unpacked/resources/linux/packaging/after-remove.sh"
 
-    # The packaged updater export must never perform a network request or
-    # return a downloadable artifact. Its compatibility events still let the
-    # upstream update UI settle cleanly at "not available".
-    ELECTRON_RUN_AS_NODE=1 \
-      "$out/bin/orca-ide" -e '
-        (async () => {
-        const updater = require(
-          "'$out'/lib/orca-ide/resources/node_modules/electron-updater/out/main.js",
-        ).autoUpdater;
-        if (updater.constructor.name !== "NixDisabledUpdater") {
-          throw new Error(`unexpected updater: \''${updater.constructor.name}`);
-        }
-        let settled = false;
-        updater.on("update-not-available", () => {
-          settled = true;
-        });
-        updater.setFeedURL({ provider: "generic", url: "https://invalid.example/" });
-        const result = await updater.checkForUpdates();
-        if (result.isUpdateAvailable || result.cancellationToken !== null) {
-          throw new Error("disabled updater returned an update");
-        }
-        await updater.downloadUpdate().then(
-          () => {
-            throw new Error("disabled updater returned a downloadable artifact");
-          },
-          (error) => {
-            if (!String(error).includes("managed by Nix")) {
-              throw new Error(`unexpected download rejection: \''${error}`);
+        # This exercises the relocated upstream CLI launcher and Electron's
+        # ELECTRON_RUN_AS_NODE path without requiring a graphical display.
+        "$out/bin/orca-cli" --help > "$TMPDIR/orca-help.txt"
+        grep -Fq "Usage:" "$TMPDIR/orca-help.txt"
+
+        # Exercise the public wrapper itself. This proves that an inherited
+        # APPIMAGE value is removed and that `python3` resolves to the packaged
+        # PyGObject environment rather than an arbitrary host interpreter.
+        env -u XDG_DATA_DIRS \
+          APPIMAGE="/tmp/inherited-appimage-marker" \
+          ELECTRON_RUN_AS_NODE=1 \
+          "$out/bin/orca-ide" -e '
+            const { execFileSync } = require("node:child_process");
+            if (process.env.APPIMAGE !== undefined) {
+              throw new Error("APPIMAGE leaked through the Nix wrapper");
             }
-          },
-        );
-        let installRejected = false;
-        try {
-          updater.quitAndInstall();
-        } catch (error) {
-          installRejected = String(error).includes("managed by Nix");
-        }
-        if (!installRejected) {
-          throw new Error("disabled updater allowed installation");
-        }
-        updater.addAuthHeader("Authorization", "secret-must-not-persist");
-        setImmediate(() => {
-          if (!settled) throw new Error("disabled updater did not settle");
-        });
-        })();
-      '
+            if (process.env.NIXPKGS_ORCA_DISABLE_UPDATES !== "1") {
+              throw new Error("Nix updater guard leaked through the wrapper");
+            }
+            if (!process.env.XDG_DATA_DIRS.split(":").includes("/usr/share")) {
+              throw new Error(`host desktop data root missing: \''${process.env.XDG_DATA_DIRS}`);
+            }
+            const executable = execFileSync("python3", [
+              "-c",
+              "import ctypes,gi,sys; ctypes.CDLL(\"libEGL.so.1\"); print(sys.executable)",
+            ], { encoding: "utf8" }).trim();
+            if (executable !== "${pythonWithAtspi}/bin/python3") {
+              throw new Error(`unexpected python3: \''${executable}`);
+            }
+            process.stdout.write(JSON.stringify({
+              appimage: process.env.APPIMAGE ?? null,
+              updates: process.env.NIXPKGS_ORCA_DISABLE_UPDATES ?? null,
+              python3: executable,
+            }));
+          ' > "$TMPDIR/orca-wrapper.json"
+        grep -Fq '"appimage":null' "$TMPDIR/orca-wrapper.json"
+        grep -Fq '"updates":"1"' "$TMPDIR/orca-wrapper.json"
+        grep -Fq "\"python3\":\"${pythonWithAtspi}/bin/python3\"" "$TMPDIR/orca-wrapper.json"
 
-    # Verify the packaged Linux Computer Use interpreter can load the
-    # PyGObject/AT-SPI modules without requiring a live graphical session.
-    GI_TYPELIB_PATH="${giTypelibPath}" \
-      "${pythonWithAtspi}/bin/python3" -c '
-        import gi
-        gi.require_version("Atspi", "2.0")
-        from gi.repository import Atspi
-        assert Atspi is not None
-      '
+        # The packaged updater export must never perform a network request or
+        # return a downloadable artifact. Its compatibility events still let the
+        # upstream update UI settle cleanly at "not available".
+        ELECTRON_RUN_AS_NODE=1 \
+          "$out/bin/orca-ide" -e '
+            (async () => {
+            const updater = require(
+              "'$out'/lib/orca-ide/resources/node_modules/electron-updater/out/main.js",
+            ).autoUpdater;
+            if (updater.constructor.name !== "NixDisabledUpdater") {
+              throw new Error(`unexpected updater: \''${updater.constructor.name}`);
+            }
+            let settled = false;
+            updater.on("update-not-available", () => {
+              settled = true;
+            });
+            updater.setFeedURL({ provider: "generic", url: "https://invalid.example/" });
+            const result = await updater.checkForUpdates();
+            if (result.isUpdateAvailable || result.cancellationToken !== null) {
+              throw new Error("disabled updater returned an update");
+            }
+            await updater.downloadUpdate().then(
+              () => {
+                throw new Error("disabled updater returned a downloadable artifact");
+              },
+              (error) => {
+                if (!String(error).includes("managed by Nix")) {
+                  throw new Error(`unexpected download rejection: \''${error}`);
+                }
+              },
+            );
+            let installRejected = false;
+            try {
+              updater.quitAndInstall();
+            } catch (error) {
+              installRejected = String(error).includes("managed by Nix");
+            }
+            if (!installRejected) {
+              throw new Error("disabled updater allowed installation");
+            }
+            updater.addAuthHeader("Authorization", "secret-must-not-persist");
+            setImmediate(() => {
+              if (!settled) throw new Error("disabled updater did not settle");
+            });
+            })();
+          '
 
-    # Run the sidecar's protocol handshake and one real AT-SPI operation
-    # through a private session bus and Xvfb. The X server is started with an
-    # active readiness check rather than a fixed sleep. This catches missing
-    # DBus service discovery, AT-SPI activation, typelibs, and X11 wiring
-    # without depending on the build host's graphical login.
-    handshake_input="$TMPDIR/orca-handshake.json"
-    handshake_output="$TMPDIR/orca-handshake-output.json"
-    list_apps_input="$TMPDIR/orca-list-apps.json"
-    list_apps_output="$TMPDIR/orca-list-apps-output.json"
-    runtime_dir="$TMPDIR/orca-xdg-runtime"
-    mkdir -m 700 "$runtime_dir"
-    printf "%s\n" '{"tool":"handshake"}' > "$handshake_input"
-    printf "%s\n" '{"tool":"list_apps"}' > "$list_apps_input"
-    xvfb_display_file="$TMPDIR/orca-xvfb-display"
-    xvfb_log="$TMPDIR/orca-xvfb.log"
-    ${buildPackages.xvfb}/bin/Xvfb -displayfd 3 \
-      -screen 0 1280x720x24 -nolisten tcp -noreset \
-      >"$xvfb_log" 2>&1 3>"$xvfb_display_file" &
-    xvfb_pid="$!"
-    cleanup_xvfb() {
-      kill "$xvfb_pid" 2>/dev/null || true
-      wait "$xvfb_pid" 2>/dev/null || true
-    }
-    trap cleanup_xvfb EXIT
-    for _ in $(seq 1 100); do
-      if test -s "$xvfb_display_file"; then
-        break
-      fi
-      if ! kill -0 "$xvfb_pid" 2>/dev/null; then
-        cat "$xvfb_log" >&2
-        exit 1
-      fi
-      sleep 0.05
-    done
-    test -s "$xvfb_display_file"
-    xvfb_display=":$(cat "$xvfb_display_file")"
-    test -S "/tmp/.X11-unix/X''${xvfb_display#:}"
-    atspi_data_dirs="${
-      lib.makeSearchPath "share" [
-        atSpi2Core
-        dbus
-      ]
-    }"
-    atspi_env=(
-      "DISPLAY=$xvfb_display"
-      "XDG_SESSION_TYPE=x11"
-      "XDG_RUNTIME_DIR=$runtime_dir"
-      "XDG_DATA_DIRS=$atspi_data_dirs"
-      "GI_TYPELIB_PATH=${giTypelibPath}"
-      "PATH=${lib.makeBinPath desktopTools}"
-    )
-    XDG_RUNTIME_DIR="$runtime_dir" \
-      DISPLAY="$xvfb_display" \
-      XDG_SESSION_TYPE=x11 \
-      XDG_DATA_DIRS="$atspi_data_dirs" \
-      ${buildPackages.dbus}/bin/dbus-run-session \
-      --config-file="${buildPackages.dbus}/share/dbus-1/session.conf" -- \
-        env GI_TYPELIB_PATH="${giTypelibPath}" \
-          PATH="${lib.makeBinPath desktopTools}" \
-        "${pythonWithAtspi}/bin/python3" \
-        "$out/lib/orca-ide/resources/computer-use-linux/runtime.py" \
-        "$handshake_input" > "$handshake_output"
-    grep -Fq '"ok":true' "$handshake_output"
-    grep -Fq '"provider":"orca-computer-use-linux"' "$handshake_output"
-    XDG_RUNTIME_DIR="$runtime_dir" \
-      DISPLAY="$xvfb_display" \
-      XDG_SESSION_TYPE=x11 \
-      XDG_DATA_DIRS="$atspi_data_dirs" \
+        # Verify the packaged Linux Computer Use interpreter can load the
+        # PyGObject/AT-SPI modules without requiring a live graphical session.
+        GI_TYPELIB_PATH="${giTypelibPath}" \
+          "${pythonWithAtspi}/bin/python3" -c '
+            import gi
+            gi.require_version("Atspi", "2.0")
+            from gi.repository import Atspi
+            assert Atspi is not None
+          '
+
+        # Run the sidecar's protocol handshake and one real AT-SPI operation
+        # through a private session bus and Xvfb. The X server is started with an
+        # active readiness check rather than a fixed sleep. This catches missing
+        # DBus service discovery, AT-SPI activation, typelibs, and X11 wiring
+        # without depending on the build host's graphical login.
+        handshake_input="$TMPDIR/orca-handshake.json"
+        handshake_output="$TMPDIR/orca-handshake-output.json"
+        list_apps_input="$TMPDIR/orca-list-apps.json"
+        list_apps_output="$TMPDIR/orca-list-apps-output.json"
+        runtime_dir="$TMPDIR/orca-xdg-runtime"
+        mkdir -m 700 "$runtime_dir"
+        printf "%s\n" '{"tool":"handshake"}' > "$handshake_input"
+        printf "%s\n" '{"tool":"list_apps"}' > "$list_apps_input"
+        xvfb_display_file="$TMPDIR/orca-xvfb-display"
+        xvfb_log="$TMPDIR/orca-xvfb.log"
+        ${buildPackages.xvfb}/bin/Xvfb -displayfd 3 \
+          -screen 0 1280x720x24 -nolisten tcp -noreset \
+          >"$xvfb_log" 2>&1 3>"$xvfb_display_file" &
+        xvfb_pid="$!"
+        cleanup_xvfb() {
+          kill "$xvfb_pid" 2>/dev/null || true
+          wait "$xvfb_pid" 2>/dev/null || true
+        }
+        trap cleanup_xvfb EXIT
+        for _ in $(seq 1 100); do
+          if test -s "$xvfb_display_file"; then
+            break
+          fi
+          if ! kill -0 "$xvfb_pid" 2>/dev/null; then
+            cat "$xvfb_log" >&2
+            exit 1
+          fi
+          sleep 0.05
+        done
+        test -s "$xvfb_display_file"
+        xvfb_display=":$(cat "$xvfb_display_file")"
+        test -S "/tmp/.X11-unix/X''${xvfb_display#:}"
+        atspi_data_dirs="${
+          lib.makeSearchPath "share" [
+            atSpi2Service
+            at-spi2-core
+            dbus
+          ]
+        }"
+        atspi_env=(
+          "DISPLAY=$xvfb_display"
+          "XDG_SESSION_TYPE=x11"
+          "XDG_RUNTIME_DIR=$runtime_dir"
+          "XDG_DATA_DIRS=$atspi_data_dirs"
+          "GI_TYPELIB_PATH=${giTypelibPath}"
+          "PATH=${lib.makeBinPath desktopTools}"
+        )
+        XDG_RUNTIME_DIR="$runtime_dir" \
+          DISPLAY="$xvfb_display" \
+          XDG_SESSION_TYPE=x11 \
+          XDG_DATA_DIRS="$atspi_data_dirs" \
+          ${buildPackages.dbus}/bin/dbus-run-session \
+          --config-file="${buildPackages.dbus}/share/dbus-1/session.conf" -- \
+            env GI_TYPELIB_PATH="${giTypelibPath}" \
+              PATH="${lib.makeBinPath desktopTools}" \
+            "${pythonWithAtspi}/bin/python3" \
+            "$out/lib/orca-ide/resources/computer-use-linux/runtime.py" \
+            "$handshake_input" > "$handshake_output"
+        grep -Fq '"ok":true' "$handshake_output"
+        grep -Fq '"provider":"orca-computer-use-linux"' "$handshake_output"
+        XDG_RUNTIME_DIR="$runtime_dir" \
+          DISPLAY="$xvfb_display" \
+          XDG_SESSION_TYPE=x11 \
+          XDG_DATA_DIRS="$atspi_data_dirs" \
+          ${buildPackages.dbus}/bin/dbus-run-session \
+          --config-file="${buildPackages.dbus}/share/dbus-1/session.conf" -- \
+          env "''${atspi_env[@]}" \
+            "${pythonWithAtspi}/bin/python3" \
+            "$out/lib/orca-ide/resources/computer-use-linux/runtime.py" \
+            "$list_apps_input" > "$list_apps_output"
+        grep -Fq '"ok":true' "$list_apps_output"
+        grep -Fq '"apps":[]' "$list_apps_output"
+
+        # Trigger the portable service while its accessibility bus remains alive,
+        # then inspect the final daemon rather than only the launch wrapper. The
+        # redirect variables must not leak into D-Bus or services it activates.
+        XDG_RUNTIME_DIR="$runtime_dir" \
+          DISPLAY="$xvfb_display" \
+          XDG_SESSION_TYPE=x11 \
+          XDG_DATA_DIRS="$atspi_data_dirs" \
       ${buildPackages.dbus}/bin/dbus-run-session \
       --config-file="${buildPackages.dbus}/share/dbus-1/session.conf" -- \
       env "''${atspi_env[@]}" \
-        "${pythonWithAtspi}/bin/python3" \
-        "$out/lib/orca-ide/resources/computer-use-linux/runtime.py" \
-        "$list_apps_input" > "$list_apps_output"
-    grep -Fq '"ok":true' "$list_apps_output"
-    grep -Fq '"apps":[]' "$list_apps_output"
-    trap - EXIT
-    cleanup_xvfb
+        "PATH=${
+          lib.makeBinPath [
+            buildPackages.coreutils
+            buildPackages.gnugrep
+          ]
+        }:${lib.makeBinPath desktopTools}" \
+        ${buildPackages.bash}/bin/bash -c '
+              accessibility_address="$(
+                ${buildPackages.glib.bin}/bin/gdbus call \
+                  --session \
+                  --dest org.a11y.Bus \
+                  --object-path /org/a11y/bus \
+                  --method org.a11y.Bus.GetAddress \
+                | ${buildPackages.python3}/bin/python3 -c \
+                  "import ast,sys; print(ast.literal_eval(sys.stdin.read())[0].split(chr(44) + \"guid=\", 1)[0])"
+              )"
+              test -n "$accessibility_address"
 
-    runHook postInstallCheck
+              daemon_found=false
+              for process_dir in /proc/[0-9]*; do
+                if test "$(readlink "$process_dir/exe" 2>/dev/null || true)" \
+                  != "${dbus}/bin/dbus-daemon"; then
+                  continue
+                fi
+                command_line="$(tr "\0" " " < "$process_dir/cmdline")"
+                case "$command_line" in
+                  *"${at-spi2-core}/share/defaults/at-spi2/accessibility.conf"*"--address=$accessibility_address "*)
+                    daemon_found=true
+                    if tr "\0" "\n" < "$process_dir/environ" \
+                      | grep -Eq "^(LD_PRELOAD|NIX_REDIRECTS)="; then
+                      echo "AT-SPI redirect environment leaked into $command_line" >&2
+                      exit 1
+                    fi
+                    ;;
+                esac
+              done
+              test "$daemon_found" = true
+            '
+        trap - EXIT
+        cleanup_xvfb
+
+        runHook postInstallCheck
   '';
 
   meta = {
@@ -767,4 +765,4 @@ PY
     platforms = builtins.attrNames sources;
     sourceProvenance = with lib.sourceTypes; [ binaryNativeCode ];
   };
-})
+}

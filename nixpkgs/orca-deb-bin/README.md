@@ -15,6 +15,7 @@ because that name is the GNOME screen reader on many Linux systems.
 From this directory:
 
 ```sh
+nix fmt .
 nix build
 nix run
 nix flake check
@@ -29,7 +30,7 @@ nix profile install .#orca-ide
 Inspect the resulting package:
 
 ```sh
-nix build --no-link
+nix build
 nix-store --query --requisites ./result
 find -L ./result/share -maxdepth 4 -type f
 ```
@@ -99,12 +100,13 @@ The release decision is therefore:
   network call.
 - `autoPatchelfHook` repairs the upstream Electron and native module ELF
   files; `wrapGAppsHook3` supplies the GTK/desktop runtime environment.
-- The application closure uses one portable GTK/AT-SPI stack. `at-spi2-core`
-  is rebuilt with the Nix `dbus-daemon`, and GTK3 plus its app-indicator
-  dependants are overridden to consume that same stack. A post-autoPatchelf
-  RPATH normalization keeps the generated Electron RPATH aligned with the
-  portable variants, so stock nixpkgs GTK/AT-SPI packages are not retained as
-  duplicate runtime references.
+- The application uses the stock binary-cache GTK3 and `at-spi2-core`
+  packages. A small, source-free D-Bus service package wraps the cached
+  `at-spi-bus-launcher` and uses `libredirect` only to translate its
+  NixOS-specific `/run/current-system/sw/bin/dbus-daemon` lookup to the
+  packaged Nix D-Bus executable. The expression does not override GTK,
+  AT-SPI, or their app-indicator dependants, so it does not force source
+  rebuilds of that stack.
 - The Linux Computer Use bridge is made reproducible with Nix's Python
   PyGObject/AT-SPI stack plus `xdotool`, `xclip`, `xsel`, `wl-clipboard`, and
   the desktop URL helpers; these are fallback tools in the wrapper while the host `PATH` remains
@@ -113,17 +115,17 @@ The release decision is therefore:
 - The Debian archive also declares `xvfb`, but Orca's production bridge only
   attaches to the user's existing X11/Wayland session and never starts Xvfb;
   Xvfb is therefore a build-time install-check tool, not a runtime dependency.
-- The package rebuilds the small `at-spi2-core` daemon package with the Nix
-  `dbus-daemon` path and publishes its D-Bus service directory through
-  `XDG_DATA_DIRS`. This avoids the NixOS-only `/run/current-system` launcher
-  path when the profile is installed on another Linux distribution. The
-  generated `org.a11y.Bus.service` also omits the optional `SystemdService=`
-  hint, so a systemd-integrated host bus cannot redirect activation to a
-  missing NixOS unit. It does not start a background bus, replace the host
-  session bus, or inject service files into a bus that is already running. A newly started session bus must
-  see the profile's data directory, or the host distribution must already
-  provide `org.a11y.Bus`; installing the profile cannot retroactively change
-  an existing desktop bus.
+- The source-free service package publishes `org.a11y.Bus.service` through
+  `XDG_DATA_DIRS`. Its first wrapper scopes `LD_PRELOAD=libredirect` and
+  `NIX_REDIRECTS` to `at-spi-bus-launcher`; a second wrapper removes both
+  variables before executing `dbus-daemon`, so neither the accessibility bus
+  nor services it activates inherit the redirect mechanism. The service file
+  has no optional `SystemdService=` hint, keeping a systemd-integrated
+  non-NixOS bus on its portable `Exec=` activation path. This does not start a
+  background bus, replace the host session bus, or inject service files into
+  a bus that is already running. A newly started session bus must see the
+  profile's data directory, or the host distribution must already provide
+  `org.a11y.Bus`.
 - If a launcher starts with an empty `XDG_DATA_DIRS`, the wrapper appends the
   conventional `/usr/local/share:/usr/share` host roots after the Nix roots.
   This keeps host MIME handlers, portals, desktop entries, and ChromeOS
@@ -163,6 +165,54 @@ orca-cli --help
 The package evaluates for `x86_64-linux` and `aarch64-linux`. Building the
 aarch64 output requires an aarch64 builder, a configured remote builder, or
 emulation; evaluation alone does not claim a cross-architecture binary build.
+
+The flake exposes `nixfmt-tree`; from this directory, run `nix fmt .`.
+`nix flake check` also runs
+`nixfmt --check`, `deadnix --fail`, and `statix check` over both Nix
+expressions in addition to building the package and running its install
+checks.
+
+## Configuration
+
+The public wrappers set `NIXPKGS_ORCA_DISABLE_UPDATES=1`, remove inherited
+`APPIMAGE`, prepend the packaged Computer Use Python interpreter, and retain
+host desktop helpers ahead of packaged fallbacks. These are package invariants,
+not user-facing settings. No persistent configuration is required beyond
+installing the profile; Orca keeps its ordinary application settings in the
+user's desktop environment.
+
+## Runtime closure
+
+The verified x86_64 closure is approximately 1.1 GiB. The largest individual
+store paths are the upstream Orca/Electron payload (about 532 MiB), Python
+(about 135 MiB), and GTK3 (about 42 MiB). The remaining desktop, accessibility,
+clipboard, and URL-opening dependencies provide declared runtime behavior.
+Removing those fallbacks or maintaining locally reduced variants would trade
+away functionality or binary-cache reuse, so this package does not rebuild
+them merely to reduce closure size.
+
+## Host namespace verification
+
+The package launcher does not wrap Orca in an AppImage, `bubblewrap`, `proot`,
+or portable-Nix user namespace. The verified non-NixOS environment reported
+the full host UID mapping before launch:
+
+```text
+0 0 4294967295
+```
+
+In that same environment, OpenSSH accepted the Home Manager-managed,
+Nix-store-backed `~/.ssh/config` even though its resolved store file was
+`root:root` mode `0444`:
+
+```sh
+ssh -G github.com >/dev/null
+```
+
+This is the expected native behavior. Seeing the store file as
+`nobody:nobody` instead indicates that an outer portable-Nix/AppImage-style
+user namespace is still active; it is not created by this package. Electron
+may still create short-lived namespaces for its own Chromium sandbox.
 
 Electron's Linux sandbox was smoke-tested without `--no-sandbox` under a
 private D-Bus session and Nix-provided Xvfb; the process remained alive until
