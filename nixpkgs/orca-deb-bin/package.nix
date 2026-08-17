@@ -216,12 +216,13 @@ stdenv.mkDerivation {
           'return _autoUpdater || doLoadAutoUpdater();' \
           'return _autoUpdater || require("./NixDisabledUpdater").disabledAutoUpdater;'
 
-        # Orca performs a GitHub release-tag preflight before it calls
-        # electron-updater. Patch the app-level entry points in the ASAR so
-        # automatic and menu-triggered checks cannot perform that direct request.
-        # The replacement is deliberately byte-length preserving: ASAR offsets and
-        # the rest of the archive remain unchanged, so no repack/FHS step is
-        # needed.
+        # Patch app-level integration in the ASAR. Electron otherwise derives the
+        # native Wayland app ID from `orca`, while the exported launcher is named
+        # `orca-ide.desktop`; Crostini then cannot associate the running window
+        # with its icon. Orca also performs a GitHub release-tag preflight before
+        # it calls electron-updater, so guard those update entry points here.
+        # Every replacement is byte-length preserving: ASAR offsets and the rest
+        # of the archive remain unchanged, so no repack/FHS step is needed.
         ${buildPackages.python3}/bin/python3 - \
           "$out/lib/orca-ide/resources/app.asar" <<'PY'
     import hashlib
@@ -241,6 +242,20 @@ stdenv.mkDerivation {
         # present in the current upstream archive.
         data_start = 16 + ((header_size + 3) & ~3) + int(entry["offset"])
         source = bytearray(payload[data_start : data_start + int(entry["size"])])
+
+
+        desktop_name_old = b"electron.app.setName(devInstanceIdentity.appName);"
+        desktop_name_new = b'electron.app.setDesktopName("orca-ide.desktop");'
+        assert source.count(desktop_name_old) == 1, (
+            "expected one Electron app-name assignment"
+        )
+        assert len(desktop_name_new) <= len(desktop_name_old)
+        desktop_name_offset = source.index(desktop_name_old)
+        source[
+            desktop_name_offset : desktop_name_offset + len(desktop_name_old)
+        ] = desktop_name_new + b" " * (
+            len(desktop_name_old) - len(desktop_name_new)
+        )
 
 
         def replace_after(marker, old, new):
@@ -426,8 +441,12 @@ stdenv.mkDerivation {
         test -x "$out/lib/orca-ide/resources/bin/orca-ide"
         test -f "$out/share/applications/orca-ide.desktop"
         grep -Fq "Exec=orca-ide %U" "$out/share/applications/orca-ide.desktop"
+        grep -Fq "Icon=orca-ide" "$out/share/applications/orca-ide.desktop"
         ! grep -Fq "/opt/Orca" "$out/share/applications/orca-ide.desktop"
         ! grep -Fq "AppRun" "$out/share/applications/orca-ide.desktop"
+        for size in 16 24 32 48 64 128 256 512; do
+          test -f "$out/share/icons/hicolor/''${size}x''${size}/apps/orca-ide.png"
+        done
         test ! -e "$out/lib/orca-ide/resources/package-type"
         test ! -e "$out/lib/orca-ide/resources/app-update.yml"
         test ! -e "$out/lib/orca-ide/resources/apparmor-profile"
@@ -441,6 +460,9 @@ stdenv.mkDerivation {
         # lose the Nix updater policy.
         grep -a -Fq \
           'if (process.env.NIXPKGS_ORCA_DISABLE_UPDATES === "1") return;' \
+          "$out/lib/orca-ide/resources/app.asar"
+        grep -a -Fq \
+          'electron.app.setDesktopName("orca-ide.desktop");' \
           "$out/lib/orca-ide/resources/app.asar"
         grep -a -Fq \
           'if (process.env.NIXPKGS_ORCA_DISABLE_UPDATES === "1") {' \

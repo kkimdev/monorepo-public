@@ -135,6 +135,10 @@ The release decision is therefore:
   application launchers and URL arguments without an AppImage FHS. Use
   `orca-cli` for headless CLI calls; do not shadow the system `orca` screen
   reader.
+- The app's native Wayland app ID is patched to `orca-ide.desktop`, matching
+  the exported desktop-entry filename. This lets Crostini associate the
+  running window with the packaged `orca-ide` icons instead of displaying a
+  generic application icon.
 - The wrapper does not inject global Wayland/Ozone flags: the same wrapper also
   serves `orca-cli`, whose `ELECTRON_RUN_AS_NODE` path must receive no GUI-only
   Chromium flags. Electron 43 auto-detects the user's Wayland/X11 backend;
