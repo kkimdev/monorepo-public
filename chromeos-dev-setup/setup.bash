@@ -500,6 +500,7 @@ in
       '';
       profileExtra = ''
         . \$HOME/.profile.backup
+        export PATH="\$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:\$PATH"
       '';
 
       shellAliases = myShellAliases;
