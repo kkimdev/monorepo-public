@@ -5,7 +5,7 @@
 `package.nix` packages Orca `1.4.182` from the upstream amd64 and arm64
 Debian archives. It extracts only the payload, relocates `/opt/Orca` into the
 Nix store, repairs native ELF dependencies, installs desktop metadata and
-exposes the GUI launcher as `orca-ide` and the CLI launcher as `orca-cli`.
+exposes the CLI launcher as `orca-ide` and the GUI launcher as `orca-gui`.
 It intentionally does not create a bare `orca` command because that name is
 the GNOME screen reader on many Linux systems.
 
@@ -58,7 +58,7 @@ nix build
 
 After a successful build, inspect that the package has:
 
-- `bin/orca-ide` and `bin/orca-cli`;
+- `bin/orca-ide` and `bin/orca-gui`;
 - `share/applications/orca-ide.desktop`;
 - all upstream hicolor icons;
 - no Debian control maintainer scripts are executed;
@@ -86,9 +86,13 @@ After a successful build, inspect that the package has:
   (the smoke invocation uses `--disable-gpu` because Xvfb has no GPU); the
   package does not set the Debian `chrome-sandbox` setuid bit. A host that
   disables user namespaces may require a host policy change.
-- The wrapper does not inject global Wayland/Ozone flags because the same
-  wrapper serves `orca-cli` via `ELECTRON_RUN_AS_NODE`; Electron 43 performs
+- The wrapper does not inject global Wayland/Ozone flags because the CLI
+  wrapper serves `orca-ide` via `ELECTRON_RUN_AS_NODE`; Electron 43 performs
   backend auto-detection for GUI launches and the CLI remains flag-free.
+- Both public wrappers default `ORCA_CLI_COMMAND` to `orca-ide` without
+  overwriting an explicit environment value. The ChromeOS setup exports the
+  same value through Home Manager because a child process cannot update its
+  parent shell.
 - With `XDG_DATA_DIRS` unset, the wrapper retains the conventional host roots
   after the Nix roots; the install check explicitly exercises this path.
 - The updater patch recalculates the changed `index.js` SHA-256 entry and the

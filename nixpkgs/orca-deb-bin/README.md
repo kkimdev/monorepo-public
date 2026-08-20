@@ -6,9 +6,13 @@ maintainer scripts, or create a bubblewrap/FHS runtime. The Electron binary and
 native modules are patched to Nix libraries, while the process retains the
 host's `PATH`, DBus session, MIME database, and desktop portals.
 
-The GUI command is `orca-ide`. The bundled command-line entry point is exposed
-as `orca-cli`; the package deliberately does not create a bare `orca` command,
-because that name is the GNOME screen reader on many Linux systems.
+The package follows Orca's upstream Linux command contract: `orca-ide` is the
+headless CLI and `orca-gui` launches the Electron IDE. The package deliberately
+does not create a bare `orca` command, because that name is the GNOME screen
+reader on many Linux systems.
+
+This is a deliberate command-name migration from earlier revisions of this
+package, where `orca-ide` launched the GUI and `orca-cli` launched the CLI.
 
 ## Commands
 
@@ -39,7 +43,7 @@ Run the GUI and CLI:
 
 ```sh
 nix run .
-./result/bin/orca-cli --help
+./result/bin/orca-ide --help
 ```
 
 The package is available for `x86_64-linux` and `aarch64-linux`. Upgrades are
@@ -131,16 +135,16 @@ The release decision is therefore:
   This keeps host MIME handlers, portals, desktop entries, and ChromeOS
   Crostini integration discoverable while preserving any caller-provided
   `XDG_DATA_DIRS` ahead of the fallback.
-- The desktop entry invokes the Nix `orca-ide` command, so it works from
+- The desktop entry invokes the Nix `orca-gui` command, so it works from
   application launchers and URL arguments without an AppImage FHS. Use
-  `orca-cli` for headless CLI calls; do not shadow the system `orca` screen
+  `orca-ide` for headless CLI calls; do not shadow the system `orca` screen
   reader.
 - The app's native Wayland app ID is patched to `orca-ide.desktop`, matching
   the exported desktop-entry filename. This lets Crostini associate the
   running window with the packaged `orca-ide` icons instead of displaying a
   generic application icon.
-- The wrapper does not inject global Wayland/Ozone flags: the same wrapper also
-  serves `orca-cli`, whose `ELECTRON_RUN_AS_NODE` path must receive no GUI-only
+- The wrapper does not inject global Wayland/Ozone flags: the CLI wrapper
+  serves `orca-ide`, whose `ELECTRON_RUN_AS_NODE` path must receive no GUI-only
   Chromium flags. Electron 43 auto-detects the user's Wayland/X11 backend;
   host `xdg-open`, MIME handlers, portals, DBus, and compositor state remain
   visible to the process.
@@ -162,8 +166,8 @@ mutable `/opt` or `/usr` install:
 
 ```sh
 nix profile install .#orca-ide
-orca-ide
-orca-cli --help
+orca-gui
+orca-ide --help
 ```
 
 The package evaluates for `x86_64-linux` and `aarch64-linux`. Building the
@@ -179,11 +183,17 @@ checks.
 ## Configuration
 
 The public wrappers set `NIXPKGS_ORCA_DISABLE_UPDATES=1`, remove inherited
-`APPIMAGE`, prepend the packaged Computer Use Python interpreter, and retain
-host desktop helpers ahead of packaged fallbacks. These are package invariants,
-not user-facing settings. No persistent configuration is required beyond
-installing the profile; Orca keeps its ordinary application settings in the
-user's desktop environment.
+`APPIMAGE`, set `ORCA_CLI_COMMAND=orca-ide` by default, prepend the packaged
+Computer Use Python interpreter, and retain host desktop helpers ahead of
+packaged fallbacks. The CLI variable uses a default rather than a forced value,
+so an explicit user or development override remains authoritative. These are
+package invariants, not user-facing settings. No persistent configuration is
+required beyond installing the profile; Orca keeps its ordinary application
+settings in the user's desktop environment.
+
+The ChromeOS setup's generated Home Manager session also exports
+`ORCA_CLI_COMMAND=orca-ide`; a process wrapper cannot update the parent shell's
+environment after it exits.
 
 ## Runtime closure
 

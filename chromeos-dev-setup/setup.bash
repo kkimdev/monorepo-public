@@ -366,6 +366,9 @@ in
     ];
     sessionVariables = {
       NIXPKGS_ALLOW_UNFREE = "1";
+      # Orca's upstream Linux CLI command is `orca-ide`; keep the shared
+      # Home Manager session aligned with the packaged command name.
+      ORCA_CLI_COMMAND = "orca-ide";
       EDITOR = "code --wait --new-window";
       VISUAL = "code --wait --new-window";
       GIT_USER_NAME = "$GIT_USER_NAME";

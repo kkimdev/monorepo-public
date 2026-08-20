@@ -12,11 +12,14 @@ nix flake check --print-build-logs
 The build completed with `auto-patchelf: 0 dependencies could not be
 satisfied`. The install check and additional smoke checks passed:
 
-- `result/bin/orca-cli --help` prints the CLI usage without shadowing the
-  system GNOME `orca` screen reader.
+- `result/bin/orca-ide --help` prints the CLI usage without shadowing the
+  system GNOME `orca` screen reader; the legacy `orca-cli` entry point is
+  absent.
 - Electron reports Node `v24.18.0` through `ELECTRON_RUN_AS_NODE`.
 - The public wrapper removes an inherited `APPIMAGE` value and resolves
   `python3` to the packaged PyGObject environment.
+- The wrappers default `ORCA_CLI_COMMAND` to `orca-ide` and preserve an
+  explicit `ORCA_CLI_COMMAND=orca-dev` override.
 - With `XDG_DATA_DIRS` unset, the wrapper still retains `/usr/share` for host
   desktop/MIME/portal discovery.
 - PyGObject/AT-SPI imports successfully during `installCheckPhase`.
@@ -83,7 +86,7 @@ profile:
 ```sh
 profile_root="$(mktemp -d)"
 nix profile install --profile "$profile_root/profile" .#orca-ide
-"$profile_root/profile/bin/orca-cli" --help
+"$profile_root/profile/bin/orca-ide" --help
 ```
 
 That command completed successfully. The GUI wrapper keeps the host's
@@ -96,7 +99,7 @@ the host's X server. From this directory, the exact copy-pasteable command is:
 ```sh
 nix shell nixpkgs#xvfb nixpkgs#dbus --command bash -c '
   set -eu
-  test -x ./result/bin/orca-ide
+  test -x ./result/bin/orca-gui
   test -x "$(command -v Xvfb)"
   test -x "$(command -v dbus-run-session)"
   root="$(mktemp -d)"
@@ -122,7 +125,7 @@ nix shell nixpkgs#xvfb nixpkgs#dbus --command bash -c '
       XDG_RUNTIME_DIR="\$root/runtime" DISPLAY="\$display" XDG_SESSION_TYPE=x11 \
       HOME="\$root/home" XDG_CONFIG_HOME="\$root/config" XDG_CACHE_HOME="\$root/cache" \
       timeout --signal=TERM --kill-after=5s 15s \
-      ./result/bin/orca-ide --disable-gpu --user-data-dir="\$root/profile"
+      ./result/bin/orca-gui --disable-gpu --user-data-dir="\$root/profile"
   rc="\$?"
   test "\$rc" -eq 124
 '
@@ -147,9 +150,10 @@ and `performQuitAndInstall` entrypoints return immediately under
 the install check verifies those refreshed values, and the GUI launch above
 exercises the patched archive.
 
-The wrapper intentionally does not add global Wayland/Ozone flags: it is also
-the `orca-cli` wrapper, and Electron's `ELECTRON_RUN_AS_NODE` path rejects GUI
-flags. Electron 43 auto-detects X11 versus Wayland for the GUI process.
+The wrapper intentionally does not add global Wayland/Ozone flags: the
+`orca-ide` CLI wrapper uses Electron's `ELECTRON_RUN_AS_NODE` path, which
+rejects GUI flags. Electron 43 auto-detects X11 versus Wayland for the GUI
+process.
 
 The aarch64 output is intentionally evaluation-only on this x86_64 builder.
 An actual aarch64 build needs an aarch64 machine, a configured remote builder,

@@ -366,15 +366,13 @@ stdenv.mkDerivation {
         # tooling report missing files; they remain inert because this package
         # never invokes them and `resources/package-type` is absent.
 
-        # The GUI binary is the public Nix command. The upstream CLI launcher is
-        # exposed as `orca-cli`: a bare `orca` command would collide with the
-        # GNOME Orca screen reader on Linux. The launcher resolves the Electron
-        # binary next to the resources directory and therefore continues to work
-        # after relocation.
-        ln -s "$out/lib/orca-ide/orca-ide" "$out/bin/orca-ide"
+        # Follow upstream's Linux command contract: `orca-ide` is the CLI
+        # launcher, while the GUI gets a distinct name. A bare `orca` command
+        # would collide with the GNOME Orca screen reader on Linux.
         # Use an absolute target so the upstream launcher resolves its real
-        # resources directory after it is invoked through the public Nix command.
-        makeWrapper "$out/lib/orca-ide/resources/bin/orca-ide" "$out/bin/orca-cli"
+        # resources directory after relocation.
+        makeWrapper "$out/lib/orca-ide/resources/bin/orca-ide" "$out/bin/orca-ide"
+        ln -s "$out/lib/orca-ide/orca-ide" "$out/bin/orca-gui"
 
         # Keep all upstream icon sizes for desktop environments that do not scale
         # a 512px-only icon correctly.
@@ -391,7 +389,7 @@ stdenv.mkDerivation {
       desktopName = "Orca";
       comment = "Next-gen IDE for parallel agentic development";
       categories = [ "Utility" ];
-      exec = "orca-ide %U";
+      exec = "orca-gui %U";
       icon = "orca-ide";
       startupWMClass = "orca";
     })
@@ -422,6 +420,9 @@ stdenv.mkDerivation {
       # APPIMAGE variable turn this Nix build into an AppImage updater.
       --unset APPIMAGE
       --set NIXPKGS_ORCA_DISABLE_UPDATES 1
+      # Upstream names the Linux CLI `orca-ide`; keep this as a default so
+      # explicit dev/WSL or user overrides remain authoritative.
+      --set-default ORCA_CLI_COMMAND orca-ide
     )
   '';
 
@@ -434,13 +435,14 @@ stdenv.mkDerivation {
         runHook preInstallCheck
 
         test -x "$out/bin/orca-ide"
-        test -x "$out/bin/orca-cli"
+        test -x "$out/bin/orca-gui"
+        test ! -e "$out/bin/orca-cli"
         # Do not shadow the GNOME Orca screen reader command on Linux.
         test ! -e "$out/bin/orca"
         test -x "$out/lib/orca-ide/orca-ide"
         test -x "$out/lib/orca-ide/resources/bin/orca-ide"
         test -f "$out/share/applications/orca-ide.desktop"
-        grep -Fq "Exec=orca-ide %U" "$out/share/applications/orca-ide.desktop"
+        grep -Fq "Exec=orca-gui %U" "$out/share/applications/orca-ide.desktop"
         grep -Fq "Icon=orca-ide" "$out/share/applications/orca-ide.desktop"
         ! grep -Fq "/opt/Orca" "$out/share/applications/orca-ide.desktop"
         ! grep -Fq "AppRun" "$out/share/applications/orca-ide.desktop"
@@ -543,7 +545,9 @@ stdenv.mkDerivation {
         grep -Fq "unset LD_PRELOAD" "${atSpi2Service}/libexec/dbus-daemon"
         grep -Fq "unset NIX_REDIRECTS" "${atSpi2Service}/libexec/dbus-daemon"
         grep -Fq "unset APPIMAGE" "$out/bin/orca-ide"
-        grep -Fq "unset APPIMAGE" "$out/bin/orca-cli"
+        grep -Fq "unset APPIMAGE" "$out/bin/orca-gui"
+        grep -Fq "ORCA_CLI_COMMAND" "$out/bin/orca-ide"
+        grep -Fq "ORCA_CLI_COMMAND" "$out/bin/orca-gui"
         # These upstream payload files are referenced by the asar-unpacked
         # manifest. They must remain present even though Nix never executes Debian
         # control maintainer scripts or these packaging hooks.
@@ -552,22 +556,25 @@ stdenv.mkDerivation {
 
         # This exercises the relocated upstream CLI launcher and Electron's
         # ELECTRON_RUN_AS_NODE path without requiring a graphical display.
-        "$out/bin/orca-cli" --help > "$TMPDIR/orca-help.txt"
+        "$out/bin/orca-ide" --help > "$TMPDIR/orca-help.txt"
         grep -Fq "Usage:" "$TMPDIR/orca-help.txt"
 
         # Exercise the public wrapper itself. This proves that an inherited
         # APPIMAGE value is removed and that `python3` resolves to the packaged
         # PyGObject environment rather than an arbitrary host interpreter.
-        env -u XDG_DATA_DIRS \
+        env -u XDG_DATA_DIRS -u ORCA_CLI_COMMAND \
           APPIMAGE="/tmp/inherited-appimage-marker" \
           ELECTRON_RUN_AS_NODE=1 \
-          "$out/bin/orca-ide" -e '
+          "$out/bin/orca-gui" -e '
             const { execFileSync } = require("node:child_process");
             if (process.env.APPIMAGE !== undefined) {
               throw new Error("APPIMAGE leaked through the Nix wrapper");
             }
             if (process.env.NIXPKGS_ORCA_DISABLE_UPDATES !== "1") {
               throw new Error("Nix updater guard leaked through the wrapper");
+            }
+            if (process.env.ORCA_CLI_COMMAND !== "orca-ide") {
+              throw new Error(`unexpected ORCA_CLI_COMMAND: \''${process.env.ORCA_CLI_COMMAND}`);
             }
             if (!process.env.XDG_DATA_DIRS.split(":").includes("/usr/share")) {
               throw new Error(`host desktop data root missing: \''${process.env.XDG_DATA_DIRS}`);
@@ -582,18 +589,33 @@ stdenv.mkDerivation {
             process.stdout.write(JSON.stringify({
               appimage: process.env.APPIMAGE ?? null,
               updates: process.env.NIXPKGS_ORCA_DISABLE_UPDATES ?? null,
+              cliCommand: process.env.ORCA_CLI_COMMAND ?? null,
               python3: executable,
             }));
           ' > "$TMPDIR/orca-wrapper.json"
         grep -Fq '"appimage":null' "$TMPDIR/orca-wrapper.json"
         grep -Fq '"updates":"1"' "$TMPDIR/orca-wrapper.json"
+        grep -Fq '"cliCommand":"orca-ide"' "$TMPDIR/orca-wrapper.json"
         grep -Fq "\"python3\":\"${pythonWithAtspi}/bin/python3\"" "$TMPDIR/orca-wrapper.json"
+
+        # `--set-default` must not overwrite an explicit developer/user
+        # selection. This is important for environments that intentionally use
+        # a different CLI command while still sharing the GUI wrapper.
+        ORCA_CLI_COMMAND=orca-dev \
+          ELECTRON_RUN_AS_NODE=1 \
+          "$out/bin/orca-gui" -e '
+            if (process.env.ORCA_CLI_COMMAND !== "orca-dev") {
+              throw new Error(`explicit ORCA_CLI_COMMAND was overwritten: \''${process.env.ORCA_CLI_COMMAND}`);
+            }
+            process.stdout.write(process.env.ORCA_CLI_COMMAND);
+          ' > "$TMPDIR/orca-cli-command-override.txt"
+        grep -Fxq "orca-dev" "$TMPDIR/orca-cli-command-override.txt"
 
         # The packaged updater export must never perform a network request or
         # return a downloadable artifact. Its compatibility events still let the
         # upstream update UI settle cleanly at "not available".
         ELECTRON_RUN_AS_NODE=1 \
-          "$out/bin/orca-ide" -e '
+          "$out/bin/orca-gui" -e '
             (async () => {
             const updater = require(
               "'$out'/lib/orca-ide/resources/node_modules/electron-updater/out/main.js",
@@ -783,7 +805,7 @@ stdenv.mkDerivation {
     homepage = "https://onorca.dev";
     changelog = "https://github.com/stablyai/orca/releases/tag/v${version}";
     license = lib.licenses.mit;
-    mainProgram = "orca-ide";
+    mainProgram = "orca-gui";
     platforms = builtins.attrNames sources;
     sourceProvenance = with lib.sourceTypes; [ binaryNativeCode ];
   };
