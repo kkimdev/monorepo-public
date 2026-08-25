@@ -91,7 +91,7 @@ let
           "$out/libexec/at-spi-bus-launcher" \
           --prefix LD_PRELOAD : "${libredirect}/lib/libredirect.so" \
           --prefix NIX_REDIRECTS : \
-            "/run/current-system/sw/bin/dbus-daemon=$out/libexec/dbus-daemon"
+            "dbus-daemon=$out/libexec/dbus-daemon:/run/current-system/sw/bin/dbus-daemon=$out/libexec/dbus-daemon"
         cat > "$out/share/dbus-1/services/org.a11y.Bus.service" <<EOF
         [D-BUS Service]
         Name=org.a11y.Bus
@@ -538,6 +538,12 @@ stdenv.mkDerivation {
         ! grep -Fq "SystemdService=" \
           "${atSpi2Service}/share/dbus-1/services/org.a11y.Bus.service"
         grep -Fq "${libredirect}/lib/libredirect.so" \
+          "${atSpi2Service}/libexec/at-spi-bus-launcher"
+        # Recent at-spi2-core launchers invoke dbus-daemon through PATH,
+        # while older builds use the NixOS absolute path. Keep both forms
+        # redirected so the daemon wrapper can strip the shim environment.
+        grep -Fq \
+          "dbus-daemon=${atSpi2Service}/libexec/dbus-daemon" \
           "${atSpi2Service}/libexec/at-spi-bus-launcher"
         grep -Fq \
           "/run/current-system/sw/bin/dbus-daemon=${atSpi2Service}/libexec/dbus-daemon" \
