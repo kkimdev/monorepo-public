@@ -108,6 +108,14 @@ mkdir -p "$CONF_DIR"
 rm -f "$CONF_DIR/flake.nix" "$CONF_DIR/flake.lock"
 cat <<'EOF' > "$CONF_DIR/flake.nix"
 {
+  # Numtide's cache contains the pre-built llm-agents.nix packages.
+  nixConfig = {
+    extra-substituters = [ "https://cache.numtide.com" ];
+    extra-trusted-public-keys = [
+      "niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g="
+    ];
+  };
+
   inputs = {
     nixpkgs.url = "https://flakehub.com/f/DeterminateSystems/nixpkgs-weekly/0.1";
     home-manager = {
@@ -117,6 +125,10 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
 
     nix-index-database.url = "github:nix-community/nix-index-database";
     nix-index-database.inputs.nixpkgs.follows = "nixpkgs";
+
+    # LLM agent packages are sourced from the upstream Numtide collection.
+    # Keep its pinned nixpkgs input so the published binary cache remains usable.
+    llm-agents.url = "github:numtide/llm-agents.nix";
 
     sommelier-rs = {
       url = "github:kkimdev/sommelier-rs/virtwl";
@@ -134,23 +146,28 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
     };
 
 
-    claude-desktop = {
-      url = "github:aaddrick/claude-desktop-debian";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-
+    # Legacy package sources retained as comments for easy rollback:
+    # claude-desktop = {
+    #   url = "github:aaddrick/claude-desktop-debian";
+    #   inputs.nixpkgs.follows = "nixpkgs";
+    # };
+    #
+    # Keep the existing Antigravity GUI packages: llm-agents.nix currently
+    # provides only the CLI, not the IDE/base application.
     antigravity-nix = {
       url = "github:jacopone/antigravity-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-
-    orca-deb-bin = {
-      url = "github:kkimdev/monorepo-public/main?dir=nixpkgs/orca-deb-bin";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
+    #
+    # orca-deb-bin = {
+    #   url = "github:kkimdev/monorepo-public/main?dir=nixpkgs/orca-deb-bin";
+    #   inputs.nixpkgs.follows = "nixpkgs";
+    # };
   };
 
-  outputs = { nixpkgs, home-manager, nix-index-database, sommelier-rs, kakaotalk, codex-desktop-linux, claude-desktop, antigravity-nix, orca-deb-bin, ... }@inputs:
+  # Legacy outputs argument list retained for rollback:
+  # outputs = { nixpkgs, home-manager, nix-index-database, sommelier-rs, kakaotalk, codex-desktop-linux, claude-desktop, antigravity-nix, orca-deb-bin, ... }@inputs:
+  outputs = { nixpkgs, home-manager, nix-index-database, llm-agents, sommelier-rs, kakaotalk, codex-desktop-linux, antigravity-nix, ... }@inputs:
     let
       system = builtins.currentSystem;
 
@@ -165,40 +182,35 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
           overlays = [
             sommelier-rs.overlays.default
             kakaotalk.overlays.default
-            claude-desktop.overlays.default
-            antigravity-nix.overlays.default
-            orca-deb-bin.overlays.default
-            (final: prev: {
-              # Pin codex CLI to v0.142.5 — the Desktop injects codex_app dynamic tools
-              # at thread/start, and CLIs before 0.142.0 reject these tools for missing
-              # inputSchema (rust serde required field check). Upstream fixed this in
-              # the 0.142.x series (https://github.com/openai/codex/issues/28978).
-              codex = prev.stdenv.mkDerivation {
-                pname = "codex";
-                version = "0.142.5";
-                src = prev.fetchurl {
-                  url = "https://github.com/openai/codex/releases/download/rust-v0.142.5/codex-x86_64-unknown-linux-musl.tar.gz";
-                  hash = "sha256-y5M+w8thv0tfyI7s9eYUmCn6phclNbbvCvsBVL60qrg=";
-                };
-                sourceRoot = ".";
-                installPhase = ''
-                  mkdir -p $out/bin
-                  mv codex-x86_64-unknown-linux-musl $out/bin/codex
-                '';
-              };
-            })
 
-            # TODO: #538256 is merged (Jul 3, 2026). Once it lands in the
-            # DeterminateSystems nixpkgs-weekly channel we use, remove
-            # this entire overlay.
-            #   To check: nix flake metadata https://flakehub.com/f/DeterminateSystems/nixpkgs-weekly/0.1 |
-            #     grep Revision | awk '{print $2}' to get the current commit,
-            #     then curl -s "https://api.github.com/repos/NixOS/nixpkgs/compare/<current>...4ca51c8" |
-            #     jq -r '.status' (behind/identical = fixed)
-            # opencode-desktop: nixpkgs generates "opencode-desktop.desktop"
-            # with StartupWMClass=OpenCode, but the Electron app sends
-            # app_id "ai.opencode.desktop" (from setAppUserModelId).
-            # Fix the desktop file name and StartupWMClass to match.
+            # Legacy LLM-agent overlays retained as comments for rollback.
+            # claude-desktop.overlays.default
+            # orca-deb-bin.overlays.default
+            antigravity-nix.overlays.default
+            #
+            # Legacy Codex pin (the package now comes from llm-agents.nix):
+            # (final: prev: {
+            #   # Pin codex CLI to v0.142.5 — the Desktop injects codex_app dynamic tools
+            #   # at thread/start, and CLIs before 0.142.0 reject these tools for missing
+            #   # inputSchema (rust serde required field check). Upstream fixed this in
+            #   # the 0.142.x series (https://github.com/openai/codex/issues/28978).
+            #   codex = prev.stdenv.mkDerivation {
+            #     pname = "codex";
+            #     version = "0.142.5";
+            #     src = prev.fetchurl {
+            #       url = "https://github.com/openai/codex/releases/download/rust-v0.142.5/codex-x86_64-unknown-linux-musl.tar.gz";
+            #       hash = "sha256-y5M+w8thv0tfyI7s9eYUmCn6phclNbbvCvsBVL60qrg=";
+            #     };
+            #     sourceRoot = ".";
+            #     installPhase = ''
+            #       mkdir -p $out/bin
+            #       mv codex-x86_64-unknown-linux-musl $out/bin/codex
+            #     '';
+            #   };
+            # })
+            #
+            # Keep the existing OpenCode desktop package and its metadata fix:
+            # llm-agents.nix currently provides the CLI (`opencode`) only.
             (final: prev: {
               opencode-desktop = prev.opencode-desktop.overrideAttrs (oldAttrs: {
                 desktopItems = final.lib.optional final.stdenvNoCC.hostPlatform.isLinux (
@@ -238,6 +250,7 @@ cat <<EOF > "$CONF_DIR/home.nix"
 let
   crosDesktopShareDir = "\${config.home.homeDirectory}/.local/share";
   nixProfileShareDir  = "\${config.home.homeDirectory}/.nix-profile/share";
+  llmAgentsPkgs       = inputs.llm-agents.packages.\${pkgs.stdenv.hostPlatform.system};
   # This file is evaluated with --impure on the host. Do not install a
   # Crostini-specific browser default on ordinary Linux systems.
   isCrostini = builtins.pathExists "/opt/google/cros-containers/bin/garcon"
@@ -340,7 +353,6 @@ in
       # podman
 
       # Apps
-      orca-ide
       chromium
       inkscape
       beekeeper-studio
@@ -350,13 +362,29 @@ in
 
       # Coding
       vscode
+      # Existing GUI packages kept active; llm-agents.nix has no IDE/base-app
+      # replacement for these yet.
       google-antigravity-no-fhs
       google-antigravity-ide
-      google-antigravity-cli
-      claude-code
-      claude-desktop
-      codex
-      opencode
+
+      # Packages replaced by llm-agents.nix are retained as comments for rollback:
+      # orca-ide
+      # google-antigravity-cli
+      # claude-code
+      # claude-desktop
+      # codex
+      # opencode
+
+      # Keep all available replacements on the same upstream package set.
+      llmAgentsPkgs.antigravity-cli
+      llmAgentsPkgs.claude-code
+      llmAgentsPkgs.claude-desktop
+      llmAgentsPkgs.codex
+      llmAgentsPkgs.opencode
+      llmAgentsPkgs.orca
+
+      # Existing desktop package kept active; llm-agents.nix currently has no
+      # OpenCode desktop replacement.
       opencode-desktop
 
       # Fonts
@@ -366,9 +394,10 @@ in
     ];
     sessionVariables = {
       NIXPKGS_ALLOW_UNFREE = "1";
-      # Orca's upstream Linux CLI command is orca-ide; keep the shared
-      # Home Manager session aligned with the packaged command name.
-      ORCA_CLI_COMMAND = "orca-ide";
+      # Legacy orca-deb-bin exposed the CLI as orca-ide; the llm-agents.nix
+      # package follows the upstream orca CLI name.
+      # ORCA_CLI_COMMAND = "orca-ide";
+      ORCA_CLI_COMMAND = "orca";
       EDITOR = "code --wait --new-window";
       VISUAL = "code --wait --new-window";
       GIT_USER_NAME = "$GIT_USER_NAME";
@@ -731,10 +760,12 @@ in
       source = config.lib.file.mkOutOfStoreSymlink "$HOME/.config/Code/User/settings.json";
     };
 
-    # Let the Nix-managed Codex CLI satisfy the remote-mobile cold-start hook's
-    # managed runtime path without bootstrapping the standalone updater.
+    # Let the llm-agents.nix Codex CLI satisfy the remote-mobile cold-start
+    # hook's managed runtime path without bootstrapping the standalone updater.
     ".codex/packages/standalone/current/codex" = {
-      source = "\${pkgs.codex}/bin/codex";
+      # Legacy source retained for rollback:
+      # source = "\${pkgs.codex}/bin/codex";
+      source = "\${llmAgentsPkgs.codex}/bin/codex";
     };
 
     # TODO
@@ -773,10 +804,12 @@ in
     settings = {
       substituters = [
         "https://cache.nixos.org"
+        "https://cache.numtide.com"
         "https://codex-desktop-linux.cachix.org"
       ];
       trusted-public-keys = [
         "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+        "niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g="
         "codex-desktop-linux.cachix.org-1:nX/xy6AdK9hQE24A8ALGjkCKj2ObFmcnemiL5Cid4nk="
       ];
     };
