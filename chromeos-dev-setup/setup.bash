@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euxo pipefail
 
-export SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export CROS_SETUP_SCRIPT_FILE="$(readlink -f "${BASH_SOURCE[0]}")"
+export SCRIPT_DIR="$(dirname "$CROS_SETUP_SCRIPT_FILE")"
 
 # TODO
 # - [ ] https://github.com/sigoden/aichat setup
@@ -104,6 +104,197 @@ NIX_VER=$(nix eval --raw nixpkgs#lib.version | cut -d. -f1,2)
 
 CONF_DIR="$HOME/.config/home-manager"
 mkdir -p "$CONF_DIR"
+
+# Generate the wrapper from this setup script so a checkout needs no companion
+# file. Home Manager copies this source into the Nix store and owns the
+# installed ~/.local/bin/codex path.
+CODEX_WRAPPER_SOURCE="$CONF_DIR/codex-wrapper"
+cat <<'CODEX_WRAPPER' > "$CODEX_WRAPPER_SOURCE"
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Keep the wrapper's model policy separate from Codex's native config.
+defaults="${CODEX_DEFAULTS_FILE:-$HOME/.config/codex-wrapper/default-model.toml}"
+config="${CODEX_HOME:-$HOME/.codex}/config.toml"
+
+# Find the next `codex` on PATH instead of hard-coding a package/store path.
+# The wrapper itself is skipped, including when it is reached through a symlink.
+self="$(readlink -f "$0")"
+real_codex=""
+IFS=: read -r -a path_entries <<< "${PATH:-}"
+for path_entry in "${path_entries[@]}"; do
+    [[ -n "$path_entry" ]] || path_entry=.
+    candidate="$path_entry/codex"
+    [[ -x "$candidate" ]] || continue
+    [[ "$(readlink -f "$candidate")" == "$self" ]] && continue
+    real_codex="$candidate"
+    break
+done
+if [[ -z "$real_codex" ]]; then
+    printf 'codex-wrapper: real codex was not found on PATH\n' >&2
+    exit 127
+fi
+
+# Respect Codex's explicit user-config bypass option.
+for arg in "$@"; do
+    [[ "$arg" == "--" ]] && break
+    [[ "$arg" == "--ignore-user-config" ]] && exec "$real_codex" "$@"
+done
+
+valid_toml() {
+    python3 - "$1" <<'PY'
+import sys
+import tomllib
+
+try:
+    with open(sys.argv[1], "rb") as stream:
+        tomllib.load(stream)
+except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+    raise SystemExit(1)
+PY
+}
+
+read_managed_values() {
+    python3 - "$1" <<'PY'
+import json
+import sys
+import tomllib
+
+try:
+    with open(sys.argv[1], "rb") as stream:
+        config = tomllib.load(stream)
+except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+    raise SystemExit(1)
+
+for key in ("model", "model_reasoning_effort"):
+    value = config.get(key)
+    if not isinstance(value, str) or not value:
+        raise SystemExit(1)
+    print(json.dumps(value, ensure_ascii=False))
+PY
+}
+
+show_uninitialized() {
+    printf 'codex-wrapper: default model file is not initialized\n' >&2
+    printf '  real Codex: %s\n' "$real_codex" >&2
+    printf '  default file: %s\n' "$defaults" >&2
+    printf '  create it with model and model_reasoning_effort, then run codex again\n' >&2
+}
+
+# Serialize bootstrap and config replacement for concurrent launches.
+config_dir="${config%/*}"
+mkdir -p "$config_dir"
+exec 9>"${config}.default-model.lock"
+flock -x 9
+unlock() {
+    flock -u 9
+    exec 9>&-
+}
+
+if [[ -e "$defaults" && ! -f "$defaults" ]]; then
+    printf 'codex-wrapper: default path is not a regular file: %s\n' "$defaults" >&2
+    printf '  real Codex: %s\n' "$real_codex" >&2
+    unlock
+    exit 78
+fi
+
+# A missing default file is a first-run state, not an error. If the native
+# config already has both values, use it to initialize the wrapper policy.
+if [[ ! -e "$defaults" ]]; then
+    native_values=""
+    if [[ -f "$config" ]] && valid_toml "$config"; then
+        native_values="$(read_managed_values "$config" 2>/dev/null || true)"
+    fi
+    if [[ -n "$native_values" ]] && [[ "$(printf '%s\n' "$native_values" | wc -l)" -eq 2 ]]; then
+        defaults_dir="${defaults%/*}"
+        mkdir -p "$defaults_dir"
+        bootstrap_tmp="$(mktemp "${defaults}.tmp.XXXXXX")"
+        {
+            printf 'model = %s\n' "$(printf '%s\n' "$native_values" | sed -n '1p')"
+            printf 'model_reasoning_effort = %s\n' "$(printf '%s\n' "$native_values" | sed -n '2p')"
+        } >"$bootstrap_tmp"
+        chmod 600 "$bootstrap_tmp"
+        mv -n "$bootstrap_tmp" "$defaults"
+        rm -f "$bootstrap_tmp"
+        printf 'codex-wrapper: initialized defaults from %s\n' "$config" >&2
+    fi
+fi
+
+if [[ ! -f "$defaults" ]]; then
+    show_uninitialized
+    unlock
+    exec "$real_codex" "$@"
+fi
+
+# Once the wrapper file exists, it is the canonical policy and must be valid.
+if ! default_values="$(read_managed_values "$defaults" 2>/dev/null)"; then
+    printf 'codex-wrapper: invalid default file: %s\n' "$defaults" >&2
+    printf '  real Codex: %s\n' "$real_codex" >&2
+    unlock
+    exit 78
+fi
+model="$(printf '%s\n' "$default_values" | sed -n '1p')"
+reasoning="$(printf '%s\n' "$default_values" | sed -n '2p')"
+
+# Never rewrite a malformed native config. Leave it intact for repair.
+if [[ -f "$config" ]] && ! valid_toml "$config"; then
+    printf 'codex-wrapper: native config is invalid: %s\n' "$config" >&2
+    printf '  real Codex: %s\n' "$real_codex" >&2
+    unlock
+    exit 78
+fi
+
+# Rewrite the native config through a same-directory temporary file. Missing
+# managed keys are inserted before the first TOML table.
+tmp="$(mktemp "${config}.tmp.XXXXXX")"
+trap 'rm -f "$tmp"' EXIT
+input="$config"
+[[ -f "$config" ]] || input=/dev/null
+awk -v model="$model" -v reasoning="$reasoning" '
+    function add_missing() {
+        if (!seen["model"]) {
+            print "model = " model
+            seen["model"] = 1
+        }
+        if (!seen["model_reasoning_effort"]) {
+            print "model_reasoning_effort = " reasoning
+            seen["model_reasoning_effort"] = 1
+        }
+    }
+    /^[[:space:]]*\[/ {
+        if (!inserted) {
+            add_missing()
+            inserted = 1
+        }
+        in_table = 1
+    }
+    !in_table && /^[[:space:]]*model[[:space:]]*=/ {
+        print "model = " model
+        seen["model"] = 1
+        next
+    }
+    !in_table && /^[[:space:]]*model_reasoning_effort[[:space:]]*=/ {
+        print "model_reasoning_effort = " reasoning
+        seen["model_reasoning_effort"] = 1
+        next
+    }
+    { print }
+    END {
+        if (!inserted) add_missing()
+    }
+' "$input" >"$tmp"
+if [[ -e "$config" ]]; then
+    chmod --reference="$config" "$tmp"
+else
+    chmod 600 "$tmp"
+fi
+mv "$tmp" "$config"
+
+unlock
+# Preserve every original argument and replace this wrapper with Codex itself.
+exec "$real_codex" "$@"
+CODEX_WRAPPER
+chmod 755 "$CODEX_WRAPPER_SOURCE"
 
 rm -f "$CONF_DIR/flake.nix" "$CONF_DIR/flake.lock"
 cat <<'EOF' > "$CONF_DIR/flake.nix"
@@ -317,6 +508,9 @@ in
     username = "$USER";
     homeDirectory = "$HOME";
     stateVersion = "$NIX_VER";
+    sessionPath = [
+      "\${config.home.homeDirectory}/.local/bin"
+    ];
     packages = with pkgs; [
       # Utils
       bash
@@ -523,13 +717,14 @@ in
           [ -n "\$cwd" ] && [ "\$cwd" != "\$PWD" ] && [ -d "\$cwd" ] && builtin cd -- "\$cwd"
           command rm -f -- "\$tmp"
         }
+        export PATH="\$HOME/.local/bin:\$PATH"
       '';
       bashrcExtra = ''
         . \$HOME/.bashrc.backup
       '';
       profileExtra = ''
         . \$HOME/.profile.backup
-        export PATH="\$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:\$PATH"
+        export PATH="\$HOME/.local/bin:\$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:\$PATH"
       '';
 
       shellAliases = myShellAliases;
@@ -593,6 +788,8 @@ in
         bindkey "\e[1;5C" forward-word         # Ctrl + Right
         bindkey "^[^?"    backward-kill-word   # Ctrl + Backspace
         bindkey "^H"      backward-kill-word   # Ctrl + Backspace
+
+        export PATH="\$HOME/.local/bin:\$PATH"
       '';
 
       # TODO: More options
@@ -745,6 +942,12 @@ in
   };
 
   home.file = {
+    # Generate the model-policy wrapper from this setup script while letting
+    # Home Manager own its installed path and lifecycle.
+    ".local/bin/codex" = {
+      source = "$CODEX_WRAPPER_SOURCE";
+    };
+
     # Your existing inputrc configuration
     ".inputrc".text = ''
       # "\e[A": history-search-backward
@@ -818,9 +1021,66 @@ in
 
 EOF
 
+# Stage an unmanaged wrapper before Home Manager claims the same path. This
+# makes a failed activation recoverable and lets a successful verification
+# retire the old copy explicitly.
+CODEX_WRAPPER_PATH="$HOME/.local/bin/codex"
+CODEX_WRAPPER_STAGING=""
+mkdir -p "$HOME/.local/bin"
+
+restore_codex_wrapper() {
+  if [ -n "$CODEX_WRAPPER_STAGING" ] && [ -e "$CODEX_WRAPPER_STAGING" ]; then
+    rm -f -- "$CODEX_WRAPPER_PATH"
+    mv -- "$CODEX_WRAPPER_STAGING" "$CODEX_WRAPPER_PATH"
+    echo "Restored the previous unmanaged Codex wrapper after activation failure." >&2
+  fi
+}
+
+if [ -d "$CODEX_WRAPPER_PATH" ] && [ ! -L "$CODEX_WRAPPER_PATH" ]; then
+  echo "ERROR: $CODEX_WRAPPER_PATH is a directory; refusing to replace it." >&2
+  echo "Fix: move that directory aside, then rerun cros-setup." >&2
+  exit 1
+fi
+
+if [ -e "$CODEX_WRAPPER_PATH" ] || [ -L "$CODEX_WRAPPER_PATH" ]; then
+  codex_wrapper_target="$(readlink -f "$CODEX_WRAPPER_PATH" 2>/dev/null || true)"
+  if [[ "$codex_wrapper_target" != /nix/store/* ]]; then
+    CODEX_WRAPPER_STAGING="$(mktemp "$HOME/.local/bin/.codex-wrapper.previous.XXXXXX")"
+    rm -f -- "$CODEX_WRAPPER_STAGING"
+    mv -- "$CODEX_WRAPPER_PATH" "$CODEX_WRAPPER_STAGING"
+    echo "Staged the previous unmanaged Codex wrapper at $CODEX_WRAPPER_STAGING."
+  fi
+fi
+
+trap restore_codex_wrapper EXIT
 echo "Activating Home Manager (Version $NIX_VER)..."
-nix shell nixpkgs#git --command \
-  nix run github:nix-community/home-manager -- switch --flake "$CONF_DIR#$USER" --impure -b backup
+if ! nix shell nixpkgs#git --command \
+    nix run github:nix-community/home-manager -- switch --flake "$CONF_DIR#$USER" --impure -b backup; then
+  echo "ERROR: Home Manager activation failed; the previous Codex wrapper was preserved." >&2
+  exit 1
+fi
+
+CODEX_WRAPPER_TARGET="$(readlink -f "$CODEX_WRAPPER_PATH" 2>/dev/null || true)"
+if [ ! -x "$CODEX_WRAPPER_PATH" ] || [[ "$CODEX_WRAPPER_TARGET" != /nix/store/* ]]; then
+  echo "ERROR: Home Manager did not install a managed executable at $CODEX_WRAPPER_PATH." >&2
+  echo "Why: the wrapper must be a Nix-store-backed Home Manager file before the old copy is removed." >&2
+  echo "Fix: rerun cros-setup after inspecting the Home Manager activation output." >&2
+  exit 1
+fi
+if ! "$CODEX_WRAPPER_PATH" --version >/dev/null ||
+   ! "$CODEX_WRAPPER_PATH" exec --help >/dev/null; then
+  echo "ERROR: the Home Manager Codex wrapper failed its passthrough smoke tests." >&2
+  echo "Why: removing the previous wrapper would risk breaking Codex arguments or startup." >&2
+  echo "Fix: inspect the wrapper's real Codex path and rerun cros-setup." >&2
+  exit 1
+fi
+
+if [ -n "$CODEX_WRAPPER_STAGING" ] && [ -e "$CODEX_WRAPPER_STAGING" ]; then
+  rm -f -- "$CODEX_WRAPPER_STAGING"
+  echo "Verified the Home Manager Codex wrapper; removed the previous unmanaged copy."
+fi
+CODEX_WRAPPER_STAGING=""
+trap - EXIT
 
 # Verify installation without changing the state of running desktop services.
 if [ ! -x "$HOME/.nix-profile/bin/sommelier-rs" ]; then
