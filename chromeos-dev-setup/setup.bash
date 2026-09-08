@@ -309,6 +309,10 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
 
   inputs = {
     nixpkgs.url = "https://flakehub.com/f/DeterminateSystems/nixpkgs-weekly/0.1";
+    openspec = {
+      url = "github:Fission-AI/OpenSpec";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     home-manager = {
       url = "github:nix-community/home-manager";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -556,6 +560,7 @@ in
 
       # Coding
       vscode
+      inputs.openspec.packages.\${pkgs.stdenv.hostPlatform.system}.default
       # Existing GUI packages kept active; llm-agents.nix has no IDE/base-app
       # replacement for these yet.
       google-antigravity-no-fhs
