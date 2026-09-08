@@ -446,6 +446,7 @@ let
   crosDesktopShareDir = "\${config.home.homeDirectory}/.local/share";
   nixProfileShareDir  = "\${config.home.homeDirectory}/.nix-profile/share";
   llmAgentsPkgs       = inputs.llm-agents.packages.\${pkgs.stdenv.hostPlatform.system};
+  openspecCli         = inputs.openspec.packages.\${pkgs.stdenv.hostPlatform.system}.default;
   # This file is evaluated with --impure on the host. Do not install a
   # Crostini-specific browser default on ordinary Linux systems.
   isCrostini = builtins.pathExists "/opt/google/cros-containers/bin/garcon"
@@ -981,6 +982,39 @@ in
   };
 
   home.activation = {
+    # Generate and sync every OpenSpec skill into Codex's user scope. The
+    # openspec-* namespace is owned by this activation; other user skills stay
+    # untouched while added or removed OpenSpec workflows follow the package.
+    installOpenSpecCodexSkills = lib.hm.dag.entryAfter ["installPackages"] ''
+      openspecSkillsDir="\$HOME/.agents/skills"
+      tempDir="\$(mktemp -d)"
+      mkdir -p "\$openspecSkillsDir"
+
+      workDir="\$tempDir/work"
+      mkdir -p "\$tempDir/home" "\$workDir"
+      (
+        cd "\$workDir"
+        env \
+          CI=1 \
+          HOME="\$tempDir/home" \
+          "\${openspecCli}/bin/openspec" init --tools codex --profile core --no-animation .
+      )
+
+      for existingSkill in "\$openspecSkillsDir"/openspec-*; do
+        if [ -e "\$existingSkill" ] || [ -L "\$existingSkill" ]; then
+          rm -rf -- "\$existingSkill"
+        fi
+      done
+
+      for generatedSkill in "\$workDir/.agents/skills"/openspec-*; do
+        [ -d "\$generatedSkill" ] || continue
+        skillName="\$(basename "\$generatedSkill")"
+        cp -a -- "\$generatedSkill" "\$openspecSkillsDir/\$skillName"
+      done
+
+      rm -rf -- "\$tempDir"
+    '';
+
     linkDesktopApplications = lib.hm.dag.entryAfter ["writeBoundary"] ''
       rm -rf "\${crosDesktopShareDir}/applications" "\${crosDesktopShareDir}/icons"
       mkdir -p "\${crosDesktopShareDir}/applications" "\${crosDesktopShareDir}/icons"
@@ -1086,6 +1120,27 @@ if [ -n "$CODEX_WRAPPER_STAGING" ] && [ -e "$CODEX_WRAPPER_STAGING" ]; then
 fi
 CODEX_WRAPPER_STAGING=""
 trap - EXIT
+
+OPENSPEC_BIN="$HOME/.nix-profile/bin/openspec"
+if [ ! -x "$OPENSPEC_BIN" ] || ! "$OPENSPEC_BIN" --version >/dev/null; then
+  echo "ERROR: Home Manager did not install a working OpenSpec CLI at $OPENSPEC_BIN." >&2
+  echo "Why: the global OpenSpec command is required before its generated skills can be used." >&2
+  echo "Fix: inspect the Home Manager activation output and rerun cros-setup." >&2
+  exit 1
+fi
+
+OPENSPEC_SKILL_COUNT=0
+for openspec_skill_file in "$HOME/.agents/skills"/openspec-*/SKILL.md; do
+  if [ -e "$openspec_skill_file" ]; then
+    OPENSPEC_SKILL_COUNT=$((OPENSPEC_SKILL_COUNT + 1))
+  fi
+done
+if [ "$OPENSPEC_SKILL_COUNT" -eq 0 ]; then
+  echo "ERROR: Home Manager did not install any global OpenSpec skills." >&2
+  echo "Why: Codex discovers user-scoped skills under $HOME/.agents/skills." >&2
+  echo "Fix: inspect the Home Manager activation output and rerun cros-setup." >&2
+  exit 1
+fi
 
 # Verify installation without changing the state of running desktop services.
 if [ ! -x "$HOME/.nix-profile/bin/sommelier-rs" ]; then
