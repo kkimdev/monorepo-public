@@ -484,8 +484,8 @@ let
     cros-reset = ''
       echo "Ensuring deferred user services are running..." && \
       systemctl --user daemon-reload && \
-      systemctl --user reset-failed atuin-daemon.service sommelier@0.service sommelier@1.service sommelier-x@0.service sommelier-x@1.service sommelier-rs.service cros-garcon.service && \
-      systemctl --user start atuin-daemon.service sommelier@0.service sommelier@1.service sommelier-x@0.service sommelier-x@1.service sommelier-rs.service cros-garcon.service
+      systemctl --user reset-failed atuin-daemon.service earlyoom.service sommelier@0.service sommelier@1.service sommelier-x@0.service sommelier-x@1.service sommelier-rs.service cros-garcon.service && \
+      systemctl --user start atuin-daemon.service earlyoom.service sommelier@0.service sommelier@1.service sommelier-x@0.service sommelier-x@1.service sommelier-rs.service cros-garcon.service
     '';
 
     cros-hard-reset = ''
@@ -493,8 +493,8 @@ let
       systemctl --user stop cros-garcon.service sommelier-rs.service sommelier-x@1.service sommelier-x@0.service sommelier@1.service sommelier@0.service atuin-daemon.service && \
       rm -f /run/user/\$UID/wayland-{1,2}.lock /run/user/\$UID/wayland-{1,2} 2>/dev/null; \
       systemctl --user daemon-reload && \
-      systemctl --user reset-failed atuin-daemon.service sommelier@0.service sommelier@1.service sommelier-x@0.service sommelier-x@1.service sommelier-rs.service cros-garcon.service && \
-      systemctl --user start atuin-daemon.service sommelier@0.service sommelier@1.service sommelier-x@0.service sommelier-x@1.service sommelier-rs.service cros-garcon.service
+      systemctl --user reset-failed atuin-daemon.service earlyoom.service sommelier@0.service sommelier@1.service sommelier-x@0.service sommelier-x@1.service sommelier-rs.service cros-garcon.service && \
+      systemctl --user start atuin-daemon.service earlyoom.service sommelier@0.service sommelier@1.service sommelier-x@0.service sommelier-x@1.service sommelier-rs.service cros-garcon.service
     '';
 
     # Reapply configuration without restarting services, then update this shell
@@ -542,6 +542,7 @@ in
       starship
       wl-clipboard
       killall
+      earlyoom
       podman-compose
       podman-tui
       xdg-utils
@@ -640,6 +641,27 @@ in
         "RUST_LOG=info"
         "SOMMELIER_ACCELERATORS=Super_L,<Alt>bracketleft,<Alt>bracketright,<Alt>minus,<Alt>equal,<Alt>1,<Alt>2,<Alt>3,<Alt>4,<Alt>5,<Alt>6,<Alt>7,<Alt>8,<Alt>9,print,<Control>space,<Control><Shift>space"
       ];
+    };
+    Install = {
+      WantedBy = [ "default.target" ];
+    };
+  };
+
+  # Keep an independent, memory-only emergency shield for the user session.
+  # This is intentionally process-level: it does not require every agent to
+  # launch compilers through a wrapper. PSI-aware policy remains the job of
+  # the Crostini monitor; earlyoom is only the final memory fallback.
+  systemd.user.services.earlyoom = {
+    Unit = {
+      Description = "Early OOM emergency shield";
+    };
+    Service = {
+      ExecStart = "\${pkgs.earlyoom}/bin/earlyoom -m 8,4 -s 100 -r 60 --ignore-root-user --avoid=(^|/)(systemd|init|dbus-daemon|garcon|cros-garcon|sommelier|sommelier-rs|earlyoom)\$ --prefer=(^|/)(rustc|clang|clang[+][+]|cc1|cc1plus|cargo|bazel|java)([[:space:]]|\$)";
+      Restart = "always";
+      RestartSec = "5s";
+      MemoryMax = "50M";
+      NoNewPrivileges = true;
+      PrivateTmp = true;
     };
     Install = {
       WantedBy = [ "default.target" ];
@@ -1099,6 +1121,21 @@ if ! nix shell nixpkgs#git --command \
   exit 1
 fi
 
+if ! "$HOME/.nix-profile/bin/earlyoom" -v >/dev/null 2>&1; then
+  echo "ERROR: Home Manager did not install a working earlyoom executable." >&2
+  echo "Why: the memory emergency shield must be available before the setup is complete." >&2
+  echo "Fix: inspect the Home Manager activation output and rerun cros-setup." >&2
+  exit 1
+fi
+if ! systemctl --user daemon-reload ||
+   ! systemctl --user enable --now earlyoom.service ||
+   ! systemctl --user is-active --quiet earlyoom.service; then
+  echo "ERROR: the Home Manager earlyoom emergency shield is not active." >&2
+  echo "Why: the setup must leave a running memory fallback for agent-launched builds." >&2
+  echo "Fix: inspect 'systemctl --user status earlyoom.service' and rerun cros-setup." >&2
+  exit 1
+fi
+
 CODEX_WRAPPER_TARGET="$(readlink -f "$CODEX_WRAPPER_PATH" 2>/dev/null || true)"
 if [ ! -x "$CODEX_WRAPPER_PATH" ] || [[ "$CODEX_WRAPPER_TARGET" != /nix/store/* ]]; then
   echo "ERROR: Home Manager did not install a managed executable at $CODEX_WRAPPER_PATH." >&2
@@ -1192,6 +1229,7 @@ echo "============================================================"
 echo "SUCCESS: Home Manager setup is fully activated!"
 echo "Your original configs were safely backed up as *.backup"
 echo "Modify your packages anytime in: $CONF_DIR/home.nix"
+echo "earlyoom is active as the user-session memory emergency shield."
 echo "wayland-2 is configured as the default without restarting running services."
 echo "Run cros-reset to start inactive launcher services without interrupting apps."
 echo "Run cros-hard-reset only when a full GUI-disrupting reset is required."
