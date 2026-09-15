@@ -102,6 +102,11 @@ fi
 echo "Detecting current Nixpkgs release..."
 NIX_VER=$(nix eval --raw nixpkgs#lib.version | cut -d. -f1,2)
 
+LOCAL_SERVICES_DIR="$HOME/.config/local-services"
+LOCAL_SERVICES_CONFIG="$LOCAL_SERVICES_DIR/process-compose.yaml"
+LOCAL_SERVICES_STATE_DIR="$HOME/.local/state/local-services"
+mkdir -p "$LOCAL_SERVICES_DIR" "$LOCAL_SERVICES_STATE_DIR"
+
 CONF_DIR="$HOME/.config/home-manager"
 mkdir -p "$CONF_DIR"
 
@@ -543,6 +548,7 @@ in
       wl-clipboard
       killall
       earlyoom
+      process-compose
       podman-compose
       podman-tui
       xdg-utils
@@ -681,6 +687,38 @@ in
       RestartSec = "5";
     };
 
+    Install = {
+      WantedBy = [ "default.target" ];
+    };
+  };
+
+  # Keep the personal long-running service catalog outside Home Manager's
+  # generated home.nix. Home Manager owns only this stable supervisor unit;
+  # the user-owned process-compose.yaml can evolve without rerunning setup.
+  systemd.user.services.local-services = {
+    Unit = {
+      Description = "User local services supervisor";
+      ConditionPathExists = "%h/.config/local-services/process-compose.yaml";
+      StartLimitIntervalSec = "60s";
+      StartLimitBurst = 5;
+    };
+    Service = {
+      Type = "simple";
+      WorkingDirectory = "%h/.config/local-services";
+      ExecStart = "\${pkgs.process-compose}/bin/process-compose -f %h/.config/local-services/process-compose.yaml up --tui=false --disable-dotenv";
+      Restart = "on-failure";
+      RestartSec = "5s";
+      KillMode = "control-group";
+      TimeoutStopSec = "15s";
+      Environment = [
+        "HOME=%h"
+        "PATH=%h/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin"
+        "XDG_CONFIG_HOME=%h/.config"
+        "XDG_STATE_HOME=%h/.local/state"
+      ];
+      StandardOutput = "journal";
+      StandardError = "journal";
+    };
     Install = {
       WantedBy = [ "default.target" ];
     };
@@ -1127,6 +1165,13 @@ if ! "$HOME/.nix-profile/bin/earlyoom" -v >/dev/null 2>&1; then
   echo "Fix: inspect the Home Manager activation output and rerun cros-setup." >&2
   exit 1
 fi
+if [ ! -x "$HOME/.nix-profile/bin/process-compose" ] ||
+   ! "$HOME/.nix-profile/bin/process-compose" version >/dev/null 2>&1; then
+  echo "ERROR: Home Manager did not install a working process-compose executable." >&2
+  echo "Why: the user local-services supervisor cannot start without it." >&2
+  echo "Fix: inspect the Home Manager activation output and rerun cros-setup." >&2
+  exit 1
+fi
 if ! systemctl --user daemon-reload ||
    ! systemctl --user enable --now earlyoom.service ||
    ! systemctl --user is-active --quiet earlyoom.service; then
@@ -1134,6 +1179,19 @@ if ! systemctl --user daemon-reload ||
   echo "Why: the setup must leave a running memory fallback for agent-launched builds." >&2
   echo "Fix: inspect 'systemctl --user status earlyoom.service' and rerun cros-setup." >&2
   exit 1
+fi
+if [ -e "$LOCAL_SERVICES_CONFIG" ]; then
+  if ! systemctl --user enable local-services.service; then
+    echo "ERROR: could not enable local-services.service." >&2
+    exit 1
+  fi
+  if ! "$HOME/.nix-profile/bin/process-compose" \
+      -f "$LOCAL_SERVICES_CONFIG" \
+      up --dry-run --tui=false --disable-dotenv >/dev/null; then
+    echo "ERROR: local service catalog validation failed: $LOCAL_SERVICES_CONFIG" >&2
+    echo "Fix: repair the YAML, then rerun cros-setup." >&2
+    exit 1
+  fi
 fi
 
 CODEX_WRAPPER_TARGET="$(readlink -f "$CODEX_WRAPPER_PATH" 2>/dev/null || true)"
@@ -1230,6 +1288,11 @@ echo "SUCCESS: Home Manager setup is fully activated!"
 echo "Your original configs were safely backed up as *.backup"
 echo "Modify your packages anytime in: $CONF_DIR/home.nix"
 echo "earlyoom is active as the user-session memory emergency shield."
+if [ -e "$LOCAL_SERVICES_CONFIG" ]; then
+  echo "Local services catalog: $LOCAL_SERVICES_CONFIG"
+  echo "Start now without changing the catalog: systemctl --user start local-services.service"
+  echo "Inspect logs: process-compose process logs <service-name>"
+fi
 echo "wayland-2 is configured as the default without restarting running services."
 echo "Run cros-reset to start inactive launcher services without interrupting apps."
 echo "Run cros-hard-reset only when a full GUI-disrupting reset is required."
