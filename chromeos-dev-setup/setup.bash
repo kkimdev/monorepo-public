@@ -549,6 +549,7 @@ in
       killall
       earlyoom
       process-compose
+      cloudflared
       podman-compose
       podman-tui
       xdg-utils
@@ -1169,6 +1170,13 @@ if [ ! -x "$HOME/.nix-profile/bin/process-compose" ] ||
    ! "$HOME/.nix-profile/bin/process-compose" version >/dev/null 2>&1; then
   echo "ERROR: Home Manager did not install a working process-compose executable." >&2
   echo "Why: the user local-services supervisor cannot start without it." >&2
+  echo "Fix: inspect the Home Manager activation output and rerun cros-setup." >&2
+  exit 1
+fi
+if [ ! -x "$HOME/.nix-profile/bin/cloudflared" ] ||
+   ! "$HOME/.nix-profile/bin/cloudflared" version >/dev/null 2>&1; then
+  echo "ERROR: Home Manager did not install a working cloudflared executable." >&2
+  echo "Why: local Cloudflare tunnels cannot start without it." >&2
   echo "Fix: inspect the Home Manager activation output and rerun cros-setup." >&2
   exit 1
 fi
