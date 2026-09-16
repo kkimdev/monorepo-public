@@ -42,9 +42,93 @@ export SCRIPT_DIR="$(dirname "$CROS_SETUP_SCRIPT_FILE")"
 # export GIT_USER_EMAIL="" # Use private email from https://github.com/settings/emails
 
 sudo apt-get update -y
-sudo apt-get install uidmap cros-im -y
+sudo apt-get install uidmap cros-im btrfs-progs -y
 sudo apt-get remove vim vim-tiny command-not-found -y
 sudo apt autoremove
+
+# Keep /tmp independent of Nix/Home Manager.  The single public function below
+# owns the complete root-level bootstrap; its generated systemd/tmpfiles config
+# remains effective when Nix is absent.
+TMP_QUOTA_GIB=""
+TMP_MOUNT_PENDING=0
+
+configure_disk_backed_tmp() {
+  local tmp_subvolume_path=/var/lib/tmp
+  local tmp_mount_override_dir=/etc/systemd/system/tmp.mount.d
+  local tmp_mount_override_file="$tmp_mount_override_dir/override.conf"
+  local tmp_tmpfiles_config=/etc/tmpfiles.d/tmp.conf
+  local tmp_mem_total_kib
+  local tmp_quota_bytes
+  local tmp_subvolume_id
+  local tmp_mount_source
+
+  tmp_mem_total_kib="$(awk '$1 == "MemTotal:" { print $2; exit }' /proc/meminfo)"
+  if [ -z "$tmp_mem_total_kib" ] || [ "$tmp_mem_total_kib" -le 0 ]; then
+    echo "ERROR: could not determine MemTotal for the /tmp quota." >&2
+    exit 1
+  fi
+  tmp_quota_bytes=$((tmp_mem_total_kib * 1024 / 2))
+  TMP_QUOTA_GIB="$(awk -v bytes="$tmp_quota_bytes" 'BEGIN { printf "%.1f GiB", bytes / 1024 / 1024 / 1024 }')"
+
+  if [ "$(findmnt -no FSTYPE -T /)" != btrfs ]; then
+    echo "ERROR: the root filesystem is not btrfs; refusing to configure a btrfs /tmp subvolume." >&2
+    exit 1
+  fi
+  if ! command -v btrfs >/dev/null 2>&1; then
+    echo "ERROR: btrfs-progs is unavailable after installation." >&2
+    exit 1
+  fi
+
+  sudo install -d -m 0755 /var/lib
+  if ! sudo btrfs subvolume show "$tmp_subvolume_path" >/dev/null 2>&1; then
+    if [ -e "$tmp_subvolume_path" ]; then
+      echo "ERROR: $tmp_subvolume_path exists but is not a btrfs subvolume; refusing to replace it." >&2
+      exit 1
+    fi
+    sudo btrfs subvolume create "$tmp_subvolume_path"
+  fi
+  sudo chmod 1777 "$tmp_subvolume_path"
+
+  # qgroup enable is idempotent in practice but reports an error when already
+  # enabled; the limit command below is the authoritative success check.  The
+  # Debian btrfs-progs version requires the explicit level-0 qgroup ID.
+  sudo btrfs quota enable / >/dev/null 2>&1 || true
+  tmp_subvolume_id="$(sudo btrfs subvolume show "$tmp_subvolume_path" | awk '$1 == "Subvolume" && $2 == "ID:" { print $3; exit }')"
+  if [ -z "$tmp_subvolume_id" ]; then
+    echo "ERROR: could not determine the btrfs subvolume ID for $tmp_subvolume_path." >&2
+    exit 1
+  fi
+  sudo btrfs qgroup limit "$tmp_quota_bytes" "0/$tmp_subvolume_id" "$tmp_subvolume_path"
+
+  # Disable data CoW for this disposable build area.  Keep relatime (the mount
+  # default) instead of noatime so age-based cleanup still has useful access
+  # timestamps without updating metadata on every read.
+  sudo chattr +C "$tmp_subvolume_path"
+
+  sudo install -d -m 0755 "$tmp_mount_override_dir" /etc/tmpfiles.d
+  sudo tee "$tmp_mount_override_file" >/dev/null <<'EOF'
+[Mount]
+What=/var/lib/tmp
+Type=none
+Options=bind,nosuid,nodev
+DirectoryMode=1777
+EOF
+  sudo tee "$tmp_tmpfiles_config" >/dev/null <<'EOF'
+# Keep the vendor cleanup policy but remove short-lived build artifacts sooner.
+q /tmp 1777 root root 2d
+q /var/tmp 1777 root root 30d
+EOF
+  sudo systemctl daemon-reload
+
+  tmp_mount_source="$(findmnt -no SOURCE -T /tmp 2>/dev/null || true)"
+  if [ "$tmp_mount_source" = tmpfs ]; then
+    TMP_MOUNT_PENDING=1
+    echo "Configured disk-backed /tmp for the next reboot (current tmpfs was not unmounted)."
+  fi
+  echo "Configured /tmp quota: $TMP_QUOTA_GIB ($tmp_quota_bytes bytes)."
+}
+
+configure_disk_backed_tmp
 
 # Add user to render group (required for GPU acceleration access in Crostini)
 sudo usermod -aG render "$USER"
@@ -1296,6 +1380,11 @@ echo "SUCCESS: Home Manager setup is fully activated!"
 echo "Your original configs were safely backed up as *.backup"
 echo "Modify your packages anytime in: $CONF_DIR/home.nix"
 echo "earlyoom is active as the user-session memory emergency shield."
+if [ "${TMP_MOUNT_PENDING:-0}" -eq 1 ]; then
+  echo "Disk-backed /tmp is configured but not mounted yet; reboot to switch from the current tmpfs mount."
+else
+  echo "Disk-backed /tmp is active with a quota of $TMP_QUOTA_GIB."
+fi
 if [ -e "$LOCAL_SERVICES_CONFIG" ]; then
   echo "Local services catalog: $LOCAL_SERVICES_CONFIG"
   echo "Start now without changing the catalog: systemctl --user start local-services.service"
