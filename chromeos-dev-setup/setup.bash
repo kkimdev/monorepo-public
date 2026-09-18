@@ -646,7 +646,8 @@ in
       # Apps
       chromium
       inkscape
-      beekeeper-studio
+      # # Insecure?
+      # beekeeper-studio
       yt-dlp
       sommelier-rs-bin
       kakaotalk-bin
@@ -673,6 +674,7 @@ in
       llmAgentsPkgs.claude-desktop
       llmAgentsPkgs.codex
       llmAgentsPkgs.opencode
+      llmAgentsPkgs.opencode2
       llmAgentsPkgs.orca
 
       # Existing desktop package kept active; llm-agents.nix currently has no
