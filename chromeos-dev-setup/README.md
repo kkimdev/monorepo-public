@@ -38,6 +38,16 @@ Use `cros-setup` to reapply the configuration without restarting user services
 or replacing the current shell. Home Manager prints any service restart
 suggestions instead of interrupting ongoing terminal or GUI work.
 
+KakaoTalk uses Wine's native Wayland driver on `wayland-2` for Korean input.
+Wine requires `wl_compositor` v4, while ChromeOS's VirtWL host provides v3.
+The setup follows the `virtwl` branch of
+[`kkimdev/sommelier-rs`](https://github.com/kkimdev/sommelier-rs)
+and installs its prebuilt release package. Release `virtwl-v0.2.6` adds the
+compatibility bridge: advertise v4 to applications, bind the host at v3, and
+translate `damage_buffer`. `cros-update` picks up subsequent package releases.
+Home Manager leaves running services intact; the updated proxy takes effect
+on the next login or after a deliberate service restart.
+
 ### Local services
 
 `setup.bash` installs `process-compose` and declares one generic
@@ -117,9 +127,9 @@ compresses old backups. Supervisor errors are available through:
 journalctl --user -u local-services.service -f
 ```
 
-Use the existing `cros-reset` command later to deliberately restart the
-compositor stack and apply deferred GUI-service changes. Running `cros-reset`
-closes Linux GUI applications.
+Use `cros-reset` to start inactive services without interrupting running apps.
+Use `cros-hard-reset` to restart the compositor stack and apply deferred
+GUI-service changes; it closes Linux GUI applications.
 
 ## SSH Key Generation & Github Registration
 ```bash

@@ -415,6 +415,7 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
     llm-agents.url = "github:numtide/llm-agents.nix";
 
     sommelier-rs = {
+      # virtwl releases >= 0.2.6 provide Wine's compositor v4 compatibility.
       url = "github:kkimdev/sommelier-rs/virtwl";
       inputs.nixpkgs.follows = "nixpkgs";
     };
