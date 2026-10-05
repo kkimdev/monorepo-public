@@ -415,8 +415,8 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
     llm-agents.url = "github:numtide/llm-agents.nix";
 
     sommelier-rs = {
-      # Source includes Wine's compositor v4 compatibility fix; the release binary predates it.
-      url = "github:kkimdev/sommelier-rs/d7c7cd1e522d9757420da2d2b4a98c3a3540099d";
+      # virtwl releases >= 0.2.6 provide Wine's compositor v4 compatibility.
+      url = "github:kkimdev/sommelier-rs/virtwl";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
@@ -650,8 +650,7 @@ in
       # # Insecure?
       # beekeeper-studio
       yt-dlp
-      # sommelier-rs-bin # Prebuilt release lacks the compositor v4 compatibility fix.
-      sommelier-rs
+      sommelier-rs-bin
       kakaotalk-bin
 
       # Coding
@@ -729,7 +728,7 @@ in
       # The nested wayland-0 path hides ChromeOS keyboard/text-input extensions,
       # preventing host IME switching and GTK text-input-v3 activation.
       ExecStart =
-        "\${pkgs.sommelier-rs}/bin/sommelier-rs --gpu-accel wayland-2";
+        "\${pkgs.sommelier-rs-bin}/bin/sommelier-rs --gpu-accel wayland-2";
       Restart = "always";
       RestartSec = "5";
       Environment = [
