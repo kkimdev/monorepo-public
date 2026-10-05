@@ -40,12 +40,12 @@ suggestions instead of interrupting ongoing terminal or GUI work.
 
 KakaoTalk uses Wine's native Wayland driver on `wayland-2` for Korean input.
 Wine requires `wl_compositor` v4, while ChromeOS's VirtWL host provides v3.
-The setup builds the pinned `sommelier-rs` source with
-[`patches/sommelier-compositor-v4.patch`](patches/sommelier-compositor-v4.patch)
-to advertise v4 to applications, bind the host at v3, and use the proxy's
-existing `damage_buffer` translation. X11 can open KakaoTalk but does not
-provide this native IME path. The patch is also used by the installed systemd
-service; updating only the client launcher cannot fix the protocol mismatch.
+The setup builds a pinned source commit from
+[`kkimdev/sommelier-rs`](https://github.com/kkimdev/sommelier-rs)
+that advertises v4 to applications, binds the host at v3, and uses the proxy's
+`damage_buffer` translation. X11 can open KakaoTalk but does not
+provide this native IME path. The installed systemd service uses that same
+source build; updating only the client launcher cannot fix the protocol mismatch.
 
 ### Local services
 
