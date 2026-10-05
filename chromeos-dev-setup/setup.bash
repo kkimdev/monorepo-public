@@ -415,7 +415,8 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
     llm-agents.url = "github:numtide/llm-agents.nix";
 
     sommelier-rs = {
-      url = "github:kkimdev/sommelier-rs/virtwl";
+      # Keep the source revision aligned with patches/sommelier-compositor-v4.patch.
+      url = "github:kkimdev/sommelier-rs/23dc96ca31537fe62821c478089eee31f7639304";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
@@ -527,6 +528,7 @@ cat <<'EOF' > "$CONF_DIR/flake.nix"
 EOF
 
 # 7. GENERATE HOME.NIX
+install -m 644 "$SCRIPT_DIR/patches/sommelier-compositor-v4.patch" "$CONF_DIR/sommelier-compositor-v4.patch"
 rm -f "$CONF_DIR/home.nix"
 cat <<EOF > "$CONF_DIR/home.nix"
 { config, pkgs, lib, inputs, ... }:
@@ -536,6 +538,11 @@ let
   nixProfileShareDir  = "\${config.home.homeDirectory}/.nix-profile/share";
   llmAgentsPkgs       = inputs.llm-agents.packages.\${pkgs.stdenv.hostPlatform.system};
   openspecCli         = inputs.openspec.packages.\${pkgs.stdenv.hostPlatform.system}.default;
+  # Wine needs compositor v4; translate its damage_buffer requests for ChromeOS's
+  # v3 host while retaining the native Wayland text-input-v3 IME bridge.
+  sommelierRs = pkgs.sommelier-rs.overrideAttrs (oldAttrs: {
+    patches = (oldAttrs.patches or []) ++ [ ./sommelier-compositor-v4.patch ];
+  });
   # This file is evaluated with --impure on the host. Do not install a
   # Crostini-specific browser default on ordinary Linux systems.
   isCrostini = builtins.pathExists "/opt/google/cros-containers/bin/garcon"
@@ -649,7 +656,8 @@ in
       # # Insecure?
       # beekeeper-studio
       yt-dlp
-      sommelier-rs-bin
+      # sommelier-rs-bin # Prebuilt release lacks the compositor v4 compatibility fix.
+      sommelierRs
       kakaotalk-bin
 
       # Coding
@@ -727,7 +735,7 @@ in
       # The nested wayland-0 path hides ChromeOS keyboard/text-input extensions,
       # preventing host IME switching and GTK text-input-v3 activation.
       ExecStart =
-        "\${pkgs.sommelier-rs-bin}/bin/sommelier-rs --gpu-accel wayland-2";
+        "\${sommelierRs}/bin/sommelier-rs --gpu-accel wayland-2";
       Restart = "always";
       RestartSec = "5";
       Environment = [
