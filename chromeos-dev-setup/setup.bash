@@ -875,6 +875,12 @@ in
       '';
       bashrcExtra = ''
         . \$HOME/.bashrc.backup
+        # central secrets (chmod 600) - values live in ~/.config/secrets/.env, never in nix store
+        if [[ -f "\$HOME/.config/secrets/.env" ]]; then
+          set -a
+          . "\$HOME/.config/secrets/.env"
+          set +a
+        fi
       '';
       profileExtra = ''
         . \$HOME/.profile.backup
@@ -944,6 +950,13 @@ in
         bindkey "^H"      backward-kill-word   # Ctrl + Backspace
 
         export PATH="\$HOME/.local/bin:\$PATH"
+
+        # central secrets (chmod 600) - values live in ~/.config/secrets/.env, never in nix store
+        if [[ -f "\$HOME/.config/secrets/.env" ]]; then
+          set -a
+          . "\$HOME/.config/secrets/.env"
+          set +a
+        fi
       '';
 
       # TODO: More options
