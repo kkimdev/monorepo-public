@@ -171,125 +171,70 @@ Reference: https://www.reddit.com/r/chromeos/comments/1u0niv3/crostini_linux_on_
 
 **Known to affect:** ThinkBook 16 G6 IRL
 
-**Symptom:** Internal mic works at ALSA level (`arecord`) but not in Chrome.
+**Symptom:** Selecting the DMIC manually restores the internal mic, but it
+stops working again after disconnecting a Bluetooth microphone.
 
-**Root cause:** Chrome uses CRAS (ChromeOS Audio Server) which may route the "default" capture device to a PCM node or channel that doesn't carry the internal mic signal. The dedicated DMIC PCM exists but is not selected by default.
+**Fix:** Use the installed CRAS UCM profile, which sets `FullySpecifiedUCM "1"`
+and maps `Internal Mic` to the actual DMIC (`hw:sofhdadsp,6`, mixer `Dmic0`).
+The default profile instead lets CRAS place the internal mic on analog PCM 0.
 
-**Steps to fix:**
-```bash
-PAIR=$(arecord -l | sed -n 's/^card \([0-9][0-9]*\):.*device \([0-9][0-9]*\): DMIC.*/\1 \2/p' | head -1)
-CARD=${PAIR%% *}
-DEVICE=${PAIR#* }
-DMIC=$(cras_test_client --dump_s | awk -v target=":$CARD,$DEVICE" '
-  /^Input Devices:/ { in_inputs=1; next }
-  /^Input Nodes:/ { in_inputs=0 }
-  in_inputs && index($0, target) { print $1; exit }
-')
-amixer -c "$CARD" cset name='Dmic0 Capture Switch' on,on
-cras_test_client --select_input "$DMIC:0"
-echo "Applied: ALSA=$CARD,$DEVICE CRAS_NODE=$DMIC:0"
-```
-
-Then test in Chrome. If it works, create a permanent Upstart job:
+Open **ChromeOS crosh** (`Ctrl+Alt+T`), type `shell`, and run the following.
+It skips an already applied fix, preserves the first backup, and restarts
+CRAS only after a change. Playback and recording briefly stop on that restart.
 
 ```bash
-sudo tee /etc/init/internal-mic.conf > /dev/null <<'CONF'
-description "Fix Internal Mic Routing at Boot"
-author "User"
-start on started system-services
-stop on stopping system-services
-task
-script
-    for i in $(seq 1 30); do
-        PAIR=$(arecord -l | sed -n 's/^card \([0-9][0-9]*\):.*device \([0-9][0-9]*\): DMIC.*/\1 \2/p' | head -1)
-        CARD=${PAIR%% *}
-        DEVICE=${PAIR#* }
-        DMIC=$(cras_test_client --dump_s | awk -v target=":$CARD,$DEVICE" '
-            /^Input Devices:/ { in_inputs=1; next }
-            /^Input Nodes:/ { in_inputs=0 }
-            in_inputs && index($0, target) { print $1; exit }
-        ')
-        logger "internal-mic: attempt=$i CARD=$CARD DEVICE=$DEVICE DMIC=$DMIC"
-        [ -n "$CARD" ] && [ -n "$DEVICE" ] && [ -n "$DMIC" ] && break
-        sleep 2
-    done
-    if [ -z "$CARD" ] || [ -z "$DEVICE" ] || [ -z "$DMIC" ]; then
-        logger "internal-mic: discovery FAILED CARD=$CARD DEVICE=$DEVICE DMIC=$DMIC"
-        exit 1
-    fi
-    /usr/bin/amixer -c "$CARD" cset name='Dmic0 Capture Switch' on,on && logger "internal-mic: amixer OK" || logger "internal-mic: amixer FAILED"
-    /usr/bin/cras_test_client --select_input "$DMIC:0" && logger "internal-mic: select_input OK node=$DMIC:0" || logger "internal-mic: select_input FAILED node=$DMIC:0"
-
-    sleep 1
-    ACTIVE=$(cras_test_client --dump_s | awk '
-        /^Input Nodes:/ { in_nodes=1; next }
-        /^Attached clients:/ { in_nodes=0 }
-        in_nodes && $2 ~ /^[0-9]+:[0-9]+$/ && $0 ~ /X\*/ { print $2; exit }
-    ')
-    if [ "$ACTIVE" = "$DMIC:0" ]; then
-        logger "internal-mic: verification OK active=$ACTIVE"
-    else
-        logger "internal-mic: verification FAILED expected=$DMIC:0 active=$ACTIVE"
-        exit 1
-    fi
-end script
-CONF
-
-sudo chmod 644 /etc/init/internal-mic.conf
-sudo /sbin/initctl reload-configuration
-echo "Permanent mic fix created"
-```
-
-Test the Upstart job immediately without rebooting:
-```bash
-sudo /sbin/initctl stop internal-mic 2>/dev/null || true
-sudo /sbin/initctl start internal-mic
-sudo /sbin/initctl status internal-mic
-sudo grep "internal-mic" /var/log/messages | tail -30
-```
-
-`internal-mic stop/waiting` is expected after a successful run because the job is
-declared as a one-time `task`. The logs should contain `verification OK`.
-
-Verify that the job selected the correct CRAS input:
-```bash
-PAIR=$(arecord -l | sed -n 's/^card \([0-9][0-9]*\):.*device \([0-9][0-9]*\): DMIC.*/\1 \2/p' | head -1)
-CARD=${PAIR%% *}
-DEVICE=${PAIR#* }
-STATE=$(cras_test_client --dump_s)
-DMIC=$(printf '%s\n' "$STATE" | awk -v target=":$CARD,$DEVICE" '
-  /^Input Devices:/ { in_inputs=1; next }
-  /^Input Nodes:/ { in_inputs=0 }
-  in_inputs && index($0, target) { print $1; exit }
-')
-EXPECTED="$DMIC:0"
-ACTIVE=$(printf '%s\n' "$STATE" | awk '
-  /^Input Nodes:/ { in_nodes=1; next }
-  /^Attached clients:/ { in_nodes=0 }
-  in_nodes && $2 ~ /^[0-9]+:[0-9]+$/ && $0 ~ /X\*/ { print $2; exit }
-')
-
-amixer -c "$CARD" cget name='Dmic0 Capture Switch' | grep 'values='
-echo "Expected CRAS input: $EXPECTED (ALSA hw:$CARD,$DEVICE)"
-echo "Active CRAS input:   $ACTIVE"
-
-if [ -n "$DMIC" ] && [ "$ACTIVE" = "$EXPECTED" ]; then
-  echo "PASS: CRAS is using the dedicated DMIC"
-else
-  echo "FAIL: CRAS is not using the dedicated DMIC"
-  echo "Repair with: cras_test_client --select_input $EXPECTED"
+sudo bash <<'SH'
+set -euo pipefail
+MIC_UCM_CONF=$(readlink -f /usr/share/alsa/ucm2/conf.d/sof-hda-dsp/sof-hda-dsp.conf)
+if grep -Fq 'File "/conf.d/sof-hda-dsp/HiFi.conf"' "$MIC_UCM_CONF"; then
+    echo "Already applied"
+    exit 0
 fi
+test -f /usr/share/alsa/ucm2/conf.d/sof-hda-dsp/HiFi.conf
+grep -Fq 'File "/Intel/sof-hda-dsp/HiFi.conf"' "$MIC_UCM_CONF"
+MIC_UCM_BACKUP="$MIC_UCM_CONF.before-internal-mic"
+[ -e "$MIC_UCM_BACKUP" ] || cp -p "$MIC_UCM_CONF" "$MIC_UCM_BACKUP"
+trap 'cp -p "$MIC_UCM_BACKUP" "$MIC_UCM_CONF"' ERR
+
+sed -i 's@File "/Intel/sof-hda-dsp/HiFi.conf"@File "/conf.d/sof-hda-dsp/HiFi.conf"@' "$MIC_UCM_CONF"
+alsaucm -c sof-hda-dsp get '=FullySpecifiedUCM//HiFi' | grep -E '=1$'
+alsaucm -c sof-hda-dsp get '=CapturePCM/Internal Mic/HiFi' | grep -E 'hw:sofhdadsp,6$'
+alsaucm -c sof-hda-dsp get '=CaptureMixerElem/Internal Mic/HiFi' | grep -E '=Dmic0$'
+
+trap - ERR
+/sbin/initctl restart cras
+printf 'Backup: %s\n' "$MIC_UCM_BACKUP"
+SH
 ```
 
-To debug if it fails after reboot:
+The script checks `FullySpecifiedUCM=1`, PCM `hw:sofhdadsp,6`, and mixer `Dmic0`.
+A failed edit or check restores the backup without restarting CRAS.
+
+**Verify:** Select `Internal Mic` in ChromeOS sound settings and test recording.
+Then connect and use a Bluetooth mic, disconnect it, and test again without
+manually changing the input. Also check the audio outputs you use.
+
 ```bash
-sudo grep "internal-mic" /var/log/messages | tail -10
+cras_test_client --dump_s
 ```
 
-> **Why `started failsafe`?** Custom `/etc/init/*.conf` files on Brunch are loaded during `boot-services`, which fires *after* `started cras` — so `started cras or startup` is missed. `failsafe` is the last boot event and guarantees ALSA/CRAS are ready. The retry loop handles the remaining race where the DMIC device isn't enumerated yet at `failsafe` time.
->
-> **Notes:**
-> - Assumes kcontrol name is `Dmic0 Capture Switch` (standard Intel naming). If `amixer` errors, find the correct name with `amixer -c $CARD contents | grep -i dmic | grep Switch`.
+The active `*` input should be `INTERNAL_MIC` on PCM `0,6` when testing the
+internal mic. Device IDs may change after restarting CRAS; a USB microphone
+may also be selected if connected.
+
+**Rollback:** Restore the first backup. If the fix was applied with earlier
+instructions, use the timestamped backup printed by that script instead.
+
+```bash
+MIC_UCM_CONF=$(readlink -f /usr/share/alsa/ucm2/conf.d/sof-hda-dsp/sof-hda-dsp.conf)
+sudo cp -p "$MIC_UCM_CONF.before-internal-mic" "$MIC_UCM_CONF" && \
+sudo /sbin/initctl restart cras
+```
+
+**Validation:** Internal mic capture and automatic return after Bluetooth
+disconnect were verified on ThinkBook 16 G6 IRL on 2026-10-09. Reboot
+persistence has not yet been tested. ChromeOS/Brunch updates may replace the
+UCM files; recheck the active profile if the issue returns after an update.
 
 ### HDMI Audio Output Not Working
 
