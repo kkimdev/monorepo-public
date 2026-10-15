@@ -541,6 +541,9 @@ let
   # (https://github.com/stablyai/orca/issues/29171) awaits an upstream release.
   # Match Electron's native Wayland app ID and X11 class to orca-ide.desktop.
   orcaWithDesktopIdentity = llmAgentsPkgs.orca.overrideAttrs (old: {
+    # The Wayland clipboard helper dlopens GTK for its Xwayland fallback.
+    # Remove after updating to https://github.com/numtide/llm-agents.nix/pull/10882.
+    runtimeDependencies = (old.runtimeDependencies or [ ]) ++ [ pkgs.gtk3 ];
     postFixup = (old.postFixup or "") + ''
       \${pkgs.python3}/bin/python3 - "\$out/lib/Orca/resources/app.asar" "\$out/share/applications/orca-ide.desktop" <<'PY'
       import hashlib
