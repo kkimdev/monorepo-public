@@ -655,6 +655,8 @@ in
 
       # Coding
       vscode
+      # Orca's skill updater spawns npx outside project development shells.
+      nodejs
       inputs.openspec.packages.\${pkgs.stdenv.hostPlatform.system}.default
       # Existing GUI packages kept active; llm-agents.nix has no IDE/base-app
       # replacement for these yet.
@@ -1259,6 +1261,16 @@ if ! nix shell nixpkgs#git --command \
   echo "ERROR: Home Manager activation failed; the previous Codex wrapper was preserved." >&2
   exit 1
 fi
+
+for node_command in node npm npx; do
+  if ! PATH="$HOME/.nix-profile/bin:/usr/bin:/bin" \
+      "$HOME/.nix-profile/bin/$node_command" --version >/dev/null; then
+    echo "ERROR: Home Manager did not install a working $node_command executable." >&2
+    echo "Why: Orca's skill updater needs Node.js and npx outside project development shells." >&2
+    echo "Fix: inspect the Home Manager activation output and rerun cros-setup." >&2
+    exit 1
+  fi
+done
 
 if ! "$HOME/.nix-profile/bin/earlyoom" -v >/dev/null 2>&1; then
   echo "ERROR: Home Manager did not install a working earlyoom executable." >&2
