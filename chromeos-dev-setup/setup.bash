@@ -537,6 +537,69 @@ let
   nixProfileShareDir  = "\${config.home.homeDirectory}/.nix-profile/share";
   llmAgentsPkgs       = inputs.llm-agents.packages.\${pkgs.stdenv.hostPlatform.system};
   openspecCli         = inputs.openspec.packages.\${pkgs.stdenv.hostPlatform.system}.default;
+  # Temporary package fix while https://github.com/stablyai/orca/pull/29172
+  # (https://github.com/stablyai/orca/issues/29171) awaits an upstream release.
+  # Match Electron's native Wayland app ID and X11 class to orca-ide.desktop.
+  orcaWithDesktopIdentity = llmAgentsPkgs.orca.overrideAttrs (old: {
+    postFixup = (old.postFixup or "") + ''
+      \${pkgs.python3}/bin/python3 - "\$out/lib/Orca/resources/app.asar" "\$out/share/applications/orca-ide.desktop" <<'PY'
+      import hashlib
+      import json
+      from pathlib import Path
+      import struct
+      import sys
+
+      archive, desktop = map(Path, sys.argv[1:])
+      desktop_name = desktop.name
+      window_class = desktop_name.removesuffix(".desktop")
+      payload = archive.read_bytes()
+      size_payload, header_size = struct.unpack_from("<II", payload)
+      assert size_payload == 4, "Unexpected ASAR size header"
+      json_size = struct.unpack_from("<I", payload, 12)[0]
+      header = json.loads(payload[16:16 + json_size])
+      content = payload[8 + header_size:]
+      entry = header["files"]["package.json"]
+      start, size = int(entry["offset"]), entry["size"]
+      package_bytes = content[start:start + size]
+      assert len(package_bytes) == size, "Truncated ASAR package metadata"
+      metadata = json.loads(package_bytes)
+      assert metadata["name"] == "orca", "Unexpected application metadata"
+      previous = metadata.get("desktopName")
+      assert previous in (None, desktop_name), f"Unexpected desktopName: {previous!r}"
+
+      if previous is None:
+          # Append metadata so existing file offsets and unpacked entries stay intact.
+          integrity = entry["integrity"]
+          assert integrity["algorithm"] == "SHA256", "Unsupported ASAR integrity"
+          assert hashlib.sha256(package_bytes).hexdigest() == integrity["hash"], "Invalid ASAR metadata integrity"
+          metadata["desktopName"] = desktop_name
+          package_bytes = (json.dumps(metadata, separators=(",", ":")) + "\n").encode()
+          entry["offset"], entry["size"] = str(len(content)), len(package_bytes)
+          block_size = integrity["blockSize"]
+          integrity["hash"] = hashlib.sha256(package_bytes).hexdigest()
+          integrity["blocks"] = [
+              hashlib.sha256(package_bytes[i:i + block_size]).hexdigest()
+              for i in range(0, len(package_bytes), block_size)
+          ]
+          encoded = json.dumps(header, separators=(",", ":")).encode()
+          string_payload = struct.pack("<I", len(encoded)) + encoded + b"\0" * (-len(encoded) % 4)
+          header_pickle = struct.pack("<I", len(string_payload)) + string_payload
+          archive.chmod(archive.stat().st_mode | 0o200)
+          archive.write_bytes(struct.pack("<II", 4, len(header_pickle)) + header_pickle + content + package_bytes)
+
+      lines = desktop.read_text().splitlines(keepends=True)
+      matches = [i for i, line in enumerate(lines) if line.startswith("StartupWMClass=")]
+      assert len(matches) == 1, "Expected one desktop window class"
+      index = matches[0]
+      previous_class = lines[index].split("=", 1)[1].strip()
+      assert previous_class in ("orca", window_class), f"Unexpected window class: {previous_class!r}"
+      if previous_class != window_class:
+          lines[index] = f"StartupWMClass={window_class}\n"
+          desktop.chmod(desktop.stat().st_mode | 0o200)
+          desktop.write_text("".join(lines))
+      PY
+    '';
+  });
   # This file is evaluated with --impure on the host. Do not install a
   # Crostini-specific browser default on ordinary Linux systems.
   isCrostini = builtins.pathExists "/opt/google/cros-containers/bin/garcon"
@@ -678,7 +741,7 @@ in
       llmAgentsPkgs.codex
       llmAgentsPkgs.opencode
       llmAgentsPkgs.opencode2
-      llmAgentsPkgs.orca
+      orcaWithDesktopIdentity
 
       # Existing desktop package kept active; llm-agents.nix currently has no
       # OpenCode desktop replacement.
