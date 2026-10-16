@@ -540,6 +540,8 @@ let
   # Temporary package fix while https://github.com/stablyai/orca/pull/29172
   # (https://github.com/stablyai/orca/issues/29171) awaits an upstream release.
   # Match Electron's native Wayland app ID and X11 class to orca-ide.desktop.
+  # Keep keyboard copies on Orca's focused Wayland connection in Crostini.
+  # Remove the keyboard-copy patch after https://github.com/stablyai/orca/pull/29377 ships.
   orcaWithDesktopIdentity = llmAgentsPkgs.orca.overrideAttrs (old: {
     # The Wayland clipboard helper dlopens GTK for its Xwayland fallback.
     # Remove after updating to https://github.com/numtide/llm-agents.nix/pull/10882.
@@ -561,6 +563,25 @@ let
       json_size = struct.unpack_from("<I", payload, 12)[0]
       header = json.loads(payload[16:16 + json_size])
       content = payload[8 + header_size:]
+      appended = bytearray()
+
+      def replace_entry(entry, replacement):
+          start, size = int(entry["offset"]), entry["size"]
+          original = content[start:start + size]
+          integrity = entry["integrity"]
+          assert len(original) == size, "Truncated ASAR entry"
+          assert integrity["algorithm"] == "SHA256", "Unsupported ASAR integrity"
+          assert hashlib.sha256(original).hexdigest() == integrity["hash"], "Invalid ASAR entry integrity"
+          # Append replacements so unrelated offsets and unpacked entries stay intact.
+          entry["offset"], entry["size"] = str(len(content) + len(appended)), len(replacement)
+          block_size = integrity["blockSize"]
+          integrity["hash"] = hashlib.sha256(replacement).hexdigest()
+          integrity["blocks"] = [
+              hashlib.sha256(replacement[i:i + block_size]).hexdigest()
+              for i in range(0, len(replacement), block_size)
+          ]
+          appended.extend(replacement)
+
       entry = header["files"]["package.json"]
       start, size = int(entry["offset"]), entry["size"]
       package_bytes = content[start:start + size]
@@ -571,24 +592,58 @@ let
       assert previous in (None, desktop_name), f"Unexpected desktopName: {previous!r}"
 
       if previous is None:
-          # Append metadata so existing file offsets and unpacked entries stay intact.
-          integrity = entry["integrity"]
-          assert integrity["algorithm"] == "SHA256", "Unsupported ASAR integrity"
-          assert hashlib.sha256(package_bytes).hexdigest() == integrity["hash"], "Invalid ASAR metadata integrity"
           metadata["desktopName"] = desktop_name
           package_bytes = (json.dumps(metadata, separators=(",", ":")) + "\n").encode()
-          entry["offset"], entry["size"] = str(len(content)), len(package_bytes)
-          block_size = integrity["blockSize"]
-          integrity["hash"] = hashlib.sha256(package_bytes).hexdigest()
-          integrity["blocks"] = [
-              hashlib.sha256(package_bytes[i:i + block_size]).hexdigest()
-              for i in range(0, len(package_bytes), block_size)
+          replace_entry(entry, package_bytes)
+
+      # Temporary release patch; fail visibly when an update needs re-evaluation.
+      assert metadata["version"] == "1.4.226", "Re-evaluate Orca's native keyboard-copy workaround for this release"
+      quote = chr(96)
+      native = (
+          f"window.api.platform.get().platform==={quote}linux{quote}&&"
+          f"window.api.platform.get().displayServer==={quote}wayland{quote}"
+      )
+      assets = header["files"]["out"]["files"]["renderer"]["files"]["assets"]["files"]
+      patches = [
+          (
+              "OnboardingInlineCommandTerminal-",
+              "ae1ec249e826febe0ee58d96fd54b12c4d14a98dc7ca6b4cba53f3f6f769fbe6",
+              "gy({terminal:e.terminal,writeClipboardText:window.api.ui.writeTerminalClipboardText}).catch(()=>{})",
+              f"e.terminal.focus(),window.api.ui.performNativeSelectionAction({quote}copy{quote})",
+          ),
+          (
+              "AgentKanbanBoard-",
+              "b3136ba85b302267dbbac9eae513d4289989855b4a197faf14b1316c9fc399e0",
+              "s&&i&&window.api.ui.writeTerminalClipboardText(i).catch(()=>void 0)",
+              f"t.focus(),window.api.ui.performNativeSelectionAction({quote}copy{quote})",
+          ),
+      ]
+      for prefix, expected_hash, old, action in patches:
+          matches = [
+              entry for name, entry in assets.items()
+              if name.startswith(prefix) and name.endswith(".js")
+              and entry.get("integrity", {}).get("hash") == expected_hash
           ]
+          assert len(matches) == 1, f"Expected one Orca keyboard-copy asset: {prefix}"
+          entry = matches[0]
+          start, size = int(entry["offset"]), entry["size"]
+          original = content[start:start + size]
+          assert hashlib.sha256(original).hexdigest() == expected_hash, f"Unexpected Orca keyboard-copy asset: {prefix}"
+          text = original.decode()
+          assert text.count(old) == 1, f"Expected one keyboard-copy route: {prefix}"
+          if prefix == "AgentKanbanBoard-":
+              writer = old.removeprefix("s&&i&&")
+              replacement = f"s&&i&&({native}?({action}):{writer})"
+          else:
+              replacement = f"({native}?({action}):{old})"
+          replace_entry(entry, text.replace(old, replacement).encode())
+
+      if appended:
           encoded = json.dumps(header, separators=(",", ":")).encode()
           string_payload = struct.pack("<I", len(encoded)) + encoded + b"\0" * (-len(encoded) % 4)
           header_pickle = struct.pack("<I", len(string_payload)) + string_payload
           archive.chmod(archive.stat().st_mode | 0o200)
-          archive.write_bytes(struct.pack("<II", 4, len(header_pickle)) + header_pickle + content + package_bytes)
+          archive.write_bytes(struct.pack("<II", 4, len(header_pickle)) + header_pickle + content + appended)
 
       lines = desktop.read_text().splitlines(keepends=True)
       matches = [i for i, line in enumerate(lines) if line.startswith("StartupWMClass=")]
