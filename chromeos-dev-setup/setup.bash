@@ -540,8 +540,8 @@ let
   # Temporary package fix while https://github.com/stablyai/orca/pull/29172
   # (https://github.com/stablyai/orca/issues/29171) awaits an upstream release.
   # Match Electron's native Wayland app ID and X11 class to orca-ide.desktop.
-  # Keep keyboard copies on Orca's focused Wayland connection in Crostini.
-  # Remove the keyboard-copy patch after https://github.com/stablyai/orca/pull/29377 ships.
+  # Keep keyboard and Copy on Select copies on Orca's focused Wayland connection in Crostini.
+  # Remove the native-copy patch after https://github.com/stablyai/orca/pull/29377 ships.
   orcaWithDesktopIdentity = llmAgentsPkgs.orca.overrideAttrs (old: {
     # The Wayland clipboard helper dlopens GTK for its Xwayland fallback.
     # Remove after updating to https://github.com/numtide/llm-agents.nix/pull/10882.
@@ -597,7 +597,7 @@ let
           replace_entry(entry, package_bytes)
 
       # Temporary release patch; fail visibly when an update needs re-evaluation.
-      assert metadata["version"] == "1.4.226", "Re-evaluate Orca's native keyboard-copy workaround for this release"
+      assert metadata["version"] == "1.4.226", "Re-evaluate Orca's native-copy workaround for this release"
       quote = chr(96)
       native = (
           f"window.api.platform.get().platform==={quote}linux{quote}&&"
@@ -608,35 +608,50 @@ let
           (
               "OnboardingInlineCommandTerminal-",
               "ae1ec249e826febe0ee58d96fd54b12c4d14a98dc7ca6b4cba53f3f6f769fbe6",
-              "gy({terminal:e.terminal,writeClipboardText:window.api.ui.writeTerminalClipboardText}).catch(()=>{})",
-              f"e.terminal.focus(),window.api.ui.performNativeSelectionAction({quote}copy{quote})",
+              [
+                  (
+                      "gy({terminal:e.terminal,writeClipboardText:window.api.ui.writeTerminalClipboardText}).catch(()=>{})",
+                      f"e.terminal.focus(),window.api.ui.performNativeSelectionAction({quote}copy{quote})",
+                      native,
+                  ),
+                  # Only the Copy on Select callback; keep its setting, selection and PRIMARY guards.
+                  # Background/programmatic selections must not move focus to another terminal.
+                  (
+                      "gy({terminal:t.terminal,writeClipboardText:window.api.ui.writeTerminalClipboardText}).catch(()=>{})",
+                      f"ay(t.terminal)&&window.api.ui.performNativeSelectionAction({quote}copy{quote})",
+                      f"{native}&&t.terminal.textarea&&t.terminal.textarea.ownerDocument.activeElement===t.terminal.textarea",
+                  ),
+              ],
           ),
           (
               "AgentKanbanBoard-",
               "b3136ba85b302267dbbac9eae513d4289989855b4a197faf14b1316c9fc399e0",
-              "s&&i&&window.api.ui.writeTerminalClipboardText(i).catch(()=>void 0)",
-              f"t.focus(),window.api.ui.performNativeSelectionAction({quote}copy{quote})",
+              [
+                  (
+                      "window.api.ui.writeTerminalClipboardText(i).catch(()=>void 0)",
+                      f"t.focus(),window.api.ui.performNativeSelectionAction({quote}copy{quote})",
+                      native,
+                  ),
+              ],
           ),
       ]
-      for prefix, expected_hash, old, action in patches:
+      for prefix, expected_hash, routes in patches:
           matches = [
               entry for name, entry in assets.items()
               if name.startswith(prefix) and name.endswith(".js")
               and entry.get("integrity", {}).get("hash") == expected_hash
           ]
-          assert len(matches) == 1, f"Expected one Orca keyboard-copy asset: {prefix}"
+          assert len(matches) == 1, f"Expected one Orca native-copy asset: {prefix}"
           entry = matches[0]
           start, size = int(entry["offset"]), entry["size"]
           original = content[start:start + size]
-          assert hashlib.sha256(original).hexdigest() == expected_hash, f"Unexpected Orca keyboard-copy asset: {prefix}"
+          assert hashlib.sha256(original).hexdigest() == expected_hash, f"Unexpected Orca native-copy asset: {prefix}"
           text = original.decode()
-          assert text.count(old) == 1, f"Expected one keyboard-copy route: {prefix}"
-          if prefix == "AgentKanbanBoard-":
-              writer = old.removeprefix("s&&i&&")
-              replacement = f"s&&i&&({native}?({action}):{writer})"
-          else:
-              replacement = f"({native}?({action}):{old})"
-          replace_entry(entry, text.replace(old, replacement).encode())
+          for old, action, condition in routes:
+              assert text.count(old) == 1, f"Expected one native-copy route: {prefix}"
+              replacement = f"({condition}?({action}):{old})"
+              text = text.replace(old, replacement)
+          replace_entry(entry, text.encode())
 
       if appended:
           encoded = json.dumps(header, separators=(",", ":")).encode()
