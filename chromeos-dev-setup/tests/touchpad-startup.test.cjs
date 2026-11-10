@@ -26,14 +26,17 @@ async function startup({windows = [{id: 41}], event = 'startup', reason} = {}) {
   return calls;
 }
 
-async function page({review = false, error} = {}) {
+async function page({review = false, error, failures = []} = {}) {
   const nodes = {status: {}, result: {}};
   const removed = [];
   const stored = [];
+  const delays = [];
+  let attempts = 0;
   const applied = {id: 73, name: 'Other Vendor Precision Touchpad', before: {}, applied: {}};
   const document = {getElementById: id => nodes[id], title: 'Touchpad setup'};
   const context = vm.createContext({
     URL, Date,
+    setTimeout: (callback, delay) => { delays.push(delay); callback(); },
     location: {href: `chrome-extension://preview/page.html${review ? '?review' : ''}`},
     document,
     chrome: {
@@ -42,12 +45,16 @@ async function page({review = false, error} = {}) {
     },
   });
   const helper = new vm.SyntheticModule(['applyTouchpad'], function() {
-    this.setExport('applyTouchpad', async () => { if (error) throw error; return applied; });
+    this.setExport('applyTouchpad', async () => {
+      const failure = failures[attempts++] || error;
+      if (failure) throw failure;
+      return applied;
+    });
   }, {context});
   const module = new vm.SourceTextModule(await fs.readFile(path.join(root, 'page.mjs'), 'utf8'), {context});
   await module.link(specifier => { assert.equal(specifier, './apply.mjs'); return helper; });
   await module.evaluate();
-  return {nodes, removed, stored, document};
+  return {nodes, removed, stored, document, attempts, delays};
 }
 
 (async () => {
@@ -99,6 +106,32 @@ async function page({review = false, error} = {}) {
   assert.equal(result.nodes.result.textContent, 'Missing touchpad property');
   assert.match(result.nodes.status.textContent, /could not finish/);
   assert.equal(result.document.title, 'Touchpad setup failed');
+  assert.equal(result.attempts, 1);
+  assert.deepEqual(result.delays, []);
   console.log('PASS failure remains visible and does not save a success result');
-  console.log('7 startup/page integration checks passed with mocked Chrome APIs; actual ChromeOS startup remains unverified.');
+
+  const transient = () => Object.assign(new Error('Crosh is not ready'), {retryable: true});
+  result = await page({failures: [transient(), transient()]});
+  assert.equal(result.attempts, 3);
+  assert.deepEqual(result.delays, [1000, 2000]);
+  assert.deepEqual(result.removed, [91]);
+  assert.equal(result.stored.length, 1);
+  console.log('PASS startup retries temporary readiness errors and closes after verification');
+
+  result = await page({review: true, failures: [transient()]});
+  assert.equal(result.attempts, 2);
+  assert.deepEqual(result.delays, [1000]);
+  assert.deepEqual(result.removed, []);
+  assert.match(result.nodes.status.textContent, /verified/);
+  console.log('PASS first-install review also recovers from a temporary readiness error');
+
+  result = await page({error: transient()});
+  assert.equal(result.attempts, 3);
+  assert.deepEqual(result.delays, [1000, 2000]);
+  assert.deepEqual(result.removed, []);
+  assert.deepEqual(result.stored, []);
+  assert.equal(result.document.title, 'Touchpad setup failed');
+  assert.match(result.nodes.result.textContent, /not ready/);
+  console.log('PASS persistent readiness errors stop after three attempts and stay visible');
+  console.log('10 startup/page integration checks passed with mocked Chrome APIs; actual ChromeOS startup remains unverified.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

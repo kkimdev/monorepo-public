@@ -26,7 +26,15 @@ export async function applyTouchpad(api = globalThis.chrome?.terminalPrivate, {
       else resolve(value);
     }); } catch (error) { clearTimeout(timer); reject(error); }
   });
-  const strip = (text) => text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\r/g, '');
+  const strip = (text) => text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\r\n?/g, '\n');
+  const transient = (message) => Object.assign(new Error(message), {retryable: true});
+  // Crosh's readline can redraw a prompt and partial command after a resize.
+  // Only output beyond those redraws/echoes can finish an outstanding command.
+  const hasReply = (text, command) => text.split('\n').some((line) => {
+    const prompt = line.lastIndexOf('crosh> ');
+    const content = (prompt < 0 ? line : line.slice(prompt + 7)).trim();
+    return content && !command.startsWith(content);
+  });
   const streams = new Map();
   let pid;
   let waiting;
@@ -39,7 +47,12 @@ export async function applyTouchpad(api = globalThis.chrome?.terminalPrivate, {
     const state = stream(pid);
     if (state.exited) waiting.reject(new Error('Crosh process exited'));
     else if (state.text.length > 262144) waiting.reject(new Error('Unexpectedly large Crosh response'));
-    else if (/(?:^|\n)crosh> $/.test(strip(state.text))) waiting.resolve(strip(state.text));
+    else {
+      const text = strip(state.text);
+      if (/(?:^|\n)crosh> $/.test(text) && (!waiting.command || hasReply(text, waiting.command))) {
+        waiting.resolve(text);
+      }
+    }
   };
   const onOutput = (id, type, data) => {
     if (pid !== undefined && id !== pid) return;
@@ -52,31 +65,37 @@ export async function applyTouchpad(api = globalThis.chrome?.terminalPrivate, {
     }
     check();
   };
-  const prompt = () => new Promise((resolve, reject) => {
+  const prompt = (command) => new Promise((resolve, reject) => {
     const finish = (fn) => (value) => {
       clearTimeout(timer);
       waiting = undefined;
       fn(value);
     };
-    const timer = setTimeout(() => waiting?.reject(new Error('Timed out waiting for Crosh prompt')), timeoutMs);
-    waiting = {resolve: finish(resolve), reject: finish(reject)};
+    const timer = setTimeout(() => waiting?.reject(transient(command
+      ? 'Timed out waiting for reply to ' + command : 'Timed out waiting for Crosh prompt')), timeoutMs);
+    waiting = {command, resolve: finish(resolve), reject: finish(reject)};
     check();
   });
   const run = async (command) => {
     stream(pid).text = '';
-    const response = prompt();
+    const response = prompt(command);
     try {
       const sent = call('sendInput', pid, command + '\r').then((ok) => {
         if (!ok) throw new Error('Crosh input failed');
       });
       const [, text] = await Promise.all([sent, response]);
       if (!/\bmethod return\b/.test(text) || /org\.freedesktop\.DBus\.Error|\bERROR:/i.test(text)) {
-        throw new Error('gesture_prop failed: ' + text.trim());
+        const message = command + ' failed: ' + text.trim();
+        if (/org\.freedesktop\.DBus\.Error\.(?:ServiceUnknown|NameHasNoOwner|NoReply)\b/.test(text)) {
+          throw transient(message);
+        }
+        throw new Error(message);
       }
       return text;
     } catch (error) {
       waiting?.reject(error);
       await response.catch(() => {});
+      if (!error.message.includes(command)) error.message = command + ': ' + error.message;
       throw error;
     }
   };

@@ -247,21 +247,20 @@ sudo grep "hdmi-audio" /var/log/messages | tail -5
    ```bash
    (
      set -e
-     cd "/mnt/chromeos/MyFiles"
-     mkdir -p cros-touchpad
-     cd cros-touchpad
+     cd "/mnt/chromeos/shared/MyFiles" 2>/dev/null || cd "/mnt/chromeos/MyFiles"
      command -v git >/dev/null || { sudo apt-get update && sudo apt-get install -y git; }
      git_metadata=$(mktemp -d)
-     trap 'rm -rf "$git_metadata"; rm -f extension/.git' EXIT
-     rm -rf extension
-     git clone --depth=1 --filter=blob:none --sparse --branch main \
-       --separate-git-dir="$git_metadata/repo" \
-       https://github.com/kkimdev/monorepo-public.git extension
-     git -C extension sparse-checkout set --no-cone '/chromeos-dev-setup/touchpad/'
+     trap 'rm -rf "$git_metadata"' EXIT
+     git clone --bare --depth=1 --filter=blob:none --single-branch --branch main \
+       https://github.com/kkimdev/monorepo-public.git "$git_metadata/repo"
+     rm -rf cros-touchpad
+     mkdir cros-touchpad
+     git --git-dir="$git_metadata/repo" --work-tree="$PWD/cros-touchpad" \
+       read-tree --reset -u HEAD:chromeos-dev-setup/touchpad
    )
    ```
 
-4. Open `chrome://extensions`, enable **Developer mode**, then **Load unpacked → My files/cros-touchpad/extension/chromeos-dev-setup/touchpad**.
+4. Open `chrome://extensions`, enable **Developer mode**, then **Load unpacked → My files/cros-touchpad**.
 
 To update, rerun the same command, then click the extension's **Reload** button.
 For the old preview, load the new path once. Extension files stay in ChromeOS.

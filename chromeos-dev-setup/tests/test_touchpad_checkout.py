@@ -21,6 +21,7 @@ class TouchpadCheckout(unittest.TestCase):
         self.directory = Path(temporary.name)
         self.shared_root = self.directory / "shared ChromeOS My files"
         self.shared_root.mkdir()
+        self.legacy_root = self.directory / "legacy ChromeOS My files"
         self.native = self.shared_root / "cros-touchpad"
         self.linux = self.directory / "empty Linux folder"
         self.linux.mkdir()
@@ -53,22 +54,19 @@ class TouchpadCheckout(unittest.TestCase):
         block = re.search(r"^   ```bash\n(.*?)^   ```", section, re.M | re.S)
         self.assertIsNotNone(block, "Touchpad section needs its own bash command")
         command = textwrap.dedent(block.group(1))
-        command = command.replace("/mnt/chromeos/MyFiles", str(self.shared_root))
+        command = command.replace("/mnt/chromeos/shared/MyFiles", str(self.shared_root))
+        command = command.replace("/mnt/chromeos/MyFiles", str(self.legacy_root))
         command = command.replace("https://github.com/kkimdev/monorepo-public.git",
                                   remote or self.repository.as_uri())
         return subprocess.run(["bash", "-c", command], cwd=self.linux, env=self.env,
                               capture_output=True, text=True)
 
-    def assert_installed(self):
-        destination = self.native / "extension"
-        self.assertEqual(sorted(p.name for p in self.native.iterdir()), ["extension"])
-        self.assertEqual(list(destination.rglob(".git")), [])
+    def assert_installed(self, linux_entries=()):
+        self.assertEqual(sorted(p.name for p in self.native.iterdir()), sorted(ASSETS))
         for name in ASSETS:
-            self.assertEqual((destination / "chromeos-dev-setup/touchpad" / name).read_bytes(),
+            self.assertEqual((self.native / name).read_bytes(),
                              (self.source / name).read_bytes())
-        self.assertFalse((destination / "chromeos-dev-setup/setup.bash").exists())
-        self.assertFalse((destination / "unrelated").exists())
-        self.assertEqual(list(self.linux.iterdir()), [])
+        self.assertEqual(set(self.linux.iterdir()), set(linux_entries))
 
     def test_command_replaces_old_install_and_reloads_latest_source_without_linux_files(self):
         old = self.native / "extension"
@@ -79,17 +77,17 @@ class TouchpadCheckout(unittest.TestCase):
         result = self.install()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_installed()
-        self.assertFalse((old / "manifest.json").exists())
-        self.assertFalse((old / "js").exists())
+        self.assertFalse(old.exists())
 
         with (self.source / "apply.mjs").open("a") as source:
             source.write("\n// Updated remote fixture\n")
         self.commit()
-        (old / "stale-file.txt").write_text("remove on reinstall")
+        stale = self.native / "stale-file.txt"
+        stale.write_text("remove on reinstall")
         result = self.install()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_installed()
-        self.assertFalse((old / "stale-file.txt").exists())
+        self.assertFalse(stale.exists())
 
     def test_first_install_creates_target_folder(self):
         self.assertFalse(self.native.exists())
@@ -97,9 +95,21 @@ class TouchpadCheckout(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_installed()
 
-    def test_missing_shared_folder_aborts_before_removing_relative_linux_extension(self):
+    def test_legacy_share_fallback_keeps_linux_folder_untouched(self):
         self.shared_root.rmdir()
-        protected = self.linux / "extension"
+        self.legacy_root.mkdir()
+        self.native = self.legacy_root / "cros-touchpad"
+        sentinel = self.linux / "personal.txt"
+        sentinel.write_text("keep this")
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_installed(linux_entries=[sentinel])
+        self.assertEqual(sentinel.read_text(), "keep this")
+        self.assertFalse(self.shared_root.exists())
+
+    def test_missing_shared_folder_aborts_before_removing_relative_linux_target(self):
+        self.shared_root.rmdir()
+        protected = self.linux / "cros-touchpad"
         protected.mkdir()
         sentinel = protected / "personal.txt"
         sentinel.write_text("keep this")
@@ -110,11 +120,15 @@ class TouchpadCheckout(unittest.TestCase):
         self.assertFalse(self.shared_root.exists())
         self.assertFalse(self.native.exists())
 
-    def test_failed_clone_cleans_temporary_metadata(self):
+    def test_failed_clone_cleans_metadata_and_preserves_existing_install(self):
+        self.native.mkdir()
+        sentinel = self.native / "previous-version.txt"
+        sentinel.write_text("keep this")
         result = self.install((self.directory / "missing repository").as_uri())
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(list(self.linux.iterdir()), [])
-        self.assertEqual(list(self.native.rglob(".git")), [])
+        self.assertEqual(list(self.native.iterdir()), [sentinel])
+        self.assertEqual(sentinel.read_text(), "keep this")
 
 
 if __name__ == "__main__":

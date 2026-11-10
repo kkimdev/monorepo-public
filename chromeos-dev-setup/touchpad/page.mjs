@@ -3,7 +3,17 @@ import {applyTouchpad} from './apply.mjs';
 const status = document.getElementById('status');
 const result = document.getElementById('result');
 try {
-  const applied = await applyTouchpad();
+  let applied;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      applied = await applyTouchpad();
+      break;
+    } catch (error) {
+      if (!error.retryable || attempt === 3) throw error;
+      status.textContent = 'Waiting for ChromeOS touchpad services…';
+      await new Promise(resolve => setTimeout(resolve, attempt * 1000));
+    }
+  }
   await chrome.storage.local.set({
     crosTouchpadResult: {...applied, appliedAt: new Date().toISOString()},
   });

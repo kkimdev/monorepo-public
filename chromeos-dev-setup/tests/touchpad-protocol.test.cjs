@@ -47,7 +47,8 @@ function fixture(options = {}) {
   function answer(command) {
     if (command === 'gesture_prop devices') {
       enumerations++;
-      if (options.serviceError) return 'Error org.freedesktop.DBus.Error.ServiceUnknown: unavailable\n';
+      if (options.serviceError) return 'Error org.freedesktop.DBus.Error.' + (options.serviceError === true ? 'ServiceUnknown' : options.serviceError) + ': unavailable\n';
+      if (options.unknownCommand) return 'ERROR: unknown command: gesture_prop\n';
       const current = options.changeDuringDiscovery && enumerations > 1 ? id + 1 : id;
       const currentName = options.renameDuringDiscovery && enumerations > 1 ? 'OTHER Vendor Touchpad' : deviceName;
       const mouse = deviceName.replace(/\btouchpad\b/i, 'Mouse');
@@ -114,7 +115,19 @@ function fixture(options = {}) {
       setTimeout(() => {
         callback(true);
         if (options.exitDuringCommand) { output(pid, 'exit', ''); return; }
-        if (!options.commandTimeout) emit(command + '\r\n' + answer(command) + '\u001b[32mcrosh> \u001b[0m');
+        if (options.stalePrompt) emit('\r\u001b[2K\u001b[32mcrosh> \u001b[0m');
+        if (options.echoRedraw) {
+          // Rustyline can redraw the prompt and its current input on terminal resize.
+          for (let length = 1; length <= command.length; length++) {
+            emit('\r\u001b[2K\u001b[32mcrosh> \u001b[0m' + command.slice(0, length));
+          }
+          emit('\r\n\u001b[32mcrosh> \u001b[0m');
+        }
+        setTimeout(() => {
+          if (options.commandTimeout) return;
+          const echo = options.noEcho || options.echoRedraw ? '' : command + '\r\n';
+          emit(echo + answer(command) + (options.noReplyPrompt ? '' : '\u001b[32mcrosh> \u001b[0m'));
+        }, 0);
       }, 0);
     },
     closeTerminalProcess(process, callback) {
@@ -161,6 +174,9 @@ async function failure(label, options, error, expectedWrites = 0) {
   await success('Mouse sibling containing Touchpad is excluded', {name: 'Cypress Touchpad', mouseWithTouchpad: true});
   await success('optional Device flags absent', {noFlags: true});
   await success('initial prompt waits for initialized PTY size', {promptAfterResize: true});
+  await success('late resize prompt cannot complete an outstanding command', {stalePrompt: true});
+  await success('stale prompt and no-echo replies in fragmented byte events', {stalePrompt: true, noEcho: true, bytes: true});
+  await success('incremental echo redraw and empty prompt before DBus reply', {echoRedraw: true, bytes: true});
   await failure('resize rejected before any gesture command', {resizeFails: true}, /Could not size/);
   await failure('resize callback timeout still cleans own process', {resizeNeverReplies: true, timeoutMs: 20}, /Timed out/);
   await failure('touchpad word absent', {missing: true}, /found 0/);
@@ -175,12 +191,18 @@ async function failure(label, options, error, expectedWrites = 0) {
   await failure('ID changed during discovery', {changeDuringDiscovery: true}, /changed during/);
   await failure('name changed with same ID during discovery', {renameDuringDiscovery: true}, /changed during/);
   await failure('another touchpad appeared during discovery', {extraDuringDiscovery: true}, /changed during/);
-  await failure('unavailable DBus service', {serviceError: true}, /gesture_prop failed/);
+  await failure('unavailable DBus service', {serviceError: true}, error => /gesture_prop devices/.test(error.message) && error.retryable === true);
+  await failure('DBus NameHasNoOwner is transient', {serviceError: 'NameHasNoOwner'}, error => error.retryable === true);
+  await failure('DBus NoReply is transient', {serviceError: 'NoReply'}, error => error.retryable === true);
+  await failure('DBus AccessDenied is not retried or swallowed', {serviceError: 'AccessDenied', stalePrompt: true}, error => /AccessDenied/.test(error.message) && !error.retryable);
+  await failure('unknown command is not retried or swallowed', {unknownCommand: true, echoRedraw: true}, error => /unknown command/.test(error.message) && /gesture_prop devices/.test(error.message) && !error.retryable);
   await failure('nonzero readback fails visibly', {badReadback: true}, /read back as zero/, 1);
   await failure('owned process exit', {exitDuringCommand: true}, /process exited/);
   await failure('input rejected', {inputFails: true}, /Crosh input failed/);
   await failure('initial prompt timeout', {noPrompt: true, timeoutMs: 20}, /Timed out/);
-  await failure('command prompt timeout', {commandTimeout: true, timeoutMs: 20}, /Timed out/);
+  await failure('command prompt timeout identifies command', {commandTimeout: true, timeoutMs: 20}, error => /Timed out.*gesture_prop devices/.test(error.message) && error.retryable === true);
+  await failure('prompt-only redraw remains a command timeout', {stalePrompt: true, commandTimeout: true, timeoutMs: 20}, error => /Timed out.*gesture_prop devices/.test(error.message) && error.retryable === true);
+  await failure('DBus reply without a final prompt remains blocked', {noReplyPrompt: true, timeoutMs: 20}, /Timed out.*gesture_prop devices/);
   await failure('input API callback timeout', {inputNeverReplies: true, timeoutMs: 20}, /Timed out/);
   await failure('open API callback timeout', {openNeverReplies: true, timeoutMs: 20}, /Timed out/);
   await failure('late-open owned process is closed', {lateOpen: true, timeoutMs: 20}, /Timed out/);
@@ -190,5 +212,5 @@ async function failure(label, options, error, expectedWrites = 0) {
   vm.runInContext(source.replace('export async function', 'async function'), missing);
   await assert.rejects(missing.applyTouchpad(), /terminalPrivate API is unavailable/);
   console.log('PASS unavailable terminalPrivate context fails clearly');
-  console.log('33 protocol tests passed with modeled Chromium automatic-ack and backpressure. Mocked runtime only; actual ChromeOS application remains unverified.');
+  console.log('42 protocol tests passed with modeled Chromium automatic-ack and backpressure. Mocked runtime only; actual ChromeOS application remains unverified.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
