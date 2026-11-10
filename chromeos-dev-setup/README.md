@@ -44,7 +44,7 @@ await term_.prefs_.set('user-css-text', '@font-face {font-family: "JetBrainsMono
 
 ## Setup Chrome OS Crostini
 
-Open `chrome://os-settings/crostini/details` in Chrome and set up **Linux development environment** if needed.
+Open [Linux development environment](chrome://os-settings/crostini/details) in Chrome and set it up if needed.
 
 In an **x86_64 ChromeOS Linux terminal**, fill in your Git identity and paste:
 
@@ -260,7 +260,7 @@ sudo grep "hdmi-audio" /var/log/messages | tail -5
 
 **Fix:** Enable automatic reapplication (preview).
 
-1. Open `chrome://os-settings/crostini/details` in Chrome and set up **Linux development environment** if needed.
+1. Open [Linux development environment](chrome://os-settings/crostini/details) in Chrome and set it up if needed.
 2. Open `chrome://flags/#gesture-properties-dbus-service`, select **Enabled**, then restart Chrome.
 3. In Files, right-click **My files → Share with Linux**, confirm **OK**, then paste in the Linux terminal:
 
