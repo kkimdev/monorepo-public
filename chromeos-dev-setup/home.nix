@@ -6,6 +6,13 @@ let
   nixProfileShareDir  = "${config.home.homeDirectory}/.nix-profile/share";
   llmAgentsPkgs       = inputs.llm-agents.packages.${pkgs.stdenv.hostPlatform.system};
   openspecCli         = inputs.openspec.packages.${pkgs.stdenv.hostPlatform.system}.default;
+  # Claude resets PATH to system directories before opening login links.
+  # Provide xdg-open inside its FHS environment, where /usr/bin is visible.
+  claudeDesktopWithOpener = llmAgentsPkgs.claude-desktop.override (old: {
+    buildFHSEnv = args: old.buildFHSEnv (args // {
+      targetPkgs = p: args.targetPkgs p ++ [ p.xdg-utils ];
+    });
+  });
   # Temporary package fix while https://github.com/stablyai/orca/pull/29172
   # (https://github.com/stablyai/orca/issues/29171) awaits an upstream release.
   # Match Electron's native Wayland app ID and X11 class to orca-ide.desktop.
@@ -147,7 +154,7 @@ in
       # Keep all available replacements on the same upstream package set.
       llmAgentsPkgs.antigravity-cli
       llmAgentsPkgs.claude-code
-      llmAgentsPkgs.claude-desktop
+      claudeDesktopWithOpener
       llmAgentsPkgs.codex
       llmAgentsPkgs.opencode
       llmAgentsPkgs.opencode2
