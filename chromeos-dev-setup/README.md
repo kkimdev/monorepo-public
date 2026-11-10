@@ -234,40 +234,45 @@ sudo grep "hdmi-audio" /var/log/messages | tail -5
 
 ### Touchpad initial touch delay and tap suppression
 
-**Known to affect:** ThinkBook 16 G9 AHP
+**Known to affect:** ThinkBook 16 G9 AHP (ChromeOS Flex)
 
-**Symptom:** The first ~0.2s of each touch is ignored — cursor only begins moving ~0.2s after touchdown, and tap-to-click fails intermittently (taps either complete before the delay expires or are suppressed when preceded by finger motion). Even very light touches work after the delay, confirming the issue is time-based, not pressure-based.
+**Symptom:** Delayed initial movement and unreliable taps or tap-dragging.
 
-**Root cause:** The gestures library `ImmediateInterpreter` uses conservative timeouts that don't suit this hardware: `Change Timeout` (0.2s) holds a newly-landed finger in a "pending" state before committing to pointer movement, while `Motion Tap Prevent Timeout` prevents taps from registering when preceded by recent motion. Zeroing both removes these artificial delays.
+**Fix:** Enable automatic reapplication (preview).
 
-**Steps to fix:**
+1. Enable `chrome://flags/#gesture-properties-dbus-service` and restart Chrome.
+2. In Files, create **My files/cros-touchpad**, right-click it → **Share with Linux**, then run in the Linux terminal:
 
-1. Enable `chrome://flags/#gesture-properties-dbus-service` → **Enabled** → Restart Chrome.
-2. Open crosh with `Ctrl+Alt+T` (`gesture_prop` is a crosh built-in; no `shell` needed).
-3. Find the touchpad device ID and check current timeout values:
-   ```
-   crosh> gesture_prop devices
-   crosh> gesture_prop get <device_id> "Change Timeout"
-   crosh> gesture_prop get <device_id> "Motion Tap Prevent Timeout"
-   ```
-4. Zero both timeout properties:
-   ```
-   crosh> gesture_prop set <device_id> "Change Timeout" array:double:0.0
-   crosh> gesture_prop set <device_id> "Motion Tap Prevent Timeout" array:double:0.0
+   ```bash
+   python3 ~/workspaces/monorepo-public/chromeos-dev-setup/touchpad/prepare.py
    ```
 
-Verify the fix is active (no reboot needed):
+3. Open `chrome://extensions`, enable **Developer mode**, then **Load unpacked → My files/cros-touchpad/extension**.
+
+After updating the checkout, rerun the same command, then click the
+extension's **Reload** button in `chrome://extensions`.
+
+**Verify:** The setup page reports both values applied. Reboot and check movement,
+taps, tap-dragging, and gestures.
+
+**Notes:** Uses a modified Secure Shell dev extension; no OS developer mode or
+`shell` is needed. Keep `My files/cros-touchpad`. Each Chrome startup finds the
+current `Touchpad` ID and reapplies both values. Existing Secure Shell **dev** uses
+the same extension ID; preserve its settings before replacing it.
+
+<details>
+<summary>Manual crosh fallback</summary>
+
+Open crosh (`Ctrl+Alt+T`), run `gesture_prop devices`, and replace `<id>`:
+
+```text
+gesture_prop set <id> "Change Timeout" array:double:0.0
+gesture_prop set <id> "Motion Tap Prevent Timeout" array:double:0.0
 ```
-crosh> gesture_prop get <device_id> "Change Timeout"              # should show 0.0
-crosh> gesture_prop get <device_id> "Motion Tap Prevent Timeout"  # should show 0.0
-```
-Cursor should respond instantly after touchdown, and tap-to-click should work reliably even when preceded by finger motion.
 
-> **Notes:**
-> - On the affected ThinkBook 16 G9 AHP, `Change Timeout` (0.2s) and `Motion Tap Prevent Timeout` both caused delays; setting both to 0.0 fixed the touchpad.
-> - Value syntax uses dbus-send format: `array:double:0.0` (floats), `array:boolean:false` (bools), `array:int32:1` (ints), comma-separated for multiple values.
-> - Changes take effect immediately but **do not persist across reboots**. A startup script running after Chrome starts is required for persistence.
-> - If further tuning is needed, check `Scroll Probe Max Time`, `Tap Timeout`, `Tap Pause`, `Keyboard Touchpad No Press Time`.
+Manual changes reset when Chrome restarts; device IDs can change.
+
+</details>
 
 ## References
 - https://old.reddit.com/r/Crostini/wiki/index
