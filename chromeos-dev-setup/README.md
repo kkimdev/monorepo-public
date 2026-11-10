@@ -49,10 +49,11 @@ Open `chrome://os-settings/crostini/details` in Chrome's address bar and set up 
 In an **x86_64 ChromeOS Linux terminal**, fill in your Git identity and paste:
 
 ```bash
+export GIT_USER_NAME="Your Name"               # TODO: fill
+export GIT_USER_EMAIL="your-email@example.com" # TODO: fill
+
 (
   set -e
-  export GIT_USER_NAME="Your Name"               # TODO: fill
-  export GIT_USER_EMAIL="your-email@example.com" # TODO: fill
   sudo apt-get update
   sudo apt-get install -y git curl ca-certificates
   mkdir -p "$HOME/workspaces"
