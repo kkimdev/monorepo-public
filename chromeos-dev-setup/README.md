@@ -240,25 +240,39 @@ sudo grep "hdmi-audio" /var/log/messages | tail -5
 
 **Fix:** Enable automatic reapplication (preview).
 
-1. Enable `chrome://flags/#gesture-properties-dbus-service` and restart Chrome.
-2. In Files, create **My files/cros-touchpad**, right-click it → **Share with Linux**, then run in the Linux terminal:
+1. Enable ChromeOS's **Linux development environment** if needed.
+2. Enable `chrome://flags/#gesture-properties-dbus-service` and restart Chrome.
+3. In Files, right-click **My files → Share with Linux**, confirm **OK**, then paste in the Linux terminal:
 
    ```bash
-   python3 ~/workspaces/monorepo-public/chromeos-dev-setup/touchpad/prepare.py
+   (
+     set -e
+     cd "/mnt/chromeos/MyFiles"
+     mkdir -p cros-touchpad
+     cd cros-touchpad
+     command -v git >/dev/null || { sudo apt-get update && sudo apt-get install -y git; }
+     git_metadata=$(mktemp -d)
+     trap 'rm -rf "$git_metadata"; rm -f extension/.git' EXIT
+     rm -rf extension
+     git clone --depth=1 --filter=blob:none --sparse --branch main \
+       --separate-git-dir="$git_metadata/repo" \
+       https://github.com/kkimdev/monorepo-public.git extension
+     git -C extension sparse-checkout set --no-cone '/chromeos-dev-setup/touchpad/'
+   )
    ```
 
-3. Open `chrome://extensions`, enable **Developer mode**, then **Load unpacked → My files/cros-touchpad/extension**.
+4. Open `chrome://extensions`, enable **Developer mode**, then **Load unpacked → My files/cros-touchpad/extension/chromeos-dev-setup/touchpad**.
 
-After updating the checkout, rerun the same command, then click the
-extension's **Reload** button in `chrome://extensions`.
+To update, rerun the same command, then click the extension's **Reload** button.
+For the old preview, load the new path once. Extension files stay in ChromeOS.
 
 **Verify:** The setup page reports both values applied. Reboot and check movement,
 taps, tap-dragging, and gestures.
 
-**Notes:** Uses a modified Secure Shell dev extension; no OS developer mode or
-`shell` is needed. Keep `My files/cros-touchpad`. Each Chrome startup finds the
-current `Touchpad` ID and reapplies both values. Existing Secure Shell **dev** uses
-the same extension ID; preserve its settings before replacing it.
+**Notes:** Uses Secure Shell's public development ID for crosh access; no OS
+developer mode or `shell` is needed. Keep `My files/cros-touchpad`. Each Chrome
+startup finds the current `Touchpad` ID and reapplies both values. This replaces
+Secure Shell **dev**, including its SSH features; preserve its settings first.
 
 <details>
 <summary>Manual crosh fallback</summary>

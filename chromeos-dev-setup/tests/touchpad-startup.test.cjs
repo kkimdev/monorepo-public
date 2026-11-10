@@ -34,7 +34,7 @@ async function page({review = false, error} = {}) {
   const document = {getElementById: id => nodes[id], title: 'Touchpad setup'};
   const context = vm.createContext({
     URL, Date,
-    location: {href: `chrome-extension://preview/touchpad/page.html${review ? '?review' : ''}`},
+    location: {href: `chrome-extension://preview/page.html${review ? '?review' : ''}`},
     document,
     chrome: {
       storage: {local: {set: async item => stored.push(item)}},
@@ -56,7 +56,7 @@ async function page({review = false, error} = {}) {
   assert.equal(calls[0].kind, 'tab');
   assert.equal(calls[0].windowId, 41);
   assert.equal(calls[0].active, false);
-  assert.equal(calls[0].url, 'chrome-extension://preview/touchpad/page.html');
+  assert.equal(calls[0].url, 'chrome-extension://preview/page.html');
   console.log('PASS startup uses an inactive tab in an existing normal window');
 
   calls = await startup({windows: []});
@@ -64,14 +64,14 @@ async function page({review = false, error} = {}) {
   assert.equal(calls[0].kind, 'window');
   assert.equal(calls[0].type, 'popup');
   assert.equal(calls[0].focused, false);
-  assert.equal(calls[0].url, 'chrome-extension://preview/touchpad/page.html');
+  assert.equal(calls[0].url, 'chrome-extension://preview/page.html');
   console.log('PASS login without a browser window creates an unfocused runner popup');
 
   for (const reason of ['install', 'update']) {
     calls = await startup({event: 'installed', reason});
     assert.equal(calls.length, 1);
     assert.equal(calls[0].active, true);
-    assert.equal(calls[0].url, 'chrome-extension://preview/touchpad/page.html?review');
+    assert.equal(calls[0].url, 'chrome-extension://preview/page.html?review');
   }
   console.log('PASS extension install/update keeps the review page visible');
 

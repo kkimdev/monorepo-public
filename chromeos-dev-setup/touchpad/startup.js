@@ -1,6 +1,6 @@
-// Local addition to the official Secure Shell development build.
+// Uses Secure Shell's public development ID for ChromeOS crosh access.
 async function startTouchpad(review = false) {
-  const url = chrome.runtime.getURL('touchpad/page.html') + (review ? '?review' : '');
+  const url = chrome.runtime.getURL('page.html') + (review ? '?review' : '');
   const [window] = await chrome.windows.getAll({windowTypes: ['normal']});
   if (window) {
     await chrome.tabs.create({windowId: window.id, url, active: review});
