@@ -1,9 +1,9 @@
 ## Installing Chrome OS
 
-- **[ChromeOS Flex](https://support.google.com/chromeosflex/answer/11541904):** Google's official PC/Mac option; no Play Store.
-- **[Brunch](https://github.com/sebanc/brunch):** Community framework with Android app support; check hardware compatibility.
+- **[ChromeOS Flex](https://support.google.com/chromeosflex/answer/11541904):** Start here for better hardware compatibility and a smoother experience.
+- **[Brunch Framework](https://github.com/sebanc/brunch):** Consider later if you need Android app support.
 
-### Brunch settings
+### Brunch Framework settings
 
 [Configuration menu](https://github.com/sebanc/brunch/blob/main/Readme/troubleshooting-and-faqs.md#brunch-configuration-menu)
 
