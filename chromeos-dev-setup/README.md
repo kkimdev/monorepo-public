@@ -49,8 +49,9 @@ Open `chrome://os-settings/crostini/details` in Chrome's address bar and set up 
 In an **x86_64 ChromeOS Linux terminal**, fill in your Git identity and paste:
 
 ```bash
-export GIT_USER_NAME="Your Name"               # TODO: fill
-export GIT_USER_EMAIL="your-email@example.com" # TODO: fill
+# TODO: fill
+export GIT_USER_NAME="Your Name"
+export GIT_USER_EMAIL="your-email@example.com"
 
 (
   set -e
