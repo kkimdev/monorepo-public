@@ -7,6 +7,7 @@ Run with: python3 -m unittest discover -s chromeos-dev-setup/tests -v
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -75,6 +76,25 @@ if name == "find":
         sys.exit(96)
     sys.exit(0)
 if name == "nix":
+    if "flake" in args and "update" in args:
+        try:
+            flake = args[args.index("--flake") + 1]
+        except (ValueError, IndexError):
+            print("Expected an explicit staged flake for update", file=sys.stderr)
+            sys.exit(97)
+        if not flake.startswith("path:"):
+            print("Expected a staged path flake for update", file=sys.stderr)
+            sys.exit(97)
+        stage = Path(flake[5:])
+        lock = stage / "flake.lock"
+        updated = json.loads(lock.read_text())
+        updated["setupTestUpdate"] = True
+        lock.write_text(json.dumps(updated) + "\n")
+        shutil.copyfile(lock, audit / "updated-staged.lock")
+        if os.environ.get("SETUP_TEST_FAIL_UPDATE") == "1":
+            print("simulated flake update failure", file=sys.stderr)
+            sys.exit(41)
+        sys.exit(0)
     if "build" in args:
         installable = next((arg for arg in args if arg.startswith("path:") and "#" in arg), None)
         if installable is None:
@@ -120,6 +140,7 @@ class SetupTransactions(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix="cros-setup-test-")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
+        self.setup = SETUP
         self.home = self.root / "home"
         self.home.mkdir()
         self.audit = self.root / "audit"
@@ -157,7 +178,7 @@ class SetupTransactions(unittest.TestCase):
         self.environment.pop("ENV", None)
         self.config = self.home / ".config" / "home-manager"
         self.config.mkdir(parents=True)
-        for name in ("flake.nix", "flake.lock", "home.nix", "host.json", "codex-wrapper"):
+        for name in ("flake.nix", "flake.lock", "home.nix", "host.json", "codex-wrapper", "patch-orca.py"):
             (self.config / name).write_text("previous installed " + name + "\n")
         wrapper = self.home / ".local" / "bin" / "codex"
         wrapper.parent.mkdir(parents=True)
@@ -169,7 +190,7 @@ class SetupTransactions(unittest.TestCase):
 
     def run_setup(self, *arguments, environment=None):
         return subprocess.run(
-            ["bash", "--noprofile", "--norc", "-c", RUNNER, "setup-test", str(SETUP), *arguments],
+            ["bash", "--noprofile", "--norc", "-c", RUNNER, "setup-test", str(self.setup), *arguments],
             cwd=self.root,
             env=environment or self.environment,
             text=True,
@@ -192,6 +213,27 @@ class SetupTransactions(unittest.TestCase):
             tree_snapshot(self.home / ".local" / "bin"),
             os.readlink(self.home / ".nix-profile"),
         )
+
+    def use_disposable_checkout(self):
+        checkout = self.root / "checkout"
+        checkout.mkdir()
+        for filename in ("setup.bash", "flake.nix", "flake.lock", "home.nix", "patch-orca.py"):
+            shutil.copyfile(SETUP.parent / filename, checkout / filename)
+        self.setup = checkout / "setup.bash"
+        return checkout
+
+    def assert_update_precedes_build(self):
+        nix_calls = [call for call in self.calls() if call[0] == "nix"]
+        self.assertEqual(len(nix_calls), 2, nix_calls)
+        update, build = nix_calls
+        self.assertIn("flake", update)
+        self.assertIn("update", update)
+        self.assertIn("--accept-flake-config", update)
+        self.assertIn("build", build)
+        self.assertIn("--no-update-lock-file", build)
+        updated_flake = update[update.index("--flake") + 1]
+        installable = next(arg for arg in build if arg.startswith("path:") and "#" in arg)
+        self.assertEqual(updated_flake, installable.split("#", 1)[0])
 
     def test_missing_git_identity_stops_before_privileged_actions_or_writes(self):
         for key, value in (("GIT_USER_NAME", None), ("GIT_USER_EMAIL", "")):
@@ -218,6 +260,75 @@ class SetupTransactions(unittest.TestCase):
         self.assertTrue((self.audit / "staged-config" / "flake.lock").is_file())
         self.assertEqual(self.protected_snapshot(), before)
         self.assert_no_activation()
+
+    def test_failed_update_preserves_source_live_config_wrapper_and_profile(self):
+        checkout = self.use_disposable_checkout()
+        source_lock = (checkout / "flake.lock").read_bytes()
+        before = self.protected_snapshot()
+        self.environment["SETUP_TEST_FAIL_UPDATE"] = "1"
+        result = self.run_setup("--update")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("simulated flake update failure", result.stderr)
+        self.assertTrue((self.audit / "updated-staged.lock").exists())
+        self.assertEqual((checkout / "flake.lock").read_bytes(), source_lock)
+        self.assertEqual(self.protected_snapshot(), before)
+        nix_calls = [call for call in self.calls() if call[0] == "nix"]
+        self.assertEqual(len(nix_calls), 1, nix_calls)
+        self.assertIn("update", nix_calls[0])
+        self.assertFalse(any("build" in call for call in nix_calls))
+        self.assertEqual(list((self.root / "tmp").iterdir()), [])
+        self.assert_no_activation()
+
+    def assert_update_build_only_preserves_source_and_home(self, *arguments):
+        checkout = self.use_disposable_checkout()
+        source_lock = (checkout / "flake.lock").read_bytes()
+        before = tree_snapshot(self.home)
+        result = self.run_setup(*arguments)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assert_update_precedes_build()
+        staged_lock = json.loads((self.audit / "staged-config" / "flake.lock").read_text())
+        self.assertIs(staged_lock["setupTestUpdate"], True)
+        self.assertEqual((checkout / "flake.lock").read_bytes(), source_lock)
+        self.assertEqual(tree_snapshot(self.home), before)
+        self.assertFalse(any(call[0] in {"sudo", "curl", "apt", "apt-get", "systemctl"} for call in self.calls()))
+        self.assertEqual(list((self.root / "tmp").iterdir()), [])
+        self.assert_no_activation()
+
+    def test_update_build_only_validates_updated_lock_without_installing(self):
+        self.assert_update_build_only_preserves_source_and_home("--update", "--build-only")
+
+    def test_build_only_update_accepts_combined_flags_in_reverse_order(self):
+        self.assert_update_build_only_preserves_source_and_home("--build-only", "--update")
+
+    def test_build_failure_after_update_preserves_source_live_config_wrapper_and_profile(self):
+        checkout = self.use_disposable_checkout()
+        source_lock = (checkout / "flake.lock").read_bytes()
+        before = self.protected_snapshot()
+        self.environment["SETUP_TEST_FAIL_BUILD"] = "1"
+        result = self.run_setup("--update")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("simulated package build failure", result.stderr)
+        self.assert_update_precedes_build()
+        staged_lock = json.loads((self.audit / "staged-config" / "flake.lock").read_text())
+        self.assertIs(staged_lock["setupTestUpdate"], True)
+        self.assertEqual((checkout / "flake.lock").read_bytes(), source_lock)
+        self.assertEqual(self.protected_snapshot(), before)
+        self.assertEqual(list((self.root / "tmp").iterdir()), [])
+        self.assert_no_activation()
+
+    def test_failed_activation_after_update_preserves_source_and_restores_live_config(self):
+        checkout = self.use_disposable_checkout()
+        source_lock = (checkout / "flake.lock").read_bytes()
+        before = self.protected_snapshot()
+        self.environment["SETUP_TEST_ACTIVATION_EXIT"] = "43"
+        result = self.run_setup("--update")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("activation failed", result.stderr)
+        self.assertTrue((self.audit / "activated").exists())
+        self.assert_update_precedes_build()
+        self.assertEqual((checkout / "flake.lock").read_bytes(), source_lock)
+        self.assertEqual(self.protected_snapshot(), before)
+        self.assertEqual(list((self.root / "tmp").iterdir()), [])
 
     def test_failed_activation_restores_generated_files_and_unmanaged_wrapper(self):
         # An old generated file may itself be a symlink; rollback must preserve it.

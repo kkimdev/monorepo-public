@@ -49,7 +49,7 @@ bash chromeos-dev-setup/setup.bash
 ```
 
 Keep the complete checkout: `setup.bash` needs the adjacent `flake.nix`,
-`home.nix`, and `flake.lock`. Downloading only the script is insufficient.
+`home.nix`, `patch-orca.py`, and `flake.lock`. Downloading only the script is insufficient.
 The script installs Nix when needed, builds the locked Home Manager
 configuration, then installs and activates it. Keep the checkout at its
 current path so the installed `cros-setup` command can find it.
@@ -58,10 +58,19 @@ Use `cros-setup` to reapply the configuration without restarting user services
 or replacing the current shell. Home Manager prints any service restart
 suggestions instead of interrupting ongoing terminal or GUI work.
 
-Both `cros-setup` and `cros-update` use the repository's published
-`flake.lock`, so rerunning setup does not select new application versions.
-`cros-update` updates Debian and Nix, then reapplies that locked application
-snapshot. Pull reviewed repository updates before applying a newer snapshot.
+`cros-setup` reapplies the repository's `flake.lock` without selecting new
+application versions. `cros-update` updates Debian and Nix, then explicitly
+refreshes **all flake inputs, including Orca**, in a temporary directory.
+It builds and activates the new configuration before saving the validated
+lock back to the checkout. A dependency-update or build failure preserves
+both previous locks and the installed profile. Activation errors restore
+the generated configuration, but may require checking partial activation
+changes before retrying.
+
+A successful `cros-update` changes the checkout's tracked `flake.lock`.
+Review that change and commit/push it when publishing a snapshot for employees.
+This keeps the next `cros-setup` on the same updated versions. Pull reviewed
+repository updates before adopting other configuration changes.
 
 ### Validate and update the package snapshot
 
@@ -72,8 +81,14 @@ build without apt changes, system configuration changes, or activation:
 bash chromeos-dev-setup/setup.bash --build-only
 ```
 
-This checks the Nix build; it does not prove a fresh Crostini bootstrap or
-that the installed GUI applications run correctly.
+To check the latest inputs without installing them or modifying either lock:
+
+```bash
+bash chromeos-dev-setup/setup.bash --update --build-only
+```
+
+These checks validate the Nix build; they do not prove a fresh Crostini
+bootstrap or that the installed GUI applications run correctly.
 
 Maintainers update the tracked lock from the repository root:
 
@@ -84,11 +99,13 @@ bash chromeos-dev-setup/setup.bash
 cros-setup
 ```
 
-Review upstream changes and local package patches together. Orca's native
-clipboard workaround currently requires version `1.4.226`, supplied by a
-separate pinned input; changing that input also requires revalidating the
-patch. Commit `flake.lock` and any required patch upgrades together after
-the build, application, and reapplication checks pass.
+Review upstream changes and local package patches together. Orca follows the
+same upstream package input as the other agents; it has no separate old-version
+pin. The local native clipboard workaround is reviewed for `1.4.255` and checks
+its target assets before patching them. If a later release changes those assets,
+the update stops before replacing the installed package; review the workaround
+against that release. Commit `flake.lock` and any required patch upgrades
+together after the build, application, and reapplication checks pass.
 
 `home.stateVersion` has a fixed `26.11` baseline for Home Manager migration
 behavior. It is not an application version and should not change as part of

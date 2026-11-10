@@ -30,9 +30,6 @@
     # Keep its pinned nixpkgs input so the published binary cache remains usable.
     llm-agents.url = "github:numtide/llm-agents.nix";
 
-    # The local native-copy workaround is verified against Orca 1.4.226.
-    # Keep this input separate so other agent packages can update independently.
-    orca-pinned.url = "github:numtide/llm-agents.nix/d05b753d92887cede67da8dde612c9b15549d8dc";
 
     sommelier-rs = {
       # virtwl releases >= 0.2.6 provide Wine's compositor v4 compatibility.

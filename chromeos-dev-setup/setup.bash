@@ -38,15 +38,14 @@ export SCRIPT_DIR="$(dirname "$CROS_SETUP_SCRIPT_FILE")"
 #  Rank 2: Update home-manager flake input — nix flake update home-manager (may break unrelated deps)
 
 BUILD_ONLY=0
-case "${1:-}" in
-  "") ;;
-  --build-only) BUILD_ONLY=1; shift ;;
-  *) echo "Usage: bash $CROS_SETUP_SCRIPT_FILE [--build-only]" >&2; exit 2 ;;
-esac
-if [ "$#" -ne 0 ]; then
-  echo "Usage: bash $CROS_SETUP_SCRIPT_FILE [--build-only]" >&2
-  exit 2
-fi
+UPDATE_INPUTS=0
+for setup_argument in "$@"; do
+  case "$setup_argument" in
+    --build-only) BUILD_ONLY=1 ;;
+    --update) UPDATE_INPUTS=1 ;;
+    *) echo "Usage: bash $CROS_SETUP_SCRIPT_FILE [--build-only] [--update]" >&2; exit 2 ;;
+  esac
+done
 
 # Fail before apt or generated-file writes when first-install prerequisites
 # are missing. Git identity is serialized into host.json, never shell code.
@@ -59,7 +58,7 @@ if [ "$(uname -m)" != x86_64 ]; then
   echo "ERROR: this package set currently supports x86_64 Crostini only." >&2
   exit 1
 fi
-for required_file in flake.nix flake.lock home.nix; do
+for required_file in flake.nix flake.lock home.nix patch-orca.py; do
   if [ ! -f "$SCRIPT_DIR/$required_file" ]; then
     echo "ERROR: missing $SCRIPT_DIR/$required_file; use the complete repository checkout." >&2
     exit 1
@@ -226,9 +225,10 @@ CONF_DIR="$HOME/.config/home-manager"
 BUILD_DIR="$(mktemp -d)"
 CONFIG_BACKUP_DIR=""
 CONFIG_INSTALLED=0
+SOURCE_LOCK_STAGING=""
 CODEX_WRAPPER_STAGING=""
 CODEX_WRAPPER_PATH="$HOME/.local/bin/codex"
-CONFIG_FILES=(flake.nix flake.lock home.nix host.json codex-wrapper)
+CONFIG_FILES=(flake.nix flake.lock home.nix host.json codex-wrapper patch-orca.py)
 
 cleanup_setup() {
   local status=$?
@@ -246,6 +246,9 @@ cleanup_setup() {
     rm -f -- "$CODEX_WRAPPER_PATH"
     mv -- "$CODEX_WRAPPER_STAGING" "$CODEX_WRAPPER_PATH"
     echo "Restored the previous unmanaged Codex wrapper." >&2
+  fi
+  if [ -n "$SOURCE_LOCK_STAGING" ]; then
+    rm -f -- "$SOURCE_LOCK_STAGING"
   fi
   rm -rf -- "$BUILD_DIR"
   exit "$status"
@@ -442,7 +445,8 @@ CODEX_WRAPPER
 chmod 755 "$CODEX_WRAPPER_SOURCE"
 
 # Build the exact checked-in dependency graph before replacing live config.
-cp -- "$SCRIPT_DIR/flake.nix" "$SCRIPT_DIR/flake.lock" "$SCRIPT_DIR/home.nix" "$BUILD_DIR/"
+cp -- "$SCRIPT_DIR/flake.nix" "$SCRIPT_DIR/flake.lock" "$SCRIPT_DIR/home.nix" "$SCRIPT_DIR/patch-orca.py" "$BUILD_DIR/"
+cp -- "$SCRIPT_DIR/flake.lock" "$BUILD_DIR/source-flake.lock"
 python3 - "$BUILD_DIR/host.json" <<'PY_HOST'
 import json
 import os
@@ -461,6 +465,13 @@ keys = {
 Path(sys.argv[1]).write_text(json.dumps({key: os.environ[value] for key, value in keys.items()}) + "\n")
 PY_HOST
 
+if [ "$UPDATE_INPUTS" -eq 1 ]; then
+  if ! nix --accept-flake-config flake update --flake "path:$BUILD_DIR"; then
+    echo "ERROR: dependency update failed; existing source/configuration locks and profile were preserved." >&2
+    exit 1
+  fi
+fi
+
 if ! ACTIVATION_PACKAGE="$(nix --accept-flake-config build \
     --no-update-lock-file --no-link --print-out-paths --impure \
     "path:$BUILD_DIR#homeConfigurations.\"$USER\".activationPackage")"; then
@@ -475,6 +486,19 @@ if [ "$BUILD_ONLY" -eq 1 ]; then
   echo "Build passed: $ACTIVATION_PACKAGE"
   echo "No Home Manager configuration or profile was replaced."
   exit 0
+fi
+
+# An explicit update also advances the checkout's published snapshot, so a
+# later cros-setup cannot silently undo this successful package update.
+if [ "$UPDATE_INPUTS" -eq 1 ]; then
+  if [ ! -w "$SCRIPT_DIR/flake.lock" ] ||
+     ! cmp -s -- "$SCRIPT_DIR/flake.lock" "$BUILD_DIR/source-flake.lock"; then
+    echo "ERROR: the source lock is not writable or changed during the build; refusing to replace it." >&2
+    exit 1
+  fi
+  SOURCE_LOCK_STAGING="$(mktemp "$SCRIPT_DIR/.flake.lock.XXXXXX")"
+  cp -- "$BUILD_DIR/flake.lock" "$SOURCE_LOCK_STAGING"
+  chmod --reference="$SCRIPT_DIR/flake.lock" "$SOURCE_LOCK_STAGING"
 fi
 
 # Preserve the previous generated files, including the old lock. Keep this
@@ -520,6 +544,17 @@ if ! HOME_MANAGER_BACKUP_EXT=backup "$ACTIVATION_PACKAGE/activate"; then
   exit 1
 fi
 CONFIG_INSTALLED=0
+if [ "$UPDATE_INPUTS" -eq 1 ]; then
+  if ! cmp -s -- "$SCRIPT_DIR/flake.lock" "$BUILD_DIR/source-flake.lock"; then
+    echo "ERROR: activation succeeded, but the source lock changed concurrently; it was preserved." >&2
+    exit 1
+  fi
+  # The source is a user-owned checkout. Copy only the validated lock, leaving
+  # all unrelated repository changes alone.
+  mv -f -- "$SOURCE_LOCK_STAGING" "$SCRIPT_DIR/flake.lock"
+  SOURCE_LOCK_STAGING=""
+  echo "Updated package snapshot: $SCRIPT_DIR/flake.lock"
+fi
 
 # The shell running the first install has not loaded Home Manager's session
 # environment yet. The wrapper also needs the real Codex package on PATH.
