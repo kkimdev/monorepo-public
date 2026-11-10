@@ -32,11 +32,67 @@ await term_.prefs_.set('user-css-text', '@font-face {font-family: "JetBrainsMono
 
 ## Setup Chrome OS Crostini
 
-[`./setup.bash`](./setup.bash)
+Enable the Linux development environment in ChromeOS Settings, then open its
+Terminal. This setup supports **x86_64 Crostini** containers.
+
+Run the following with your own Git name and email (GitHub's private commit
+email is available at <https://github.com/settings/emails>):
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git curl ca-certificates
+git clone https://github.com/kkimdev/monorepo-public.git
+cd monorepo-public
+export GIT_USER_NAME="Your Name"
+export GIT_USER_EMAIL="your-github-email@example.com"
+bash chromeos-dev-setup/setup.bash
+```
+
+Keep the complete checkout: `setup.bash` needs the adjacent `flake.nix`,
+`home.nix`, and `flake.lock`. Downloading only the script is insufficient.
+The script installs Nix when needed, builds the locked Home Manager
+configuration, then installs and activates it. Keep the checkout at its
+current path so the installed `cros-setup` command can find it.
 
 Use `cros-setup` to reapply the configuration without restarting user services
 or replacing the current shell. Home Manager prints any service restart
 suggestions instead of interrupting ongoing terminal or GUI work.
+
+Both `cros-setup` and `cros-update` use the repository's published
+`flake.lock`, so rerunning setup does not select new application versions.
+`cros-update` updates Debian and Nix, then reapplies that locked application
+snapshot. Pull reviewed repository updates before applying a newer snapshot.
+
+### Validate and update the package snapshot
+
+With Nix already installed and the Crostini IME modules present, validate a
+build without apt changes, system configuration changes, or activation:
+
+```bash
+bash chromeos-dev-setup/setup.bash --build-only
+```
+
+This checks the Nix build; it does not prove a fresh Crostini bootstrap or
+that the installed GUI applications run correctly.
+
+Maintainers update the tracked lock from the repository root:
+
+```bash
+nix flake update --flake path:chromeos-dev-setup
+bash chromeos-dev-setup/setup.bash --build-only
+bash chromeos-dev-setup/setup.bash
+cros-setup
+```
+
+Review upstream changes and local package patches together. Orca's native
+clipboard workaround currently requires version `1.4.226`, supplied by a
+separate pinned input; changing that input also requires revalidating the
+patch. Commit `flake.lock` and any required patch upgrades together after
+the build, application, and reapplication checks pass.
+
+`home.stateVersion` has a fixed `26.11` baseline for Home Manager migration
+behavior. It is not an application version and should not change as part of
+routine package updates.
 
 KakaoTalk uses Wine's native Wayland driver on `wayland-2` for Korean input.
 Wine requires `wl_compositor` v4, while ChromeOS's VirtWL host provides v3.
@@ -44,7 +100,8 @@ The setup follows the `virtwl` branch of
 [`kkimdev/sommelier-rs`](https://github.com/kkimdev/sommelier-rs)
 and installs its prebuilt release package. Release `virtwl-v0.2.6` adds the
 compatibility bridge: advertise v4 to applications, bind the host at v3, and
-translate `damage_buffer`. `cros-update` picks up subsequent package releases.
+translate `damage_buffer`. Later package releases are adopted through reviewed
+updates to the tracked lock.
 Home Manager leaves running services intact; the updated proxy takes effect
 on the next login or after a deliberate service restart.
 

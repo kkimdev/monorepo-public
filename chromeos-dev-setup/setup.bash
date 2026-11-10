@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euxo pipefail
+set -euo pipefail
 
 export CROS_SETUP_SCRIPT_FILE="$(readlink -f "${BASH_SOURCE[0]}")"
 export SCRIPT_DIR="$(dirname "$CROS_SETUP_SCRIPT_FILE")"
@@ -37,14 +37,45 @@ export SCRIPT_DIR="$(dirname "$CROS_SETUP_SCRIPT_FILE")"
 #  Rank 1: Ignore — upstream home-manager internal, harmless
 #  Rank 2: Update home-manager flake input — nix flake update home-manager (may break unrelated deps)
 
-# TODO: Fill out and execute these before running the script.
-# export GIT_USER_NAME=""
-# export GIT_USER_EMAIL="" # Use private email from https://github.com/settings/emails
+BUILD_ONLY=0
+case "${1:-}" in
+  "") ;;
+  --build-only) BUILD_ONLY=1; shift ;;
+  *) echo "Usage: bash $CROS_SETUP_SCRIPT_FILE [--build-only]" >&2; exit 2 ;;
+esac
+if [ "$#" -ne 0 ]; then
+  echo "Usage: bash $CROS_SETUP_SCRIPT_FILE [--build-only]" >&2
+  exit 2
+fi
 
-sudo apt-get update -y
-sudo apt-get install uidmap cros-im btrfs-progs -y
-sudo apt-get remove vim vim-tiny command-not-found -y
-sudo apt autoremove
+# Fail before apt or generated-file writes when first-install prerequisites
+# are missing. Git identity is serialized into host.json, never shell code.
+if [ -z "${GIT_USER_NAME:-}" ] || [ -z "${GIT_USER_EMAIL:-}" ]; then
+  echo "ERROR: export GIT_USER_NAME and GIT_USER_EMAIL before running setup." >&2
+  echo "See $SCRIPT_DIR/README.md for the first-install commands." >&2
+  exit 1
+fi
+if [ "$(uname -m)" != x86_64 ]; then
+  echo "ERROR: this package set currently supports x86_64 Crostini only." >&2
+  exit 1
+fi
+for required_file in flake.nix flake.lock home.nix; do
+  if [ ! -f "$SCRIPT_DIR/$required_file" ]; then
+    echo "ERROR: missing $SCRIPT_DIR/$required_file; use the complete repository checkout." >&2
+    exit 1
+  fi
+done
+if [ "$BUILD_ONLY" -eq 1 ] && ! command -v nix >/dev/null 2>&1; then
+  echo "ERROR: --build-only requires an existing Nix installation." >&2
+  exit 1
+fi
+
+if [ "$BUILD_ONLY" -eq 0 ]; then
+  sudo apt-get update -y
+  sudo apt-get install uidmap cros-im btrfs-progs curl ca-certificates git xz-utils python3 -y
+  sudo apt-get remove vim vim-tiny command-not-found -y
+  sudo apt-get autoremove -y
+fi
 
 # Keep /tmp independent of Nix/Home Manager.  The single public function below
 # owns the complete root-level bootstrap; its generated systemd/tmpfiles config
@@ -128,10 +159,11 @@ EOF
   echo "Configured /tmp quota: $TMP_QUOTA_GIB ($tmp_quota_bytes bytes)."
 }
 
-configure_disk_backed_tmp
-
-# Add user to render group (required for GPU acceleration access in Crostini)
-sudo usermod -aG render "$USER"
+if [ "$BUILD_ONLY" -eq 0 ]; then
+  configure_disk_backed_tmp
+  # Required for GPU acceleration access in Crostini.
+  sudo usermod -aG render "$USER"
+fi
 
 # cros-im is installed by ChromeOS on supported containers, but install it
 # explicitly above so a fresh or older Crostini image gets the GTK/Qt bridge
@@ -139,8 +171,8 @@ sudo usermod -aG render "$USER"
 CROS_IM_GTK3_MODULE="$(dpkg -L cros-im | awk '/\/gtk-3\.0\/.*\/immodules\/im-cros-gtk3\.so$/ { print; exit }')"
 CROS_IM_GTK4_MODULE="$(dpkg -L cros-im | awk '/\/gtk-4\.0\/.*\/immodules\/libim-cros-gtk4\.so$/ { print; exit }')"
 CROS_IM_QT5_MODULE="$(dpkg -L cros-im | awk '/\/qt5\/plugins\/platforminputcontexts\/libcrosplatforminputcontextplugin\.so$/ { print; exit }')"
-CROS_IM_GTK3_CACHE="$(find /usr/lib -type f -path '*/gtk-3.0/*/immodules.cache' -print -quit 2>/dev/null || true)"
-CROS_IM_GTK4_PATH="$(find /usr/lib -type d -path '*/gtk-4.0' -print -quit 2>/dev/null || true)"
+export CROS_IM_GTK3_CACHE="$(find /usr/lib -type f -path '*/gtk-3.0/*/immodules.cache' -print -quit 2>/dev/null || true)"
+export CROS_IM_GTK4_PATH="$(find /usr/lib -type d -path '*/gtk-4.0' -print -quit 2>/dev/null || true)"
 
 if [ -z "$CROS_IM_GTK3_MODULE" ] || [ -z "$CROS_IM_GTK4_MODULE" ] || [ -z "$CROS_IM_QT5_MODULE" ]; then
     echo "ERROR: cros-im did not install all expected GTK3/GTK4/Qt5 modules." >&2
@@ -183,21 +215,45 @@ else
     echo "Nix is already installed."
 fi
 
-echo "Detecting current Nixpkgs release..."
-NIX_VER=$(nix eval --raw nixpkgs#lib.version | cut -d. -f1,2)
-
 LOCAL_SERVICES_DIR="$HOME/.config/local-services"
 LOCAL_SERVICES_CONFIG="$LOCAL_SERVICES_DIR/process-compose.yaml"
 LOCAL_SERVICES_STATE_DIR="$HOME/.local/state/local-services"
-mkdir -p "$LOCAL_SERVICES_DIR" "$LOCAL_SERVICES_STATE_DIR"
+if [ "$BUILD_ONLY" -eq 0 ]; then
+  mkdir -p "$LOCAL_SERVICES_DIR" "$LOCAL_SERVICES_STATE_DIR"
+fi
 
 CONF_DIR="$HOME/.config/home-manager"
-mkdir -p "$CONF_DIR"
+BUILD_DIR="$(mktemp -d)"
+CONFIG_BACKUP_DIR=""
+CONFIG_INSTALLED=0
+CODEX_WRAPPER_STAGING=""
+CODEX_WRAPPER_PATH="$HOME/.local/bin/codex"
+CONFIG_FILES=(flake.nix flake.lock home.nix host.json codex-wrapper)
 
-# Generate the wrapper from this setup script so a checkout needs no companion
-# file. Home Manager copies this source into the Nix store and owns the
-# installed ~/.local/bin/codex path.
-CODEX_WRAPPER_SOURCE="$CONF_DIR/codex-wrapper"
+cleanup_setup() {
+  local status=$?
+  trap - EXIT
+  if [ "$CONFIG_INSTALLED" -eq 1 ]; then
+    for config_file in "${CONFIG_FILES[@]}"; do
+      rm -f -- "$CONF_DIR/$config_file" "$CONF_DIR/.$config_file.new"
+      if [ -e "$CONFIG_BACKUP_DIR/$config_file" ] || [ -L "$CONFIG_BACKUP_DIR/$config_file" ]; then
+        cp -a -- "$CONFIG_BACKUP_DIR/$config_file" "$CONF_DIR/"
+      fi
+    done
+    echo "Restored the previous generated configuration from $CONFIG_BACKUP_DIR." >&2
+  fi
+  if [ -n "$CODEX_WRAPPER_STAGING" ] && [ -e "$CODEX_WRAPPER_STAGING" ]; then
+    rm -f -- "$CODEX_WRAPPER_PATH"
+    mv -- "$CODEX_WRAPPER_STAGING" "$CODEX_WRAPPER_PATH"
+    echo "Restored the previous unmanaged Codex wrapper." >&2
+  fi
+  rm -rf -- "$BUILD_DIR"
+  exit "$status"
+}
+trap cleanup_setup EXIT
+
+# Home Manager owns the installed ~/.local/bin/codex path.
+CODEX_WRAPPER_SOURCE="$BUILD_DIR/codex-wrapper"
 cat <<'CODEX_WRAPPER' > "$CODEX_WRAPPER_SOURCE"
 #!/usr/bin/env bash
 set -euo pipefail
@@ -385,994 +441,61 @@ exec "$real_codex" "$@"
 CODEX_WRAPPER
 chmod 755 "$CODEX_WRAPPER_SOURCE"
 
-rm -f "$CONF_DIR/flake.nix" "$CONF_DIR/flake.lock"
-cat <<'EOF' > "$CONF_DIR/flake.nix"
-{
-  # Numtide's cache contains the pre-built llm-agents.nix packages.
-  nixConfig = {
-    extra-substituters = [ "https://cache.numtide.com" ];
-    extra-trusted-public-keys = [
-      "niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g="
-    ];
-  };
+# Build the exact checked-in dependency graph before replacing live config.
+cp -- "$SCRIPT_DIR/flake.nix" "$SCRIPT_DIR/flake.lock" "$SCRIPT_DIR/home.nix" "$BUILD_DIR/"
+python3 - "$BUILD_DIR/host.json" <<'PY_HOST'
+import json
+import os
+from pathlib import Path
+import sys
 
-  inputs = {
-    nixpkgs.url = "https://flakehub.com/f/DeterminateSystems/nixpkgs-weekly/0.1";
-    openspec = {
-      url = "github:Fission-AI/OpenSpec";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-    home-manager = {
-      url = "github:nix-community/home-manager";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-
-    nix-index-database.url = "github:nix-community/nix-index-database";
-    nix-index-database.inputs.nixpkgs.follows = "nixpkgs";
-
-    # LLM agent packages are sourced from the upstream Numtide collection.
-    # Keep its pinned nixpkgs input so the published binary cache remains usable.
-    llm-agents.url = "github:numtide/llm-agents.nix";
-
-    sommelier-rs = {
-      # virtwl releases >= 0.2.6 provide Wine's compositor v4 compatibility.
-      url = "github:kkimdev/sommelier-rs/virtwl";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-
-    kakaotalk = {
-      url = "github:kkimdev/monorepo-public/main?dir=nixpkgs/kakaotalk";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-
-    codex-desktop-linux = {
-      url = "github:ilysenko/codex-desktop-linux";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-
-
-    # Legacy package sources retained as comments for easy rollback:
-    # claude-desktop = {
-    #   url = "github:aaddrick/claude-desktop-debian";
-    #   inputs.nixpkgs.follows = "nixpkgs";
-    # };
-    #
-    # Keep the existing Antigravity GUI packages: llm-agents.nix currently
-    # provides only the CLI, not the IDE/base application.
-    antigravity-nix = {
-      url = "github:jacopone/antigravity-nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-    #
-    # orca-deb-bin = {
-    #   url = "github:kkimdev/monorepo-public/main?dir=nixpkgs/orca-deb-bin";
-    #   inputs.nixpkgs.follows = "nixpkgs";
-    # };
-  };
-
-  # Legacy outputs argument list retained for rollback:
-  # outputs = { nixpkgs, home-manager, nix-index-database, sommelier-rs, kakaotalk, codex-desktop-linux, claude-desktop, antigravity-nix, orca-deb-bin, ... }@inputs:
-  outputs = { nixpkgs, home-manager, nix-index-database, llm-agents, sommelier-rs, kakaotalk, codex-desktop-linux, antigravity-nix, ... }@inputs:
-    let
-      system = builtins.currentSystem;
-
-      # Dynamically grab the current user directly from the environment inside Nix
-      username = builtins.getEnv "USER";
-
-    in {
-      homeConfigurations."${username}" = home-manager.lib.homeManagerConfiguration {
-        pkgs = import nixpkgs {
-          inherit system;
-          config.allowUnfree = true;
-          overlays = [
-            sommelier-rs.overlays.default
-            kakaotalk.overlays.default
-
-            # Legacy LLM-agent overlays retained as comments for rollback.
-            # claude-desktop.overlays.default
-            # orca-deb-bin.overlays.default
-            antigravity-nix.overlays.default
-            #
-            # Legacy Codex pin (the package now comes from llm-agents.nix):
-            # (final: prev: {
-            #   # Pin codex CLI to v0.142.5 — the Desktop injects codex_app dynamic tools
-            #   # at thread/start, and CLIs before 0.142.0 reject these tools for missing
-            #   # inputSchema (rust serde required field check). Upstream fixed this in
-            #   # the 0.142.x series (https://github.com/openai/codex/issues/28978).
-            #   codex = prev.stdenv.mkDerivation {
-            #     pname = "codex";
-            #     version = "0.142.5";
-            #     src = prev.fetchurl {
-            #       url = "https://github.com/openai/codex/releases/download/rust-v0.142.5/codex-x86_64-unknown-linux-musl.tar.gz";
-            #       hash = "sha256-y5M+w8thv0tfyI7s9eYUmCn6phclNbbvCvsBVL60qrg=";
-            #     };
-            #     sourceRoot = ".";
-            #     installPhase = ''
-            #       mkdir -p $out/bin
-            #       mv codex-x86_64-unknown-linux-musl $out/bin/codex
-            #     '';
-            #   };
-            # })
-            #
-            # Keep the existing OpenCode desktop package and its metadata fix:
-            # llm-agents.nix currently provides the CLI (`opencode`) only.
-            (final: prev: {
-              opencode-desktop = prev.opencode-desktop.overrideAttrs (oldAttrs: {
-                desktopItems = final.lib.optional final.stdenvNoCC.hostPlatform.isLinux (
-                  final.makeDesktopItem {
-                    name = "ai.opencode.desktop";
-                    desktopName = "OpenCode";
-                    exec = "opencode-desktop %U";
-                    icon = "opencode-desktop";
-                    startupWMClass = "ai.opencode.desktop";
-                    categories = [ "Development" ];
-                    mimeTypes = [ "x-scheme-handler/opencode" ];
-                  }
-                );
-              });
-            })
-          ];
-        };
-
-        extraSpecialArgs = { inherit inputs; };
-
-        modules = [
-          ./home.nix
-          nix-index-database.homeModules.default
-          codex-desktop-linux.homeManagerModules.default
-          { programs.nix-index-database.comma.enable = true; }
-        ];
-      };
-    };
+keys = {
+    "username": "USER",
+    "homeDirectory": "HOME",
+    "gitName": "GIT_USER_NAME",
+    "gitEmail": "GIT_USER_EMAIL",
+    "setupScript": "CROS_SETUP_SCRIPT_FILE",
+    "gtk3Cache": "CROS_IM_GTK3_CACHE",
+    "gtk4Path": "CROS_IM_GTK4_PATH",
 }
-EOF
-
-# 7. GENERATE HOME.NIX
-rm -f "$CONF_DIR/home.nix"
-cat <<EOF > "$CONF_DIR/home.nix"
-{ config, pkgs, lib, inputs, ... }:
-
-let
-  crosDesktopShareDir = "\${config.home.homeDirectory}/.local/share";
-  nixProfileShareDir  = "\${config.home.homeDirectory}/.nix-profile/share";
-  llmAgentsPkgs       = inputs.llm-agents.packages.\${pkgs.stdenv.hostPlatform.system};
-  openspecCli         = inputs.openspec.packages.\${pkgs.stdenv.hostPlatform.system}.default;
-  # Temporary package fix while https://github.com/stablyai/orca/pull/29172
-  # (https://github.com/stablyai/orca/issues/29171) awaits an upstream release.
-  # Match Electron's native Wayland app ID and X11 class to orca-ide.desktop.
-  # Keep keyboard and Copy on Select copies on Orca's focused Wayland connection in Crostini.
-  # Remove the native-copy patch after https://github.com/stablyai/orca/pull/29377 ships.
-  orcaWithDesktopIdentity = llmAgentsPkgs.orca.overrideAttrs (old: {
-    # The Wayland clipboard helper dlopens GTK for its Xwayland fallback.
-    # Remove after updating to https://github.com/numtide/llm-agents.nix/pull/10882.
-    runtimeDependencies = (old.runtimeDependencies or [ ]) ++ [ pkgs.gtk3 ];
-    postFixup = (old.postFixup or "") + ''
-      \${pkgs.python3}/bin/python3 - "\$out/lib/Orca/resources/app.asar" "\$out/share/applications/orca-ide.desktop" <<'PY'
-      import hashlib
-      import json
-      from pathlib import Path
-      import struct
-      import sys
-
-      archive, desktop = map(Path, sys.argv[1:])
-      desktop_name = desktop.name
-      window_class = desktop_name.removesuffix(".desktop")
-      payload = archive.read_bytes()
-      size_payload, header_size = struct.unpack_from("<II", payload)
-      assert size_payload == 4, "Unexpected ASAR size header"
-      json_size = struct.unpack_from("<I", payload, 12)[0]
-      header = json.loads(payload[16:16 + json_size])
-      content = payload[8 + header_size:]
-      appended = bytearray()
-
-      def replace_entry(entry, replacement):
-          start, size = int(entry["offset"]), entry["size"]
-          original = content[start:start + size]
-          integrity = entry["integrity"]
-          assert len(original) == size, "Truncated ASAR entry"
-          assert integrity["algorithm"] == "SHA256", "Unsupported ASAR integrity"
-          assert hashlib.sha256(original).hexdigest() == integrity["hash"], "Invalid ASAR entry integrity"
-          # Append replacements so unrelated offsets and unpacked entries stay intact.
-          entry["offset"], entry["size"] = str(len(content) + len(appended)), len(replacement)
-          block_size = integrity["blockSize"]
-          integrity["hash"] = hashlib.sha256(replacement).hexdigest()
-          integrity["blocks"] = [
-              hashlib.sha256(replacement[i:i + block_size]).hexdigest()
-              for i in range(0, len(replacement), block_size)
-          ]
-          appended.extend(replacement)
-
-      entry = header["files"]["package.json"]
-      start, size = int(entry["offset"]), entry["size"]
-      package_bytes = content[start:start + size]
-      assert len(package_bytes) == size, "Truncated ASAR package metadata"
-      metadata = json.loads(package_bytes)
-      assert metadata["name"] == "orca", "Unexpected application metadata"
-      previous = metadata.get("desktopName")
-      assert previous in (None, desktop_name), f"Unexpected desktopName: {previous!r}"
-
-      if previous is None:
-          metadata["desktopName"] = desktop_name
-          package_bytes = (json.dumps(metadata, separators=(",", ":")) + "\n").encode()
-          replace_entry(entry, package_bytes)
-
-      # Temporary release patch; fail visibly when an update needs re-evaluation.
-      assert metadata["version"] == "1.4.226", "Re-evaluate Orca's native-copy workaround for this release"
-      quote = chr(96)
-      native = (
-          f"window.api.platform.get().platform==={quote}linux{quote}&&"
-          f"window.api.platform.get().displayServer==={quote}wayland{quote}"
-      )
-      assets = header["files"]["out"]["files"]["renderer"]["files"]["assets"]["files"]
-      patches = [
-          (
-              "OnboardingInlineCommandTerminal-",
-              "ae1ec249e826febe0ee58d96fd54b12c4d14a98dc7ca6b4cba53f3f6f769fbe6",
-              [
-                  (
-                      "gy({terminal:e.terminal,writeClipboardText:window.api.ui.writeTerminalClipboardText}).catch(()=>{})",
-                      f"e.terminal.focus(),window.api.ui.performNativeSelectionAction({quote}copy{quote})",
-                      native,
-                  ),
-                  # Only the Copy on Select callback; keep its setting, selection and PRIMARY guards.
-                  # Background/programmatic selections must not move focus to another terminal.
-                  (
-                      "gy({terminal:t.terminal,writeClipboardText:window.api.ui.writeTerminalClipboardText}).catch(()=>{})",
-                      f"ay(t.terminal)&&window.api.ui.performNativeSelectionAction({quote}copy{quote})",
-                      f"{native}&&t.terminal.textarea&&t.terminal.textarea.ownerDocument.activeElement===t.terminal.textarea",
-                  ),
-              ],
-          ),
-          (
-              "AgentKanbanBoard-",
-              "b3136ba85b302267dbbac9eae513d4289989855b4a197faf14b1316c9fc399e0",
-              [
-                  (
-                      "window.api.ui.writeTerminalClipboardText(i).catch(()=>void 0)",
-                      f"t.focus(),window.api.ui.performNativeSelectionAction({quote}copy{quote})",
-                      native,
-                  ),
-              ],
-          ),
-      ]
-      for prefix, expected_hash, routes in patches:
-          matches = [
-              entry for name, entry in assets.items()
-              if name.startswith(prefix) and name.endswith(".js")
-              and entry.get("integrity", {}).get("hash") == expected_hash
-          ]
-          assert len(matches) == 1, f"Expected one Orca native-copy asset: {prefix}"
-          entry = matches[0]
-          start, size = int(entry["offset"]), entry["size"]
-          original = content[start:start + size]
-          assert hashlib.sha256(original).hexdigest() == expected_hash, f"Unexpected Orca native-copy asset: {prefix}"
-          text = original.decode()
-          for old, action, condition in routes:
-              assert text.count(old) == 1, f"Expected one native-copy route: {prefix}"
-              replacement = f"({condition}?({action}):{old})"
-              text = text.replace(old, replacement)
-          replace_entry(entry, text.encode())
-
-      if appended:
-          encoded = json.dumps(header, separators=(",", ":")).encode()
-          string_payload = struct.pack("<I", len(encoded)) + encoded + b"\0" * (-len(encoded) % 4)
-          header_pickle = struct.pack("<I", len(string_payload)) + string_payload
-          archive.chmod(archive.stat().st_mode | 0o200)
-          archive.write_bytes(struct.pack("<II", 4, len(header_pickle)) + header_pickle + content + appended)
-
-      lines = desktop.read_text().splitlines(keepends=True)
-      matches = [i for i, line in enumerate(lines) if line.startswith("StartupWMClass=")]
-      assert len(matches) == 1, "Expected one desktop window class"
-      index = matches[0]
-      previous_class = lines[index].split("=", 1)[1].strip()
-      assert previous_class in ("orca", window_class), f"Unexpected window class: {previous_class!r}"
-      if previous_class != window_class:
-          lines[index] = f"StartupWMClass={window_class}\n"
-          desktop.chmod(desktop.stat().st_mode | 0o200)
-          desktop.write_text("".join(lines))
-      PY
-    '';
-  });
-  # This file is evaluated with --impure on the host. Do not install a
-  # Crostini-specific browser default on ordinary Linux systems.
-  isCrostini = builtins.pathExists "/opt/google/cros-containers/bin/garcon"
-    && builtins.pathExists "/usr/share/applications/garcon_host_browser.desktop";
-  # GSettings schema dirs for codex-desktop file dialog (GLib fatal crash fix)
-  # See also \`GSETTINGS_SCHEMA_DIR\` in the cros-garcon override below.
-  gtk3SchemaDir       = "\${pkgs.gtk3}/share/gsettings-schemas/gtk+3-\${lib.getVersion pkgs.gtk3}/glib-2.0/schemas";
-  gsettingsSchemaDir  = "\${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/gsettings-desktop-schemas-\${lib.getVersion pkgs.gsettings-desktop-schemas}/glib-2.0/schemas";
-
-  myShellAliases = {
-    sudo = "sudo env PATH=\\\\\"\$PATH\\\\\"";
-    grep = "grep --color=auto";
-    fgrep = "fgrep --color=auto";
-    egrep = "egrep --color=auto";
-    ls = "ls --color=auto";
-    dir = "dir --color=auto";
-    vdir = "vdir --color=auto";
-
-    cros-update = ''
-      sudo apt-get update && sudo apt-get full-upgrade -y && \\
-      sudo apt-get autoremove -y && \\
-      sudo determinate-nixd upgrade && \\
-      pushd "$CONF_DIR" && \\
-      nix flake update && \\
-      home-manager switch --flake ".#$USER" --impure && \\
-      popd
-    '';
-
-    cros-clean = ''
-      nix-collect-garbage -d && \\
-      nix store optimise && \\
-      nix store gc
-    '';
-
-    cros-reset = ''
-      echo "Ensuring deferred user services are running..." && \
-      systemctl --user daemon-reload && \
-      systemctl --user reset-failed atuin-daemon.service earlyoom.service sommelier@0.service sommelier@1.service sommelier-x@0.service sommelier-x@1.service sommelier-rs.service cros-garcon.service && \
-      systemctl --user start atuin-daemon.service earlyoom.service sommelier@0.service sommelier@1.service sommelier-x@0.service sommelier-x@1.service sommelier-rs.service cros-garcon.service
-    '';
-
-    cros-hard-reset = ''
-      echo "Hard-resetting Crostini user services; running GUI apps will close..." && \
-      systemctl --user stop cros-garcon.service sommelier-rs.service sommelier-x@1.service sommelier-x@0.service sommelier@1.service sommelier@0.service atuin-daemon.service && \
-      rm -f /run/user/\$UID/wayland-{1,2}.lock /run/user/\$UID/wayland-{1,2} 2>/dev/null; \
-      systemctl --user daemon-reload && \
-      systemctl --user reset-failed atuin-daemon.service earlyoom.service sommelier@0.service sommelier@1.service sommelier-x@0.service sommelier-x@1.service sommelier-rs.service cros-garcon.service && \
-      systemctl --user start atuin-daemon.service earlyoom.service sommelier@0.service sommelier@1.service sommelier-x@0.service sommelier-x@1.service sommelier-rs.service cros-garcon.service
-    '';
-
-    # Reapply configuration without restarting services, then update this shell
-    # so subsequently launched applications use the custom proxy.
-    cros-setup = "bash \"\$CROS_SETUP_SCRIPT_FILE\" && export WAYLAND_DISPLAY=wayland-2";
-  };
-in
-{
-  nixpkgs.config.allowUnfree = true;
-
-  # Keep cros-setup interruption-free. cros-reset starts only inactive services;
-  # updated running units take effect on the next login or after cros-hard-reset.
-  systemd.user.startServices = "suggest";
-
-  home = {
-    username = "$USER";
-    homeDirectory = "$HOME";
-    stateVersion = "$NIX_VER";
-    sessionPath = [
-      "\${config.home.homeDirectory}/.local/bin"
-    ];
-    packages = with pkgs; [
-      # Utils
-      bash
-      zsh
-      zsh-fzf-tab
-      git
-      difftastic
-      delta
-      micro
-      direnv
-      # zplug uses Perl to strip ANSI escape sequences in its global logs.
-      # Keep Perl in the Home Manager profile so project Nix shells can
-      # filter host PATH entries such as /usr/bin without breaking zplug.
-      perl
-      bat
-      btop
-      fzf
-      ripgrep
-      fd
-      eza
-      yazi
-      zoxide
-      zellij
-      starship
-      wl-clipboard
-      killall
-      earlyoom
-      process-compose
-      cloudflared
-      podman-compose
-      podman-tui
-      xdg-utils
-      gh
-
-      ## Already included via other lines.
-      # nix-direnv
-      # podman
-
-      # Apps
-      chromium
-      inkscape
-      # # Insecure?
-      # beekeeper-studio
-      yt-dlp
-      sommelier-rs-bin
-      kakaotalk-bin
-
-      # Coding
-      vscode
-      # Orca's skill updater spawns npx outside project development shells.
-      nodejs
-      inputs.openspec.packages.\${pkgs.stdenv.hostPlatform.system}.default
-      # Existing GUI packages kept active; llm-agents.nix has no IDE/base-app
-      # replacement for these yet.
-      google-antigravity-no-fhs
-      google-antigravity-ide
-
-      # Packages replaced by llm-agents.nix are retained as comments for rollback:
-      # orca-ide
-      # google-antigravity-cli
-      # claude-code
-      # claude-desktop
-      # codex
-      # opencode
-
-      # Keep all available replacements on the same upstream package set.
-      llmAgentsPkgs.antigravity-cli
-      llmAgentsPkgs.claude-code
-      llmAgentsPkgs.claude-desktop
-      llmAgentsPkgs.codex
-      llmAgentsPkgs.opencode
-      llmAgentsPkgs.opencode2
-      orcaWithDesktopIdentity
-
-      # Existing desktop package kept active; llm-agents.nix currently has no
-      # OpenCode desktop replacement.
-      opencode-desktop
-
-      # Fonts
-      nerd-fonts.jetbrains-mono
-      noto-fonts
-      google-fonts
-    ];
-    sessionVariables = {
-      NIXPKGS_ALLOW_UNFREE = "1";
-      # Legacy orca-deb-bin exposed the CLI as orca-ide; the llm-agents.nix
-      # package follows the upstream orca CLI name.
-      # ORCA_CLI_COMMAND = "orca-ide";
-      ORCA_CLI_COMMAND = "orca";
-      EDITOR = "code --wait --new-window";
-      VISUAL = "code --wait --new-window";
-      GIT_USER_NAME = "$GIT_USER_NAME";
-      GIT_USER_EMAIL = "$GIT_USER_EMAIL";
-      CROS_SETUP_SCRIPT_FILE = "$CROS_SETUP_SCRIPT_FILE";
-      GSETTINGS_SCHEMA_DIR = "\${gtk3SchemaDir}:\${gsettingsSchemaDir}";
-      # Native Wayland clients use GTK's text-input-v3 module through
-      # sommelier-rs. X11/Xwayland cannot use that module and falls back to the
-      # ChromeOS GTK bridge; some GTK4 builds register it as "test-cros".
-      GTK_IM_MODULE = "wayland:cros:test-cros";
-      GTK_IM_MODULE_FILE = "$CROS_IM_GTK3_CACHE";
-      GTK_PATH = "$CROS_IM_GTK4_PATH";
-      QT_IM_MODULE = "cros";
-      # wayland-0: Crostini default high-density Sommelier, wayland-1: low-density Sommelier, wayland-2: custom sommelier-rs
-      WAYLAND_DISPLAY = "wayland-2";
-      DISPLAY = ":1";
-      CODEX_LINUX_RENDERING_MODE = "wayland-gpu";
-      CODEX_LINUX_DISABLE_EXTERNAL_OPEN_PATCH = "1";
-      # Web search provider selection. Required for non-opencode providers (model-gateway).
-      # See ../scratch-monorepo/model_gateway/WEB_SEARCH.md.
-      # OPENCODE_ENABLE_EXA = "true";
-      OPENCODE_ENABLE_PARALLEL = "true";
-    };
-  };
-
-  systemd.user.services.sommelier-rs = {
-    Unit = {
-      Description = "Sommelier-RS Wayland Compositor";
-      After = [ "debian-fixup.service" ];
-    };
-    Service = {
-      # Without --local-compositor, sommelier-rs connects directly to /dev/wl0.
-      # The nested wayland-0 path hides ChromeOS keyboard/text-input extensions,
-      # preventing host IME switching and GTK text-input-v3 activation.
-      ExecStart =
-        "\${pkgs.sommelier-rs-bin}/bin/sommelier-rs --gpu-accel wayland-2";
-      Restart = "always";
-      RestartSec = "5";
-      Environment = [
-        "RUST_LOG=info"
-        "SOMMELIER_ACCELERATORS=Super_L,<Alt>bracketleft,<Alt>bracketright,<Alt>minus,<Alt>equal,<Alt>1,<Alt>2,<Alt>3,<Alt>4,<Alt>5,<Alt>6,<Alt>7,<Alt>8,<Alt>9,print,<Control>space,<Control><Shift>space"
-      ];
-    };
-    Install = {
-      WantedBy = [ "default.target" ];
-    };
-  };
-
-  # Keep an independent, memory-only emergency shield for the user session.
-  # This is intentionally process-level: it does not require every agent to
-  # launch compilers through a wrapper. PSI-aware policy remains the job of
-  # the Crostini monitor; earlyoom is only the final memory fallback.
-  systemd.user.services.earlyoom = {
-    Unit = {
-      Description = "Early OOM emergency shield";
-    };
-    Service = {
-      ExecStart = "\${pkgs.earlyoom}/bin/earlyoom -m 8,4 -s 100 -r 60 --ignore-root-user --avoid=(^|/)(systemd|init|dbus-daemon|garcon|cros-garcon|sommelier|sommelier-rs|earlyoom)\$ --prefer=(^|/)(rustc|clang|clang[+][+]|cc1|cc1plus|cargo|bazel|java)([[:space:]]|\$)";
-      Restart = "always";
-      RestartSec = "5s";
-      MemoryMax = "50M";
-      NoNewPrivileges = true;
-      PrivateTmp = true;
-    };
-    Install = {
-      WantedBy = [ "default.target" ];
-    };
-  };
-
-  systemd.user.services.podman-api = {
-    Unit = {
-      Description = "Podman API Service";
-    };
-
-    Service = {
-    ExecStartPre = "\${pkgs.coreutils}/bin/mkdir -p %t/podman";
-      ExecStart =
-        "\${pkgs.podman}/bin/podman system service --time=0 unix://%t/podman/podman.sock";
-      Restart = "always";
-      RestartSec = "5";
-    };
-
-    Install = {
-      WantedBy = [ "default.target" ];
-    };
-  };
-
-  # Keep the personal long-running service catalog outside Home Manager's
-  # generated home.nix. Home Manager owns only this stable supervisor unit;
-  # the user-owned process-compose.yaml can evolve without rerunning setup.
-  systemd.user.services.local-services = {
-    Unit = {
-      Description = "User local services supervisor";
-      ConditionPathExists = "%h/.config/local-services/process-compose.yaml";
-      StartLimitIntervalSec = "60s";
-      StartLimitBurst = 5;
-    };
-    Service = {
-      Type = "simple";
-      WorkingDirectory = "%h/.config/local-services";
-      ExecStart = "\${pkgs.process-compose}/bin/process-compose -f %h/.config/local-services/process-compose.yaml up --tui=false --disable-dotenv";
-      Restart = "on-failure";
-      RestartSec = "5s";
-      KillMode = "control-group";
-      TimeoutStopSec = "15s";
-      Environment = [
-        "HOME=%h"
-        "PATH=%h/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin"
-        "XDG_CONFIG_HOME=%h/.config"
-        "XDG_STATE_HOME=%h/.local/state"
-      ];
-      StandardOutput = "journal";
-      StandardError = "journal";
-    };
-    Install = {
-      WantedBy = [ "default.target" ];
-    };
-  };
-
-  services.ssh-agent.enable = true;
-
-  # ChromeOS / Crostini Integration Fixes
-  # This tells Home Manager that it is running on a generic Linux distro (not NixOS)
-  # and forces it to export desktop files and icons to standard XDG directories.
-  targets.genericLinux.enable = true;
-  xdg.enable = true;
-
-  xdg.mimeApps = {
-    enable = true;
-    # Crostini's host-browser desktop entry is installed below only when the
-    # same host integration files are present.
-    defaultApplications = lib.optionalAttrs isCrostini {
-      "text/html" = [ "garcon_host_browser.desktop" ];
-      "x-scheme-handler/http" = [ "garcon_host_browser.desktop" ];
-      "x-scheme-handler/https" = [ "garcon_host_browser.desktop" ];
-      "x-scheme-handler/about" = [ "garcon_host_browser.desktop" ];
-      "x-scheme-handler/unknown" = [ "garcon_host_browser.desktop" ];
-    };
-  };
-
-  programs = {
-    home-manager.enable = true;
-
-    # codex-desktop known issues (for reference):
-    #
-    # 1. GLib-GIO-ERROR: Settings schema 'org.gtk.Settings.FileChooser' not found
-    #    → Fix: GSETTINGS_SCHEMA_DIR is set in cros-garcon.service override
-    #      (see xdg.configFile section below).
-    #
-    # 2. Re-launch hangs when X-closed (Electron single-instance lock)
-    #    → Ctrl+Q works to actually quit. No config-side fix yet.
-    #
-    # The current codex-desktop-linux module discovers the CLI from PATH;
-    # keep the Nix-managed codex package in home.packages above.
-    codexDesktopLinux = {
-      enable = true;
-      # Keep Computer Use UI disabled because enabling both package variants causes
-      # overlapping browser plugin paths in the Home Manager profile.
-      # computerUseUi.enable = true;
-      remoteMobileControl.enable = true;
-      # Keep the declarative remote-control service disabled because Codex Desktop
-      # already owns the app-server control socket in this Crostini environment.
-      # remoteControl.enable = true;
-    };
-
-    bash = {
-      enable = true;
-      enableCompletion = true;
-
-      initExtra = ''
-        # https://yazi-rs.github.io/docs/quick-start/
-        function y() {
-          local tmp="\$(mktemp -t "yazi-cwd.XXXXXX")" cwd
-          command yazi "\$@" --cwd-file="\$tmp"
-          IFS= read -r -d ' ' cwd < "\$tmp"
-          [ -n "\$cwd" ] && [ "\$cwd" != "\$PWD" ] && [ -d "\$cwd" ] && builtin cd -- "\$cwd"
-          command rm -f -- "\$tmp"
-        }
-        export PATH="\$HOME/.local/bin:\$PATH"
-      '';
-      bashrcExtra = ''
-        . \$HOME/.bashrc.backup
-        # central secrets (chmod 600) - values live in ~/.config/secrets/.env, never in nix store
-        if [[ -f "\$HOME/.config/secrets/.env" ]]; then
-          set -a
-          . "\$HOME/.config/secrets/.env"
-          set +a
-        fi
-      '';
-      profileExtra = ''
-        . \$HOME/.profile.backup
-        export PATH="\$HOME/.local/bin:\$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:\$PATH"
-      '';
-
-      shellAliases = myShellAliases;
-    };
-
-    zsh = {
-      enable = true;
-      enableCompletion = true;
-      autosuggestion.enable = true;
-      syntaxHighlighting.enable = true;
-      history = {
-        append = true;
-        extended = true;
-        expireDuplicatesFirst = true;
-        ignoreDups = true;
-        ignoreAllDups = true;
-        ignoreSpace = true;
-        save = 10000;
-        size = 10000;
-      };
-
-      shellAliases = myShellAliases;
-
-      plugins = [
-        {
-          name = "fzf-tab";
-          src = "\${pkgs.zsh-fzf-tab}/share/fzf-tab";
-        }
-      ];
-
-      zplug = {
-        enable = true;
-        plugins = [
-          { name = "plugins/dirhistory"; tags = [ "from:oh-my-zsh" ]; }
-        ];
-      };
-
-      initContent = ''
-        # History Beginning Search (Commented out as Atuin is enabled)
-        # autoload -U up-line-or-beginning-search
-        # autoload -U down-line-or-beginning-search
-        # zle -N up-line-or-beginning-search
-        # zle -N down-line-or-beginning-search
-
-        # Arrow up and down keys binding
-        # bindkey "^[[A" up-line-or-beginning-search
-        # bindkey "^[[B" down-line-or-beginning-search
-        # bindkey "^[OA" up-line-or-beginning-search
-        # bindkey "^[OB" down-line-or-beginning-search
-
-        # Fix standard navigation keys
-        bindkey "\e[1~" beginning-of-line       # Home
-        bindkey "^[[H"  beginning-of-line       # Home key
-        bindkey "\e[4~" end-of-line             # End
-        bindkey "^[[F"  end-of-line             # End key
-        bindkey "\e[3~" delete-char             # Delete
-        bindkey "^[[3~" delete-char
-
-        # Fix word-by-word movements (Bash style)
-        bindkey "\e[1;5D" backward-word        # Ctrl + Left
-        bindkey "\e[1;5C" forward-word         # Ctrl + Right
-        bindkey "^[^?"    backward-kill-word   # Ctrl + Backspace
-        bindkey "^H"      backward-kill-word   # Ctrl + Backspace
-
-        export PATH="\$HOME/.local/bin:\$PATH"
-
-        # central secrets (chmod 600) - values live in ~/.config/secrets/.env, never in nix store
-        if [[ -f "\$HOME/.config/secrets/.env" ]]; then
-          set -a
-          . "\$HOME/.config/secrets/.env"
-          set +a
-        fi
-      '';
-
-      # TODO: More options
-    };
-
-    git = {
-      enable = true;
-      settings = {
-        core.editor = "code --wait --new-window";
-        diff.tool = "vscode";
-        difftool.vscode.cmd = "code --wait --new-window --diff \$LOCAL \$REMOTE";
-        user = {
-          name = "$GIT_USER_NAME";
-          email = "$GIT_USER_EMAIL";
-        };
-      };
-      ignores = [
-      ];
-    };
-
-    ssh = {
-      enable = true;
-      enableDefaultConfig = false;
-      settings = {
-        "*" = {
-          AddKeysToAgent = "yes";
-        };
-      };
-    };
-
-    starship = {
-      enable = true;
-      enableBashIntegration = true;
-      enableZshIntegration = true;
-      presets = [ "catppuccin-powerline" ];
-      settings = {};
-    };
-
-    direnv = {
-      enable = true;
-      nix-direnv.enable = true;
-      enableBashIntegration = true;
-      enableZshIntegration = true;
-    };
-
-    difftastic = {
-      enable = true;
-      git = {
-        enable = false;
-        mode = "external";
-      };
-    };
-
-    delta = {
-      enable = true;
-      enableGitIntegration = true;
-      options = {
-        "side-by-side" = true;
-      };
-    };
-
-    fzf = {
-      enable = true;
-      enableBashIntegration = true;
-      enableZshIntegration = true;
-      historyWidget.command = "";
-    };
-
-    zoxide = {
-      enable = true;
-      enableBashIntegration = true;
-      enableZshIntegration = true;
-    };
-
-    # https://github.com/nix-community/home-manager/blob/master/modules/programs/zellij.nix
-    zellij = {
-      enable = false;
-      enableBashIntegration = true;
-      attachExistingSession = false;
-      exitShellOnExit = false;
-
-      settings = {
-        show_startup_tips = false;
-        theme = "catppuccin-mocha";
-        # default_layout = "compact";
-        pane_frames = false;
-        ui = {
-          pane_frames = {
-            # rounded_corners = true;
-          };
-        };
-      };
-    };
-
-    atuin = {
-      enable = true;
-      enableBashIntegration = true;
-      enableZshIntegration = true;
-      daemon.enable = true;
-      settings = {
-        enter_accept = true;
-        workspaces = true;
-        filter_mode = "session-preload";
-      };
-    };
-
-    nix-index = {
-      enableBashIntegration = true;
-      enableZshIntegration = true;
-    };
-  };
-
-  xdg.configFile = {
-    # https://nixos.wiki/wiki/Installing_Nix_on_Crostini
-    "systemd/user/cros-garcon.service.d/override.conf".text = ''
-      [Service]
-      Environment="PATH=%h/.nix-profile/bin:/usr/local/sbin:/usr/local/bin:/usr/local/games:/usr/sbin:/usr/bin:/usr/games:/sbin:/bin"
-      Environment="XDG_DATA_DIRS=%h/.nix-profile/share:%h/.local/share:%h/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share:/usr/share"
-      Environment="WAYLAND_DISPLAY=wayland-2"
-      Environment="DISPLAY=:1"
-      Environment="GTK_IM_MODULE=wayland:cros:test-cros"
-      Environment="GTK_IM_MODULE_FILE=$CROS_IM_GTK3_CACHE"
-      Environment="GTK_PATH=$CROS_IM_GTK4_PATH"
-      Environment="QT_IM_MODULE=cros"
-      Environment="CODEX_LINUX_RENDERING_MODE=wayland-gpu"
-      Environment="CODEX_LINUX_DISABLE_EXTERNAL_OPEN_PATCH=1"
-      # GLib-GIO-ERROR: Settings schema 'org.gtk.Settings.FileChooser' is not installed
-      # codex-desktop crashes (exit 5) when opening a file dialog if these are missing.
-      Environment="GSETTINGS_SCHEMA_DIR=\${gtk3SchemaDir}:\${gsettingsSchemaDir}"
-    '';
-
-    # Chrome OS shortcuts in Linux apps
-    # https://www.reddit.com/r/Crostini/wiki/enable-chrome-shortcuts-in-linux-apps
-    # https://issuetracker.google.com/issues/149234835#comment14
-    "systemd/user/sommelier@.service.d/cros-sommelier-override.conf".text = ''
-      [Service]
-      Environment="SOMMELIER_ACCELERATORS=Super_L,<Alt>bracketleft,<Alt>bracketright,<Alt>minus,<Alt>equal,<Alt>1,<Alt>2,<Alt>3,<Alt>4,<Alt>5,<Alt>6,<Alt>7,<Alt>8,<Alt>9,print,<Control>space,<Control><Shift>space"
-    '';
-    "systemd/user/sommelier-x@.service.d/cros-sommelier-x-override.conf".text = ''
-      [Service]
-      Environment="SOMMELIER_ACCELERATORS=Super_L,<Alt>bracketleft,<Alt>bracketright,<Alt>minus,<Alt>equal,<Alt>1,<Alt>2,<Alt>3,<Alt>4,<Alt>5,<Alt>6,<Alt>7,<Alt>8,<Alt>9,print,<Control>space,<Control><Shift>space"
-    '';
-
-    # Override sommelier-x@1 to run at scale 1.0 (high-density)
-    "systemd/user/sommelier-x@1.service.d/override.conf".text = ''
-      [Service]
-      Environment="SOMMELIER_SCALE=1.0"
-    '';
-
-  };
-
-  home.file = {
-    # Generate the model-policy wrapper from this setup script while letting
-    # Home Manager own its installed path and lifecycle.
-    ".local/bin/codex" = {
-      source = "$CODEX_WRAPPER_SOURCE";
-    };
-
-    # Your existing inputrc configuration
-    ".inputrc".text = ''
-      # "\e[A": history-search-backward
-      # "\e[B": history-search-forward
-      set show-all-if-ambiguous on
-    '';
-
-    # Share VS Code settings with Antigravity via symlink
-    ".config/Antigravity/User/settings.json" = {
-      source = config.lib.file.mkOutOfStoreSymlink "$HOME/.config/Code/User/settings.json";
-    };
-    ".antigravity-ide/User/settings.json" = {
-      source = config.lib.file.mkOutOfStoreSymlink "$HOME/.config/Code/User/settings.json";
-    };
-
-    # Let the llm-agents.nix Codex CLI satisfy the remote-mobile cold-start
-    # hook's managed runtime path without bootstrapping the standalone updater.
-    ".codex/packages/standalone/current/codex" = {
-      # Legacy source retained for rollback:
-      # source = "\${pkgs.codex}/bin/codex";
-      source = "\${llmAgentsPkgs.codex}/bin/codex";
-    };
-
-    # TODO
-    # https://www.reddit.com/r/Nix/comments/zh1803/guide_how_to_have_nix_installed_applications/
-  };
-
-  home.activation = {
-    # Generate and sync every OpenSpec skill into Codex's user scope. The
-    # openspec-* namespace is owned by this activation; other user skills stay
-    # untouched while added or removed OpenSpec workflows follow the package.
-    installOpenSpecCodexSkills = lib.hm.dag.entryAfter ["installPackages"] ''
-      openspecSkillsDir="\$HOME/.agents/skills"
-      tempDir="\$(mktemp -d)"
-      mkdir -p "\$openspecSkillsDir"
-
-      workDir="\$tempDir/work"
-      mkdir -p "\$tempDir/home" "\$workDir"
-      (
-        cd "\$workDir"
-        env \
-          CI=1 \
-          HOME="\$tempDir/home" \
-          "\${openspecCli}/bin/openspec" init --tools codex --profile core --no-animation .
-      )
-
-      for existingSkill in "\$openspecSkillsDir"/openspec-*; do
-        if [ -e "\$existingSkill" ] || [ -L "\$existingSkill" ]; then
-          rm -rf -- "\$existingSkill"
-        fi
-      done
-
-      for generatedSkill in "\$workDir/.agents/skills"/openspec-*; do
-        [ -d "\$generatedSkill" ] || continue
-        skillName="\$(basename "\$generatedSkill")"
-        cp -a -- "\$generatedSkill" "\$openspecSkillsDir/\$skillName"
-      done
-
-      rm -rf -- "\$tempDir"
-    '';
-
-    linkDesktopApplications = lib.hm.dag.entryAfter ["writeBoundary"] ''
-      rm -rf "\${crosDesktopShareDir}/applications" "\${crosDesktopShareDir}/icons"
-      mkdir -p "\${crosDesktopShareDir}/applications" "\${crosDesktopShareDir}/icons"
-
-      cp -rL "\${nixProfileShareDir}/applications/." "\${crosDesktopShareDir}/applications/"
-      cp -rL "\${nixProfileShareDir}/icons/."        "\${crosDesktopShareDir}/icons/"
-      if [ -r "/usr/share/applications/garcon_host_browser.desktop" ] &&
-         [ -x "/opt/google/cros-containers/bin/garcon" ]; then
-        cp -L "/usr/share/applications/garcon_host_browser.desktop" \
-          "\${crosDesktopShareDir}/applications/garcon_host_browser.desktop"
-      else
-        rm -f "\${crosDesktopShareDir}/applications/garcon_host_browser.desktop"
-      fi
-      chmod -R u+w "\${crosDesktopShareDir}/applications" "\${crosDesktopShareDir}/icons" 2>/dev/null || true
-
-      # update-desktop-database "\${crosDesktopShareDir}/applications" 2>/dev/null || true
-    '';
-  };
-
-  # Podman
-  # https://discourse.nixos.org/t/rootless-podman-setup-with-home-manager/57905
-  services.podman = {
-    enable = true;
-  };
-
-  # Declarative Nix Settings / Cachix binary caches
-  nix = {
-    package = pkgs.nix;
-    settings = {
-      substituters = [
-        "https://cache.nixos.org"
-        "https://cache.numtide.com"
-        "https://codex-desktop-linux.cachix.org"
-      ];
-      trusted-public-keys = [
-        "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
-        "niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g="
-        "codex-desktop-linux.cachix.org-1:nX/xy6AdK9hQE24A8ALGjkCKj2ObFmcnemiL5Cid4nk="
-      ];
-    };
-  };
-}
-
-EOF
+Path(sys.argv[1]).write_text(json.dumps({key: os.environ[value] for key, value in keys.items()}) + "\n")
+PY_HOST
+
+if ! ACTIVATION_PACKAGE="$(nix --accept-flake-config build \
+    --no-update-lock-file --no-link --print-out-paths --impure \
+    "path:$BUILD_DIR#homeConfigurations.\"$USER\".activationPackage")"; then
+  echo "ERROR: Home Manager build failed; existing configuration and profile were preserved." >&2
+  exit 1
+fi
+if [ ! -x "$ACTIVATION_PACKAGE/activate" ]; then
+  echo "ERROR: Nix did not produce an executable Home Manager activation package." >&2
+  exit 1
+fi
+if [ "$BUILD_ONLY" -eq 1 ]; then
+  echo "Build passed: $ACTIVATION_PACKAGE"
+  echo "No Home Manager configuration or profile was replaced."
+  exit 0
+fi
+
+# Preserve the previous generated files, including the old lock. Keep this
+# backup after success so a failed later application remains diagnosable.
+mkdir -p "$CONF_DIR"
+CONFIG_BACKUP_DIR="$(mktemp -d "$CONF_DIR.previous.XXXXXX")"
+for config_file in "${CONFIG_FILES[@]}"; do
+  if [ -e "$CONF_DIR/$config_file" ] || [ -L "$CONF_DIR/$config_file" ]; then
+    cp -a -- "$CONF_DIR/$config_file" "$CONFIG_BACKUP_DIR/"
+  fi
+done
+CONFIG_INSTALLED=1
+for config_file in "${CONFIG_FILES[@]}"; do
+  cp -- "$BUILD_DIR/$config_file" "$CONF_DIR/.$config_file.new"
+  mv -f -- "$CONF_DIR/.$config_file.new" "$CONF_DIR/$config_file"
+done
 
 # Stage an unmanaged wrapper before Home Manager claims the same path. This
 # makes a failed activation recoverable and lets a successful verification
 # retire the old copy explicitly.
-CODEX_WRAPPER_PATH="$HOME/.local/bin/codex"
-CODEX_WRAPPER_STAGING=""
 mkdir -p "$HOME/.local/bin"
-
-restore_codex_wrapper() {
-  if [ -n "$CODEX_WRAPPER_STAGING" ] && [ -e "$CODEX_WRAPPER_STAGING" ]; then
-    rm -f -- "$CODEX_WRAPPER_PATH"
-    mv -- "$CODEX_WRAPPER_STAGING" "$CODEX_WRAPPER_PATH"
-    echo "Restored the previous unmanaged Codex wrapper after activation failure." >&2
-  fi
-}
 
 if [ -d "$CODEX_WRAPPER_PATH" ] && [ ! -L "$CODEX_WRAPPER_PATH" ]; then
   echo "ERROR: $CODEX_WRAPPER_PATH is a directory; refusing to replace it." >&2
@@ -1390,13 +513,17 @@ if [ -e "$CODEX_WRAPPER_PATH" ] || [ -L "$CODEX_WRAPPER_PATH" ]; then
   fi
 fi
 
-trap restore_codex_wrapper EXIT
-echo "Activating Home Manager (Version $NIX_VER)..."
-if ! nix shell nixpkgs#git --command \
-    nix run github:nix-community/home-manager -- switch --flake "$CONF_DIR#$USER" --impure -b backup; then
-  echo "ERROR: Home Manager activation failed; the previous Codex wrapper was preserved." >&2
+echo "Activating the verified Home Manager build..."
+if ! HOME_MANAGER_BACKUP_EXT=backup "$ACTIVATION_PACKAGE/activate"; then
+  echo "ERROR: Home Manager activation failed; restoring generated configuration and unmanaged wrapper." >&2
+  echo "Activation may have applied partial changes; inspect its output before retrying." >&2
   exit 1
 fi
+CONFIG_INSTALLED=0
+
+# The shell running the first install has not loaded Home Manager's session
+# environment yet. The wrapper also needs the real Codex package on PATH.
+export PATH="$HOME/.local/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:$PATH"
 
 for node_command in node npm npx; do
   if ! PATH="$HOME/.nix-profile/bin:/usr/bin:/bin" \
@@ -1470,7 +597,6 @@ if [ -n "$CODEX_WRAPPER_STAGING" ] && [ -e "$CODEX_WRAPPER_STAGING" ]; then
   echo "Verified the Home Manager Codex wrapper; removed the previous unmanaged copy."
 fi
 CODEX_WRAPPER_STAGING=""
-trap - EXIT
 
 OPENSPEC_BIN="$HOME/.nix-profile/bin/openspec"
 if [ ! -x "$OPENSPEC_BIN" ] || ! "$OPENSPEC_BIN" --version >/dev/null; then
@@ -1526,7 +652,11 @@ if [ "$ROOT_SHELL" != "/bin/bash" ] && [ "$ROOT_SHELL" != "/bin/sh" ] && [ "$ROO
 fi
 
 # Ensure target shell is in /etc/shells (required by chsh PAM)
-ZSH_PATH="$(which zsh)"
+ZSH_PATH="$HOME/.nix-profile/bin/zsh"
+if [ ! -x "$ZSH_PATH" ]; then
+  echo "ERROR: Home Manager did not install an executable zsh at $ZSH_PATH." >&2
+  exit 1
+fi
 if ! grep -qxF "$ZSH_PATH" /etc/shells 2>/dev/null; then
   echo "$ZSH_PATH" | sudo tee -a /etc/shells > /dev/null
 fi
@@ -1542,7 +672,9 @@ fi
 echo "============================================================"
 echo "SUCCESS: Home Manager setup is fully activated!"
 echo "Your original configs were safely backed up as *.backup"
-echo "Modify your packages anytime in: $CONF_DIR/home.nix"
+echo "Generated configuration: $CONF_DIR"
+echo "Previous generated configuration: $CONFIG_BACKUP_DIR"
+echo "Edit the source files in $SCRIPT_DIR, then rerun cros-setup."
 echo "earlyoom is active as the user-session memory emergency shield."
 if [ "${TMP_MOUNT_PENDING:-0}" -eq 1 ]; then
   echo "Disk-backed /tmp is configured but not mounted yet; reboot to switch from the current tmpfs mount."

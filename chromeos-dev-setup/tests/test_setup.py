@@ -1,0 +1,272 @@
+"""Exercise setup's failure boundaries with fake tools and a disposable home.
+
+No Nix build, root command, activation, or host configuration change is real.
+Run with: python3 -m unittest discover -s chromeos-dev-setup/tests -v
+"""
+
+import json
+import os
+from pathlib import Path
+import stat
+import subprocess
+import tempfile
+import unittest
+
+
+SETUP = Path(__file__).resolve().parents[1] / "setup.bash"
+
+# The only shell builtin we replace is the Crostini character-device check.
+# This lets these tests run outside ChromeOS without creating a real device.
+RUNNER = r"""
+function [ {
+  if [[ "$#" == 3 && "$1" == -c && "$2" == /dev/wl0 && "$3" == ']' ]]; then
+    return 0
+  fi
+  builtin [ "$@"
+}
+export -f '['
+exec bash "$@"
+"""
+
+
+STUB = r'''#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import shutil
+import sys
+
+name = Path(sys.argv[0]).name
+args = sys.argv[1:]
+audit = Path(os.environ["SETUP_TEST_AUDIT"])
+with (audit / "calls.jsonl").open("a") as log:
+    log.write(json.dumps([name, *args]) + "\n")
+
+if name == "sudo":
+    # Never execute the command: root writes are outside this test's scope.
+    if args[:3] == ["btrfs", "subvolume", "show"]:
+        print("Subvolume ID: 256")
+    if "tee" in args:
+        sys.stdin.read()
+    sys.exit(0)
+if name in {"curl", "systemctl", "apt", "apt-get"}:
+    print("Unexpected direct external/system action: " + name, file=sys.stderr)
+    sys.exit(95)
+if name == "uname":
+    print("x86_64")
+    sys.exit(0)
+if name == "findmnt":
+    print("btrfs" if "FSTYPE" in args else "/dev/test")
+    sys.exit(0)
+if name == "btrfs":
+    sys.exit(0)
+if name == "dpkg":
+    print("/usr/lib/test/gtk-3.0/3.0.0/immodules/im-cros-gtk3.so")
+    print("/usr/lib/test/gtk-4.0/4.0.0/immodules/libim-cros-gtk4.so")
+    print("/usr/lib/test/qt5/plugins/platforminputcontexts/libcrosplatforminputcontextplugin.so")
+    sys.exit(0)
+if name == "find":
+    if any("immodules.cache" in arg for arg in args):
+        print(audit / "immodules.cache")
+    elif any("gtk-4.0" in arg for arg in args):
+        print("/usr/lib/test/gtk-4.0")
+    else:
+        print("Unexpected find: " + repr(args), file=sys.stderr)
+        sys.exit(96)
+    sys.exit(0)
+if name == "nix":
+    if "build" in args:
+        installable = next((arg for arg in args if arg.startswith("path:") and "#" in arg), None)
+        if installable is None:
+            print("Expected a staged path flake installable", file=sys.stderr)
+            sys.exit(97)
+        stage = Path(installable[5:].split("#", 1)[0])
+        shutil.copytree(stage, audit / "staged-config")
+        if os.environ.get("SETUP_TEST_FAIL_BUILD") == "1":
+            print("simulated package build failure", file=sys.stderr)
+            sys.exit(42)
+        print(audit / "activation")
+        sys.exit(0)
+    if "eval" in args:
+        print("26.11")
+        sys.exit(0)
+    if args == ["--version"]:
+        print("nix (test stub)")
+        sys.exit(0)
+    print("Unexpected nix call: " + repr(args), file=sys.stderr)
+    sys.exit(98)
+raise SystemExit("Unknown test tool: " + name)
+'''
+
+
+def tree_snapshot(root):
+    """Include paths, symlink targets, modes, and bytes without following links."""
+    result = {}
+    for path in sorted(root.rglob("*")):
+        info = path.lstat()
+        relative = str(path.relative_to(root))
+        if path.is_symlink():
+            value = ("link", os.readlink(path))
+        elif path.is_file():
+            value = ("file", stat.S_IMODE(info.st_mode), path.read_bytes())
+        else:
+            value = ("directory", stat.S_IMODE(info.st_mode))
+        result[relative] = value
+    return result
+
+
+class SetupTransactions(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="cros-setup-test-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.home = self.root / "home"
+        self.home.mkdir()
+        self.audit = self.root / "audit"
+        self.audit.mkdir()
+        (self.audit / "immodules.cache").write_text('"im-cros-gtk3.so"\n')
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        driver = self.bin / "stub"
+        driver.write_text(STUB)
+        driver.chmod(0o755)
+        for name in ("sudo", "curl", "systemctl", "apt", "apt-get", "nix", "uname", "findmnt", "btrfs", "dpkg", "find"):
+            (self.bin / name).symlink_to(driver)
+        activation = self.audit / "activation"
+        activation.mkdir()
+        (activation / "activate").write_text(
+            '#!/usr/bin/env bash\n'
+            'printf activated > "$SETUP_TEST_AUDIT/activated"\n'
+            'cp "$HOME/.config/home-manager/host.json" "$SETUP_TEST_AUDIT/activation-host.json"\n'
+            'exit "${SETUP_TEST_ACTIVATION_EXIT:-0}"\n'
+        )
+        (activation / "activate").chmod(0o755)
+        (self.root / "tmp").mkdir()
+        self.environment = os.environ.copy()
+        self.environment.update({
+            "HOME": str(self.home),
+            "USER": "setup-test-user",
+            "LOGNAME": "setup-test-user",
+            "PATH": str(self.bin) + ":/usr/bin:/bin",
+            "TMPDIR": str(self.root / "tmp"),
+            "SETUP_TEST_AUDIT": str(self.audit),
+            "GIT_USER_NAME": "New Employee",
+            "GIT_USER_EMAIL": "employee@example.test",
+        })
+        self.environment.pop("BASH_ENV", None)
+        self.environment.pop("ENV", None)
+        self.config = self.home / ".config" / "home-manager"
+        self.config.mkdir(parents=True)
+        for name in ("flake.nix", "flake.lock", "home.nix", "host.json", "codex-wrapper"):
+            (self.config / name).write_text("previous installed " + name + "\n")
+        wrapper = self.home / ".local" / "bin" / "codex"
+        wrapper.parent.mkdir(parents=True)
+        wrapper.write_text("#!/bin/sh\necho previous-wrapper\n")
+        wrapper.chmod(0o755)
+        profile = self.root / "previous-profile"
+        profile.mkdir()
+        (self.home / ".nix-profile").symlink_to(profile, target_is_directory=True)
+
+    def run_setup(self, *arguments, environment=None):
+        return subprocess.run(
+            ["bash", "--noprofile", "--norc", "-c", RUNNER, "setup-test", str(SETUP), *arguments],
+            cwd=self.root,
+            env=environment or self.environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=20,
+        )
+
+    def calls(self):
+        path = self.audit / "calls.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def assert_no_activation(self):
+        self.assertFalse((self.audit / "activated").exists())
+        self.assertFalse(any(call[0] == "nix" and "run" in call for call in self.calls()))
+
+    def protected_snapshot(self):
+        return (
+            tree_snapshot(self.config),
+            tree_snapshot(self.home / ".local" / "bin"),
+            os.readlink(self.home / ".nix-profile"),
+        )
+
+    def test_missing_git_identity_stops_before_privileged_actions_or_writes(self):
+        for key, value in (("GIT_USER_NAME", None), ("GIT_USER_EMAIL", "")):
+            with self.subTest(key=key):
+                environment = self.environment.copy()
+                if value is None:
+                    environment.pop(key, None)
+                else:
+                    environment[key] = value
+                before = tree_snapshot(self.home)
+                result = self.run_setup(environment=environment)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(key, result.stdout + result.stderr)
+                self.assertEqual(tree_snapshot(self.home), before)
+                self.assertFalse(any(call[0] in {"sudo", "nix", "curl", "apt", "apt-get", "systemctl"} for call in self.calls()))
+                self.assert_no_activation()
+
+    def test_failed_build_preserves_config_wrapper_and_profile(self):
+        before = self.protected_snapshot()
+        self.environment["SETUP_TEST_FAIL_BUILD"] = "1"
+        result = self.run_setup()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("simulated package build failure", result.stderr)
+        self.assertTrue((self.audit / "staged-config" / "flake.lock").is_file())
+        self.assertEqual(self.protected_snapshot(), before)
+        self.assert_no_activation()
+
+    def test_failed_activation_restores_generated_files_and_unmanaged_wrapper(self):
+        # An old generated file may itself be a symlink; rollback must preserve it.
+        old_home = self.root / "previous-home.nix"
+        old_home.write_text("previous linked Home Manager config\n")
+        (self.config / "home.nix").unlink()
+        (self.config / "home.nix").symlink_to(old_home)
+        before = self.protected_snapshot()
+        self.environment["SETUP_TEST_ACTIVATION_EXIT"] = "43"
+        result = self.run_setup()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("activation failed", result.stderr)
+        self.assertTrue((self.audit / "activated").exists())
+        activated_host = json.loads((self.audit / "activation-host.json").read_text())
+        self.assertEqual(activated_host["gitName"], self.environment["GIT_USER_NAME"])
+        self.assertEqual(self.protected_snapshot(), before)
+        self.assertEqual(len(list(self.config.parent.glob("home-manager.previous.*"))), 1)
+        self.assertEqual(list((self.root / "tmp").iterdir()), [])
+
+    def test_build_only_does_not_install_or_activate(self):
+        before = tree_snapshot(self.home)
+        result = self.run_setup("--build-only")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(tree_snapshot(self.home), before)
+        self.assertFalse(any(call[0] in {"sudo", "curl", "apt", "apt-get", "systemctl"} for call in self.calls()))
+        builds = [call for call in self.calls() if call[0] == "nix" and "build" in call]
+        self.assertEqual(len(builds), 1)
+        for flag in ("--no-update-lock-file", "--no-link", "--print-out-paths", "--impure"):
+            self.assertIn(flag, builds[0])
+        self.assert_no_activation()
+
+    def test_git_identity_is_data_even_with_quotes_newlines_and_nix_syntax(self):
+        name = 'Employee "Quoted" \\\n${builtins.abort "must remain data"} $(touch SHOULD_NOT_EXIST)'
+        email = 'employee+"quoted"\\address@example.test'
+        self.environment.update(GIT_USER_NAME=name, GIT_USER_EMAIL=email)
+        result = self.run_setup("--build-only")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        stage = self.audit / "staged-config"
+        host = json.loads((stage / "host.json").read_text())
+        self.assertEqual(host["gitName"], name)
+        self.assertEqual(host["gitEmail"], email)
+        self.assertEqual(host["username"], self.environment["USER"])
+        self.assertEqual(host["homeDirectory"], str(self.home))
+        for filename in ("home.nix", "flake.nix"):
+            self.assertNotIn(name, (stage / filename).read_text())
+        self.assertFalse((self.home / "SHOULD_NOT_EXIST").exists())
+        self.assertFalse((self.root / "SHOULD_NOT_EXIST").exists())
+        self.assert_no_activation()
+
+
+if __name__ == "__main__":
+    unittest.main()
