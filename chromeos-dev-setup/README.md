@@ -24,7 +24,7 @@ Start with ChromeOS Flex for better hardware compatibility and a smoother experi
 
 ## Terminal App Settings
 
-Open [chrome-untrusted://terminal/html/terminal_settings.html](chrome-untrusted://terminal/html/terminal_settings.html) in Chrome's address bar.
+Open `chrome-untrusted://terminal/html/terminal_settings.html` in Chrome's address bar.
 
 ![Terminal App Keyboard & mouse tab](Terminal%20App%20Keyboard%20&%20mouse%20tab.png)
 ![Terminal App behavior tab](Terminal%20App%20behavior%20tab.png)
@@ -44,7 +44,7 @@ await term_.prefs_.set('user-css-text', '@font-face {font-family: "JetBrainsMono
 
 ## Setup Chrome OS Crostini
 
-Open [chrome://os-settings/crostini/details](chrome://os-settings/crostini/details) in Chrome's address bar and set up **Linux development environment** if needed.
+Open `chrome://os-settings/crostini/details` in Chrome's address bar and set up **Linux development environment** if needed.
 
 In an **x86_64 ChromeOS Linux terminal**, fill in your Git identity and paste:
 
@@ -128,7 +128,7 @@ sudo restart powerd
 
 Reference: https://www.reddit.com/r/chromeos/comments/1u0niv3/crostini_linux_on_chromeos_is_stuck_using/
 
-1. Open [chrome://flags/#crostini-gpu-support](chrome://flags/#crostini-gpu-support), select **Enabled**, then reboot.
+1. Open `chrome://flags/#crostini-gpu-support`, select **Enabled**, then reboot.
 2. Add user to `render` group, this is already included in [`./setup.bash`](./setup.bash)
 3. Run `, glxinfo -B | grep Accelerated` and confirm `Accelerated: yes`
 
@@ -260,8 +260,8 @@ sudo grep "hdmi-audio" /var/log/messages | tail -5
 
 **Fix:** Enable automatic reapplication (preview).
 
-1. Open [chrome://os-settings/crostini/details](chrome://os-settings/crostini/details) in Chrome's address bar and set up **Linux development environment** if needed.
-2. Open [chrome://flags/#gesture-properties-dbus-service](chrome://flags/#gesture-properties-dbus-service), select **Enabled**, then restart Chrome.
+1. Open `chrome://os-settings/crostini/details` in Chrome's address bar and set up **Linux development environment** if needed.
+2. Open `chrome://flags/#gesture-properties-dbus-service`, select **Enabled**, then restart Chrome.
 3. In Files, right-click **My files → Share with Linux**, confirm **OK**, then paste in the Linux terminal:
 
    ```bash
@@ -280,7 +280,7 @@ sudo grep "hdmi-audio" /var/log/messages | tail -5
    )
    ```
 
-4. Open [chrome://extensions](chrome://extensions), enable **Developer mode**, then **Load unpacked → My files/cros-touchpad**.
+4. Open `chrome://extensions`, enable **Developer mode**, then **Load unpacked → My files/cros-touchpad**.
 
 To update, rerun the same command, then click the extension's **Reload** button.
 For the old preview, load the new path once. Extension files stay in ChromeOS.
