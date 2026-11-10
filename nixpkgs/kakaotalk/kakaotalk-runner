@@ -17,7 +17,6 @@ export WINEDLLOVERRIDES="mscoree=d;mshtml=d"
 WINE="@wine@/bin/wine"
 WINEBOOT="@wine@/bin/wineboot"
 REGEDIT="@wine@/bin/regedit"
-INSTALLER="@installer@"
 FONTS_DIR="@nanum@/share/fonts"
 
 WINE_EXE="$WINEPREFIX/drive_c/Program Files/Kakao/KakaoTalk/KakaoTalk.exe"
@@ -48,6 +47,15 @@ detect_ime() {
 
 # Initialize Wine prefix and install if KakaoTalk is not installed
 if [[ ! -f "$WINE_EXE" ]]; then
+    # The official URL always serves the latest release, so keep it out of
+    # Nix's fixed-output build inputs. Installed prefixes need no download.
+    installer_dir=$(mktemp -d)
+    trap 'rm -rf "$installer_dir"' EXIT
+    installer="$installer_dir/KakaoTalk_Setup.exe"
+    echo "Downloading the official KakaoTalk installer..."
+    "@curl@/bin/curl" --fail --location --proto '=https' --proto-redir '=https' \
+        --retry 2 --connect-timeout 30 --output "$installer" "@installerUrl@"
+
     echo "Initializing isolated Wine prefix in $WINEPREFIX..."
     "$WINEBOOT" --init
 
@@ -84,10 +92,16 @@ EOF
 
     # Install KakaoTalk silently
     echo "Running KakaoTalk installer silently..."
-    "$WINE" "$INSTALLER" /S
+    "$WINE" "$installer" /S
 
     # Wait a bit for the installation to finalize
     sleep 3
+    if [[ ! -f "$WINE_EXE" ]]; then
+        echo "ERROR: KakaoTalk installation did not create $WINE_EXE; run kakaotalk to retry." >&2
+        exit 1
+    fi
+    rm -rf "$installer_dir"
+    trap - EXIT
 
     # Optional: Configure KakaoTalk preferences to default to NanumBarunGothic
     pref_dir=$(find "$WINEPREFIX/drive_c/users" -type d -path "*/AppData/Local/Kakao/KakaoTalk" -print -quit || true)

@@ -2,6 +2,10 @@
 
 This package provides a standardized Nix expression for wrapping the official Windows version of KakaoTalk on Linux using Wine, suitable for upstream inclusion in `nixpkgs`.
 
+The first launch downloads the latest installer from Kakao over HTTPS; internet
+access is required. Installed prefixes skip the download. The package version
+tracks the launcher, not the downloaded application.
+
 ## Technical Details
 
 ### 1. Isolated Wine Environment

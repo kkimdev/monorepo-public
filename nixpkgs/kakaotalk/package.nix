@@ -7,14 +7,10 @@
 , wineWow64Packages
 , nanum
 , bash
+, curl
 }:
 
 let
-  installerSrc = fetchurl {
-    url = "https://lk.kakaocdn.net/talkpc/talk/win32/x64/KakaoTalk_Setup.exe";
-    hash = "sha256-23VxEYW7r1ngvea+OwK8002UPf69DvBpEzUvVB8yOSw=";
-  };
-
   iconSrc = fetchurl {
     url = "https://upload.wikimedia.org/wikipedia/commons/e/e3/KakaoTalk_logo.svg";
     hash = "sha256-0N1j/BFQCtpUN3mnO8PRMpB5Xaf3Ozh7bqX+ME8kTZk=";
@@ -24,15 +20,16 @@ let
   wine = wineWow64Packages.stable;
 
   runner = replaceVars ./kakaotalk-runner {
-    inherit wine nanum bash;
-    installer = installerSrc;
+    inherit wine nanum bash curl;
+    # Kakao overwrites this URL on release. Fetch only on first launch so a
+    # vendor update cannot break an otherwise locked Home Manager build.
+    installerUrl = "https://lk.kakaocdn.net/talkpc/talk/win32/x64/KakaoTalk_Setup.exe";
   };
 in
 stdenv.mkDerivation rec {
   pname = "kakaotalk-bin";
-  version = "3.7.0"; # Align with the current installer version major/minor
+  version = "1.0.0"; # Launcher version; KakaoTalk installs and updates at runtime.
 
-  src = installerSrc;
   dontUnpack = true;
 
   nativeBuildInputs = [ copyDesktopItems ];
