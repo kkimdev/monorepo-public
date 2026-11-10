@@ -58,9 +58,9 @@ if [ "$(uname -m)" != x86_64 ]; then
   echo "ERROR: this package set currently supports x86_64 Crostini only." >&2
   exit 1
 fi
-for required_file in flake.nix flake.lock home.nix patch-orca.py; do
+for required_file in flake.nix flake.lock home.nix patch-orca.py update.bash; do
   if [ ! -f "$SCRIPT_DIR/$required_file" ]; then
-    echo "ERROR: missing $SCRIPT_DIR/$required_file; use the complete repository checkout." >&2
+    echo "ERROR: missing $SCRIPT_DIR/$required_file; check out the chromeos-dev-setup directory." >&2
     exit 1
   fi
 done
@@ -228,7 +228,7 @@ CONFIG_INSTALLED=0
 SOURCE_LOCK_STAGING=""
 CODEX_WRAPPER_STAGING=""
 CODEX_WRAPPER_PATH="$HOME/.local/bin/codex"
-CONFIG_FILES=(flake.nix flake.lock home.nix host.json codex-wrapper patch-orca.py)
+CONFIG_FILES=(flake.nix flake.lock home.nix host.json codex-wrapper patch-orca.py update.bash)
 
 cleanup_setup() {
   local status=$?
@@ -445,7 +445,7 @@ CODEX_WRAPPER
 chmod 755 "$CODEX_WRAPPER_SOURCE"
 
 # Build the exact checked-in dependency graph before replacing live config.
-cp -- "$SCRIPT_DIR/flake.nix" "$SCRIPT_DIR/flake.lock" "$SCRIPT_DIR/home.nix" "$SCRIPT_DIR/patch-orca.py" "$BUILD_DIR/"
+cp -- "$SCRIPT_DIR/flake.nix" "$SCRIPT_DIR/flake.lock" "$SCRIPT_DIR/home.nix" "$SCRIPT_DIR/patch-orca.py" "$SCRIPT_DIR/update.bash" "$BUILD_DIR/"
 cp -- "$SCRIPT_DIR/flake.lock" "$BUILD_DIR/source-flake.lock"
 python3 - "$BUILD_DIR/host.json" <<'PY_HOST'
 import json

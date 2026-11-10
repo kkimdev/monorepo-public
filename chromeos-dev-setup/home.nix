@@ -35,13 +35,7 @@ let
     dir = "dir --color=auto";
     vdir = "vdir --color=auto";
 
-    # Explicit updates stage and validate a fresh package lock before activation.
-    cros-update = ''
-      sudo apt-get update && sudo apt-get full-upgrade -y && \
-      sudo apt-get autoremove -y && \
-      sudo determinate-nixd upgrade && \
-      bash ${lib.escapeShellArg host.setupScript} --update
-    '';
+    cros-update = "bash ${./update.bash} ${lib.escapeShellArg host.setupScript}";
 
     cros-clean = ''
       nix-collect-garbage -d && \

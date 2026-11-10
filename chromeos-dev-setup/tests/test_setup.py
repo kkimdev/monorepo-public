@@ -178,7 +178,7 @@ class SetupTransactions(unittest.TestCase):
         self.environment.pop("ENV", None)
         self.config = self.home / ".config" / "home-manager"
         self.config.mkdir(parents=True)
-        for name in ("flake.nix", "flake.lock", "home.nix", "host.json", "codex-wrapper", "patch-orca.py"):
+        for name in ("flake.nix", "flake.lock", "home.nix", "host.json", "codex-wrapper", "patch-orca.py", "update.bash"):
             (self.config / name).write_text("previous installed " + name + "\n")
         wrapper = self.home / ".local" / "bin" / "codex"
         wrapper.parent.mkdir(parents=True)
@@ -217,7 +217,7 @@ class SetupTransactions(unittest.TestCase):
     def use_disposable_checkout(self):
         checkout = self.root / "checkout"
         checkout.mkdir()
-        for filename in ("setup.bash", "flake.nix", "flake.lock", "home.nix", "patch-orca.py"):
+        for filename in ("setup.bash", "flake.nix", "flake.lock", "home.nix", "patch-orca.py", "update.bash"):
             shutil.copyfile(SETUP.parent / filename, checkout / filename)
         self.setup = checkout / "setup.bash"
         return checkout
