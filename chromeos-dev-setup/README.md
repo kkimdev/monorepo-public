@@ -1,12 +1,20 @@
-## Recommended Brunch Framework Options
-Reference: https://github.com/sebanc/brunch/blob/main/Readme/troubleshooting-and-faqs.md#brunch-configuration-menu
+## Installing Chrome OS
 
-General
+- **[ChromeOS Flex](https://support.google.com/chromeosflex/answer/11541904):** Google's official PC/Mac option; no Play Store.
+- **[Brunch](https://github.com/sebanc/brunch):** Community framework with Android app support; check hardware compatibility.
+
+### Brunch settings
+
+[Configuration menu](https://github.com/sebanc/brunch/blob/main/Readme/troubleshooting-and-faqs.md#brunch-configuration-menu)
+
+**General**
+
 - Kernel: `6.12`
 - Kernel Options: `enable_crosh_sudo`, `pwa`
 - Boot verbose mode: `yes`
 
-Lenovo Thinkbook Specific
+**Lenovo ThinkBook**
+
 - Kernel Options: `acpi_power_button` to make power button power menu work.
 - Kernel Commandline Parameters: `enforce_hyperthreading=1 initcall_blacklist=ucsi_acpi_platform_driver_init modprobe.blacklist=ucsi_acpi` to fix sleep mode.
 
