@@ -43,6 +43,13 @@ audit = Path(os.environ["SETUP_TEST_AUDIT"])
 with (audit / "calls.jsonl").open("a") as log:
     log.write(json.dumps([name, *args]) + "\n")
 
+if os.environ.get("SETUP_TEST_ALLOW_PROFILE_CHECKS") == "1":
+    if name in {"node", "npm", "npx", "earlyoom", "cloudflared", "systemctl"}:
+        sys.exit(0)
+    if name == "process-compose":
+        print("simulated optional catalog diagnostic", file=sys.stderr)
+        sys.exit(0)
+
 if name == "sudo":
     # Never execute the command: root writes are outside this test's scope.
     if args[:3] == ["btrfs", "subvolume", "show"]:
@@ -235,6 +242,13 @@ class SetupTransactions(unittest.TestCase):
         installable = next(arg for arg in build if arg.startswith("path:") and "#" in arg)
         self.assertEqual(updated_flake, installable.split("#", 1)[0])
 
+    def allow_post_activation_cli_checks(self):
+        profile_bin = self.home / ".nix-profile" / "bin"
+        profile_bin.mkdir()
+        for command in ("node", "npm", "npx", "earlyoom", "cloudflared", "process-compose"):
+            (profile_bin / command).symlink_to(self.bin / "stub")
+        self.environment["SETUP_TEST_ALLOW_PROFILE_CHECKS"] = "1"
+
     def test_missing_git_identity_stops_before_privileged_actions_or_writes(self):
         for key, value in (("GIT_USER_NAME", None), ("GIT_USER_EMAIL", "")):
             with self.subTest(key=key):
@@ -359,6 +373,33 @@ class SetupTransactions(unittest.TestCase):
         for flag in ("--no-update-lock-file", "--no-link", "--print-out-paths", "--impure"):
             self.assertIn(flag, builds[0])
         self.assert_no_activation()
+
+    def test_absent_local_service_catalog_skips_optional_checks_and_continues(self):
+        self.allow_post_activation_cli_checks()
+        self.assertFalse((self.home / ".config/local-services/process-compose.yaml").exists())
+        result = self.run_setup()
+        # This fixture intentionally never installs a managed wrapper. Reaching
+        # that later guard proves optional-service handling did not stop setup.
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("did not install a managed executable", result.stderr)
+        self.assertTrue((self.audit / "activated").exists())
+        self.assertFalse(any(call[0] == "process-compose" for call in self.calls()))
+        self.assertFalse(any(call[0] == "systemctl" and "local-services.service" in call for call in self.calls()))
+        self.assertNotIn("simulated optional catalog diagnostic", result.stderr)
+
+    def test_present_local_service_catalog_keeps_validation_and_enablement(self):
+        self.allow_post_activation_cli_checks()
+        catalog = self.home / ".config/local-services/process-compose.yaml"
+        catalog.parent.mkdir()
+        catalog.write_text('version: "0.5"\nprocesses: {}\n')
+        result = self.run_setup()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("did not install a managed executable", result.stderr)
+        self.assertIn(["systemctl", "--user", "enable", "local-services.service"], self.calls())
+        self.assertIn(["process-compose", "version"], self.calls())
+        self.assertIn([
+            "process-compose", "-f", str(catalog), "up", "--dry-run", "--tui=false", "--disable-dotenv",
+        ], self.calls())
 
     def test_git_identity_is_data_even_with_quotes_newlines_and_nix_syntax(self):
         name = 'Employee "Quoted" \\\n${builtins.abort "must remain data"} $(touch SHOULD_NOT_EXIST)'
