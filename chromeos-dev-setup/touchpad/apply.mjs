@@ -2,12 +2,19 @@
 // Always discovers the numeric device ID; closes only the Crosh process it opens.
 export async function applyTouchpad(api = globalThis.chrome?.terminalPrivate, {
   timeoutMs = 10000,
+  onWait = () => {},
 } = {}) {
   if (!api?.onProcessOutput || ['openTerminalProcess', 'sendInput', 'closeTerminalProcess', 'onTerminalResize']
       .some((method) => typeof api[method] !== 'function')) {
     throw new Error('terminalPrivate API is unavailable in this context');
   }
   const call = (method, ...args) => new Promise((resolve, reject) => {
+    const label = {
+      openTerminalProcess: 'Opening ChromeOS terminal',
+      onTerminalResize: 'Preparing ChromeOS terminal',
+      closeTerminalProcess: 'Finishing touchpad setup',
+    }[method];
+    if (label) onWait(label, timeoutMs);
     let expired = false;
     const timer = setTimeout(() => {
       expired = true;
@@ -26,7 +33,9 @@ export async function applyTouchpad(api = globalThis.chrome?.terminalPrivate, {
       else resolve(value);
     }); } catch (error) { clearTimeout(timer); reject(error); }
   });
-  const strip = (text) => text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\r\n?/g, '\n');
+  // Rustyline ends redraws with CR + CSI <column>C to position the cursor.
+  // CR is not a line break; preserve only LF when removing terminal controls.
+  const strip = (text) => text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\r/g, '');
   const transient = (message) => Object.assign(new Error(message), {retryable: true});
   // Crosh's readline can redraw a prompt and partial command after a resize.
   // Only output beyond those redraws/echoes can finish an outstanding command.
@@ -66,13 +75,15 @@ export async function applyTouchpad(api = globalThis.chrome?.terminalPrivate, {
     check();
   };
   const prompt = (command) => new Promise((resolve, reject) => {
+    onWait(command ? 'Applying touchpad settings' : 'Waiting for ChromeOS terminal', timeoutMs);
     const finish = (fn) => (value) => {
       clearTimeout(timer);
       waiting = undefined;
       fn(value);
     };
-    const timer = setTimeout(() => waiting?.reject(transient(command
-      ? 'Timed out waiting for reply to ' + command : 'Timed out waiting for Crosh prompt')), timeoutMs);
+    const timer = setTimeout(() => waiting?.reject(transient((command
+      ? 'Timed out waiting for reply to ' + command : 'Timed out waiting for Crosh prompt') +
+      '; recent Crosh output: ' + JSON.stringify(stream(pid).text.slice(-512)))), timeoutMs);
     waiting = {command, resolve: finish(resolve), reject: finish(reject)};
     check();
   });

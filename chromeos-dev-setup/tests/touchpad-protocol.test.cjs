@@ -12,12 +12,16 @@ const scalar = (type, value, readOnly = false) => method(`   boolean ${readOnly}
 
 function fixture(options = {}) {
   const listeners = new Set();
-  const commands = [], closed = [], writes = [], acknowledgements = [], resizes = [];
+  const commands = [], closed = [], writes = [], acknowledgements = [], resizes = [], waits = [];
   const values = new Map([['Change Timeout', 0.2], ['Motion Tap Prevent Timeout', 0.05]]);
   let enumerations = 0;
   const id = options.id || 12;
   const deviceName = options.name || name;
   const pid = 'helper-process';
+  // Captured from rustyline 9.1.1 refresh_line: redraw and absolute column move.
+  const prompt = options.rustylinePrompt
+    ? '\u001b[?2004h\r\u001b[0K\u001b[1;33mcrosh>\u001b[0m \r\u001b[7C'
+    : '\u001b[32mcrosh> \u001b[0m';
   let dispatching = false, currentType;
   // Model Chromium's event binding: dispatch listeners, then automatically ack.
   // https://chromium.googlesource.com/chromium/src/+/406edae7960e6d0bce2f9d4dc86cd5702c7f6da0/chrome/renderer/resources/extensions/terminal_private_custom_bindings.js
@@ -93,7 +97,7 @@ function fixture(options = {}) {
       assert.equal(process, 'crosh'); assert.deepEqual(Array.from(args), []);
       if (options.openNeverReplies) return;
       setTimeout(() => {
-        if (!options.noPrompt && !options.promptAfterResize) emit('\u001b[1;33mWelcome\u001b[0m\r\n\u001b[1;32mcrosh> \u001b[0m');
+        if (!options.noPrompt && !options.promptAfterResize) emit('\u001b[1;33mWelcome\u001b[0m\r\n' + prompt);
         callback(pid); // Output intentionally arrives before the open callback.
       }, options.lateOpen ? 50 : 0);
     },
@@ -103,7 +107,7 @@ function fixture(options = {}) {
       assert.equal(commands.length, 0, 'set size before issuing any command');
       resizes.push({process, width, height});
       if (options.resizeNeverReplies) return;
-      if (options.promptAfterResize) emit('Welcome\r\ncrosh> ');
+      if (options.promptAfterResize) emit('Welcome\r\n' + prompt);
       callback(!options.resizeFails);
     },
     sendInput(process, input, callback) {
@@ -126,7 +130,7 @@ function fixture(options = {}) {
         setTimeout(() => {
           if (options.commandTimeout) return;
           const echo = options.noEcho || options.echoRedraw ? '' : command + '\r\n';
-          emit(echo + answer(command) + (options.noReplyPrompt ? '' : '\u001b[32mcrosh> \u001b[0m'));
+          emit(echo + answer(command) + (options.noReplyPrompt ? '' : prompt));
         }, 0);
       }, 0);
     },
@@ -137,8 +141,9 @@ function fixture(options = {}) {
   };
   const context = vm.createContext({chrome: {terminalPrivate: api, runtime: {}}, TextDecoder, setTimeout, clearTimeout});
   vm.runInContext(source.replace('export async function', 'async function'), context);
-  return {run: () => context.applyTouchpad(undefined, {timeoutMs: options.timeoutMs || 1000}),
-    listeners, closed, writes, commands, pid, acknowledgements, resizes, get emitted() {return emitted;}};
+  return {run: () => context.applyTouchpad(undefined, {
+    timeoutMs: options.timeoutMs || 1000, onWait: (label, timeoutMs) => waits.push({label, timeoutMs}),
+  }), listeners, closed, writes, commands, pid, acknowledgements, resizes, waits, get emitted() {return emitted;}};
 }
 
 async function success(label, options) {
@@ -174,6 +179,10 @@ async function failure(label, options, error, expectedWrites = 0) {
   await success('Mouse sibling containing Touchpad is excluded', {name: 'Cypress Touchpad', mouseWithTouchpad: true});
   await success('optional Device flags absent', {noFlags: true});
   await success('initial prompt waits for initialized PTY size', {promptAfterResize: true});
+  await success('real rustyline prompt cursor-position suffix in one output event', {rustylinePrompt: true});
+  await success('real rustyline prompt fragmented through cursor-position suffix', {rustylinePrompt: true, bytes: true});
+  await success('resize-only rustyline prompt retains redraw cursor-position suffix', {rustylinePrompt: true, promptAfterResize: true});
+  await success('real rustyline prompt plus stale resize redraws and fragmented reply', {rustylinePrompt: true, bytes: true, echoRedraw: true});
   await success('late resize prompt cannot complete an outstanding command', {stalePrompt: true});
   await success('stale prompt and no-echo replies in fragmented byte events', {stalePrompt: true, noEcho: true, bytes: true});
   await success('incremental echo redraw and empty prompt before DBus reply', {echoRedraw: true, bytes: true});
@@ -201,16 +210,28 @@ async function failure(label, options, error, expectedWrites = 0) {
   await failure('input rejected', {inputFails: true}, /Crosh input failed/);
   await failure('initial prompt timeout', {noPrompt: true, timeoutMs: 20}, /Timed out/);
   await failure('command prompt timeout identifies command', {commandTimeout: true, timeoutMs: 20}, error => /Timed out.*gesture_prop devices/.test(error.message) && error.retryable === true);
-  await failure('prompt-only redraw remains a command timeout', {stalePrompt: true, commandTimeout: true, timeoutMs: 20}, error => /Timed out.*gesture_prop devices/.test(error.message) && error.retryable === true);
+  await failure('prompt-only redraw timeout includes escaped own output only', {stalePrompt: true, commandTimeout: true, timeoutMs: 20}, error =>
+    /Timed out.*gesture_prop devices/.test(error.message) && error.retryable === true &&
+    error.message.includes('\\u001b[32mcrosh> ') && !error.message.includes('999'));
   await failure('DBus reply without a final prompt remains blocked', {noReplyPrompt: true, timeoutMs: 20}, /Timed out.*gesture_prop devices/);
   await failure('input API callback timeout', {inputNeverReplies: true, timeoutMs: 20}, /Timed out/);
   await failure('open API callback timeout', {openNeverReplies: true, timeoutMs: 20}, /Timed out/);
   await failure('late-open owned process is closed', {lateOpen: true, timeoutMs: 20}, /Timed out/);
   await failure('cleanup API timeout still removes listener', {noPrompt: true, closeNeverReplies: true, timeoutMs: 20}, /Timed out/);
   await failure('blocked API acknowledgement times out without writes', {bytes: true, ignoreAcknowledgement: true, timeoutMs: 20}, /Timed out/);
+  const countdown = fixture({timeoutMs: 321});
+  await countdown.run();
+  assert.deepEqual(countdown.waits.slice(0, 3).map(wait => wait.label), [
+    'Opening ChromeOS terminal', 'Preparing ChromeOS terminal', 'Waiting for ChromeOS terminal',
+  ]);
+  assert.equal(countdown.waits.at(-1).label, 'Finishing touchpad setup');
+  assert.equal(countdown.waits.filter(wait => wait.label === 'Applying touchpad settings').length, countdown.commands.length);
+  assert.equal(countdown.waits.length, countdown.commands.length + 4, 'sendInput must not reset the command countdown');
+  assert.ok(countdown.waits.every(wait => wait.timeoutMs === 321), 'every wait reports its actual timeout');
+  console.log('PASS readiness and command waits expose matching deadlines without raw commands');
   const missing = vm.createContext({TextDecoder, setTimeout, clearTimeout});
   vm.runInContext(source.replace('export async function', 'async function'), missing);
   await assert.rejects(missing.applyTouchpad(), /terminalPrivate API is unavailable/);
   console.log('PASS unavailable terminalPrivate context fails clearly');
-  console.log('42 protocol tests passed with modeled Chromium automatic-ack and backpressure. Mocked runtime only; actual ChromeOS application remains unverified.');
+  console.log('47 protocol tests passed with modeled Chromium automatic-ack and backpressure. Mocked runtime only; actual ChromeOS application remains unverified.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
