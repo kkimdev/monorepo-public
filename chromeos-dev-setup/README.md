@@ -7,6 +7,8 @@ Start with ChromeOS Flex for better hardware compatibility and a smoother experi
 
 ### Brunch Framework settings
 
+![Brunch Framework only](brunch-framework-only.svg)
+
 [Configuration menu](https://github.com/sebanc/brunch/blob/main/Readme/troubleshooting-and-faqs.md#brunch-configuration-menu)
 
 **General**
@@ -107,6 +109,8 @@ cat ~/.ssh/id_ed25519.pub
 
 ## Keyboard Backlight Timeout Config
 
+![Brunch Framework only](brunch-framework-only.svg)
+
 1. `[Ctrl]+[Alt]+T` to open crosh terminal
 2. Type `shell` then `[Enter]`
 3.
@@ -129,6 +133,8 @@ Reference: https://www.reddit.com/r/chromeos/comments/1u0niv3/crostini_linux_on_
 ## Troubleshooting
 
 ### Internal Microphone Not Working in Chrome
+
+![Brunch Framework only](brunch-framework-only.svg)
 
 **Known to affect:** ThinkBook 16 G6 IRL
 
@@ -198,6 +204,8 @@ persistence has not yet been tested. ChromeOS/Brunch updates may replace the
 UCM files; recheck the active profile if the issue returns after an update.
 
 ### HDMI Audio Output Not Working
+
+![Brunch Framework only](brunch-framework-only.svg)
 
 **Known to affect:** ThinkBook 16 G6 IRL
 
