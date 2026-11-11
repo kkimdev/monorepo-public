@@ -3,14 +3,19 @@
     "crdyboot": {
       "flake": false,
       "locked": {
-        "lastModified": 1794410416,
+        "lastModified": 1793379712,
         "narHash": "sha256-f9I1xPYYva1KtSfPLK9ZOijxa4tfmUugUPVz+/L55zQ=",
-        "type": "tarball",
-        "url": "https://chromium.googlesource.com/chromiumos/platform/crdyboot/%2Barchive/0484fa5b0c994a0077ef89703a833df9be52f8ad.tar.gz"
+        "ref": "refs/heads/main",
+        "rev": "0484fa5b0c994a0077ef89703a833df9be52f8ad",
+        "shallow": true,
+        "type": "git",
+        "url": "https://chromium.googlesource.com/chromiumos/platform/crdyboot"
       },
       "original": {
-        "type": "tarball",
-        "url": "https://chromium.googlesource.com/chromiumos/platform/crdyboot/%2Barchive/0484fa5b0c994a0077ef89703a833df9be52f8ad.tar.gz"
+        "ref": "refs/heads/main",
+        "shallow": true,
+        "type": "git",
+        "url": "https://chromium.googlesource.com/chromiumos/platform/crdyboot"
       }
     },
     "nixpkgs": {
@@ -60,14 +65,19 @@
     "vboot": {
       "flake": false,
       "locked": {
-        "lastModified": 1794410445,
-        "narHash": "sha256-ArEN06x0EZmXJufzWclSgEfCyZxu0Wa6zm9mPPj7ng0=",
-        "type": "tarball",
-        "url": "https://chromium.googlesource.com/chromiumos/platform/vboot_reference/%2Barchive/906136da2c93e6dfe3c93763c93dfae59d24e54d.tar.gz"
+        "lastModified": 1794337415,
+        "narHash": "sha256-KuFY8e+ByhrRb9+883Ya09YIECU78D2kjtvBUsXc27M=",
+        "ref": "refs/heads/main",
+        "rev": "9a4c17111c24d7e0361a203ec990fa35dac4adf4",
+        "shallow": true,
+        "type": "git",
+        "url": "https://chromium.googlesource.com/chromiumos/platform/vboot_reference"
       },
       "original": {
-        "type": "tarball",
-        "url": "https://chromium.googlesource.com/chromiumos/platform/vboot_reference/%2Barchive/906136da2c93e6dfe3c93763c93dfae59d24e54d.tar.gz"
+        "ref": "refs/heads/main",
+        "shallow": true,
+        "type": "git",
+        "url": "https://chromium.googlesource.com/chromiumos/platform/vboot_reference"
       }
     }
   },

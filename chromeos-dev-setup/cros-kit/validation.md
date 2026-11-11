@@ -60,8 +60,8 @@ matched Google's metadata. Guest kernel: `6.12.100-01491-g094d98275718`.
 Local proof files below are under `~/.cache/flex-usb-lab/`.
 
 VM and image evidence below predates the CrOS Kit flake conversion. Runtime,
-shim and compatibility contract are unchanged. EFI was rebuilt from the same
-upstream sources using the locked, sandboxed recipe; its new artifact has not
+shim and compatibility contract are unchanged. EFI was rebuilt from the locked
+upstream sources using the sandboxed recipe; its new artifact has not
 been boot-tested. Flake checks validate the current offline media tree and payloads.
 
 The guarded production payload booted without diagnostic hooks. Live runtime,
@@ -106,7 +106,7 @@ so production deliberately avoids `--acls`. Sparse-file import is host-tested.
 | Flake unit, payload and signed offline repository checks | **PASS: sandboxed checks** |
 | Actual one-command dependency update | **PASS: staged rebuild/check/publication; one capability skip without root** |
 | EFI offline rebuild | **PASS: identical complete Nix output** |
-| Locked full USB image, 10 payloads, 64 APKs, signed index, both GPTs | **PASS: offline creation and exact readback** |
+| Previous locked USB image, 10 payloads, 64 APKs, signed index, both GPTs | **PASS: offline creation and exact readback** |
 | Pre-flake installer, bootstrap, runtime, shim and USB tests | **PASS: 188 tests, no skips** |
 | Python/shell contract agreement, malformed/injected inputs | **PASS: conformance tests** |
 | A/B highest-priority ties, old fallback, refusal before EFI writes | **PASS: temporary-disk integration tests** |
@@ -118,7 +118,7 @@ so production deliberately avoids `--acls`. Sparse-file import is host-tested.
 | Combined image payload and primary/backup GPT | **PASS: all 10 files read back exactly** |
 | Actual A/B OS update and postinstall persistence | **UNRUN** |
 | Existing signed-in/encrypted user account | **UNRUN** |
-| Physical USB write, full byte comparison and payload/GPT readback | **PASS: SanDisk 3.2Gen1** |
+| Previous locked USB physical write, full byte comparison and payload/GPT readback | **PASS: SanDisk 3.2Gen1** |
 | Physical laptop boot with this full-root runtime | **UNRUN** |
 
 `guard-final-tests.log` records the suite. `combined-guard-final.img` was repackaged
@@ -131,12 +131,18 @@ image, flashed on 2026-11-12. Full byte comparison, both GPTs, ten installer fil
 the signed index and all 64 APKs passed physical readback
 (`cros-kit-physical-flash-final.json`, `cros-kit-physical-flash.log`). Laptop boot
 remains untested. Old preview storage is not imported into the new layer format.
+This USB predates the firmware input update below and has not been reflashed.
 
-Current flake evidence (2026-11-12): `flake-root-tests-final.log`,
+Initial flake evidence (2026-11-12): `flake-root-tests-final.log`,
 `flake-check-final.log`, `flake-update-final.log`, `flake-image-final.log` and
-`flake-image-readback-final.json`. The full image uses the current published
+`flake-image-readback-final.json`. That full image uses the previously published
 payload bytes. Large image staging uses the output folder or user cache to avoid
 small `/tmp` quotas. Physical write/readback evidence is recorded separately above.
+
+Firmware input update (2026-11-12): `flake-all-inputs-update.log`,
+`flake-all-inputs-root-tests.log` and `flake-all-inputs-efi-rebuild.log` cover
+the actual all-input updater, complete suite and offline EFI rebuild. The new EFI
+has not been boot-tested or written to USB.
 
 ## Updates and recovery
 
@@ -186,7 +192,7 @@ nix run path:.#update
 | Input | Lock |
 | --- | --- |
 | Nix tools, firmware sources, Rust component hashes | [flake.lock](flake.lock), including rust-overlay |
-| Rust version, firmware revisions, Cargo dependency hash | [flake.nix](flake.nix), [efi.nix](efi.nix); upstream Cargo.lock |
+| Rust version and Cargo dependencies | Locked crdyboot source's rust-toolchain.toml and Cargo.lock checksums |
 | Flex ZIP, Alpine ISO and every APK | [media.json](media.json), SHA256 per file |
 | Official signed repository snapshot | [alpine-index.tar.gz](alpine-index.tar.gz), hashed in media.json |
 | Built EFI and exact build inputs | [build-info.json](build-info.json), adjacent artifact manifests |
@@ -196,16 +202,17 @@ APK signature and dependency checks run offline using keys from the locked ISO.
 Upstream may remove old downloads: hashes prevent silent substitutions, but do not
 guarantee permanent availability. Keep a Nix cache for long-term rebuilds.
 
-The update command refreshes nixpkgs, rust-overlay and official media in a temporary
+The update command refreshes all flake inputs and official media in a temporary
 source copy, rebuilds EFI/shim, refreshes manifests and runs flake checks plus the
 full local suite. It replaces generated files only after success and refuses
 concurrent source edits; replacement errors and Ctrl+C roll back completed writes.
 Abrupt power loss during multi-file replacement is not transactional.
 
-Firmware revisions, the Rust release and the OS compatibility contract remain
-explicit source changes; the command never approves a new OS automatically. After
-reviewing such a change, use the same command to rebuild and validate. Unit tests
-and artifact checks do not replace OS boot/update testing.
+Firmware sources track upstream `main`; exact revisions remain in `flake.lock`.
+Rust follows the locked source's declared channel; Cargo packages use its lock-file
+checksums. Incompatible patches or builds stop publication. The OS compatibility
+contract still requires explicit validation; the command never approves a new OS
+automatically. Unit tests and artifact checks do not replace OS boot/update testing.
 
 EFI compilation is sandboxed with vendored Cargo dependencies and `--frozen
 --offline`; Rust never downloads components during compilation. A complete offline
@@ -218,7 +225,7 @@ commit. Set `CROS_KIT_REV` to a full commit SHA to select the same payload again
 
 Current SHA256:
 
-- EFI: `09a1e9127ce5de3fa1740eabc05f67379addca65e99b8c3ad336dca8810c9b8b`
+- EFI: `038c9d4afb7cea5b601f718b5875474ef5decc1e4d2074d97627c25249a2ddd7`
 - Runtime: `590f0f70786d893bcbb97876b592ee1670d65c9b11c16d84da898f5b480cc4e6`
 - Shim: `e205e7c36f53d3f0d8b7bd12097a61ba7adad4241e1039cbe74480ecd5814689`
 - Contract: `75d14677bd8103cba2866702622b21669f4c6905a0a2216eb63fc219cbcc8266`

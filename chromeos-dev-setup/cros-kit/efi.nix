@@ -4,17 +4,12 @@ let
   llvm = pkgs.llvmPackages_21;
   rustPlatform = pkgs.makeRustPlatform { cargo = rustToolchain; rustc = rustToolchain; };
   target = "x86_64-unknown-uefi";
-  cargoHash = "sha256-MCR4TFdlwLO7MsrDTXAwt9v59YOraeDxJi0KZ86//hw=";
-  cargoDeps = rustPlatform.fetchCargoVendor {
-    pname = "crdyboot";
-    version = "locked";
-    src = crdyboot;
-    hash = cargoHash;
+  cargoDeps = rustPlatform.importCargoLock {
+    lockFile = "${crdyboot}/Cargo.lock";
   };
   buildProvenance = pkgs.writeText "cros-kit-efi-provenance.json" (builtins.toJSON {
     inputs = provenance;
     target = target;
-    cargo_vendor_hash = cargoHash;
     patch_sha256 = builtins.hashFile "sha256" ./cros-debug.patch;
     recipe_sha256 = builtins.hashFile "sha256" ./efi.nix;
     helper_sha256 = builtins.hashFile "sha256" ./build.py;

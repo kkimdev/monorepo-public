@@ -176,9 +176,8 @@ def update(directory, cache):
         runtime = staged / "rw-init.sh"
         (staged / "rw-init.sh.sha256").write_text(
             f"{make_usb.file_hash(runtime, 'sha256')}  {runtime.name}\n")
-        print("Updating nixpkgs and rust-overlay; firmware sources and Cargo hashes stay explicitly pinned.",
-              flush=True)
-        _command(["nix", "flake", "update", "nixpkgs", "rust-overlay"], staged)
+        print("Updating all flake inputs, including firmware sources and toolchain definitions.", flush=True)
+        _command(["nix", "flake", "update"], staged)
         outputs = _command(["nix", "build", "--no-link", "--print-out-paths",
                             ".#efi", ".#rootdev", ".#alpine-repo", ".#flex-archive", ".#alpine-iso"],
                            staged, capture=True).splitlines()

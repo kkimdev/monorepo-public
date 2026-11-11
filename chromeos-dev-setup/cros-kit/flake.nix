@@ -6,11 +6,11 @@
     rust-overlay.url = "github:oxalica/rust-overlay";
     rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
     crdyboot = {
-      url = "https://chromium.googlesource.com/chromiumos/platform/crdyboot/+archive/0484fa5b0c994a0077ef89703a833df9be52f8ad.tar.gz";
+      url = "git+https://chromium.googlesource.com/chromiumos/platform/crdyboot?ref=refs/heads/main&shallow=1";
       flake = false;
     };
     vboot = {
-      url = "https://chromium.googlesource.com/chromiumos/platform/vboot_reference/+archive/906136da2c93e6dfe3c93763c93dfae59d24e54d.tar.gz";
+      url = "git+https://chromium.googlesource.com/chromiumos/platform/vboot_reference?ref=refs/heads/main&shallow=1";
       flake = false;
     };
   };
@@ -20,7 +20,9 @@
       system = "x86_64-linux";
       locked = (builtins.fromJSON (builtins.readFile ./flake.lock)).nodes;
       pkgs = import nixpkgs { inherit system; config = {}; overlays = [ rust-overlay.overlays.default ]; };
-      toolchain = pkgs.rust-bin.nightly."2026-03-02".default.override {
+      rustChannel = (builtins.fromTOML (builtins.readFile "${crdyboot}/rust-toolchain.toml")).toolchain.channel;
+      toolchain = pkgs.rust-bin.fromRustupToolchain {
+        channel = rustChannel;
         targets = [ "x86_64-unknown-uefi" ];
       };
       efi = import ./efi.nix {
@@ -31,7 +33,7 @@
           rust-overlay = locked.rust-overlay.locked;
           crdyboot = locked.crdyboot.locked;
           vboot = locked.vboot.locked;
-          rust_toolchain = "nightly-2026-03-02";
+          rust_toolchain = rustChannel;
         };
       };
       rootdev = import ./rootdev-compat.nix { inherit pkgs; };

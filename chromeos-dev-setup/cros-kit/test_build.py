@@ -56,7 +56,7 @@ class PackagingTests(unittest.TestCase):
             artifact.write_bytes(template())
             output = source / "out"
             provenance = {"inputs": {"crdyboot": {"rev": "locked-revision"}},
-                          "recipe_sha256": "recipe-hash", "cargo_vendor_hash": "vendor-hash"}
+                          "recipe_sha256": "recipe-hash"}
             with patch.object(build, "notices") as notices, patch.object(
                     build, "run", return_value=SimpleNamespace(stdout="pinned tool 1.0\n")):
                 build.package(source, artifact, output, provenance)
@@ -64,9 +64,10 @@ class PackagingTests(unittest.TestCase):
             info = json.loads((output / "build-info.json").read_text())
             self.assertEqual(info["inputs"], provenance["inputs"])
             self.assertEqual(info["recipe_sha256"], "recipe-hash")
-            self.assertEqual(info["cargo_vendor_hash"], "vendor-hash")
+            self.assertNotIn("cargo_vendor_hash", info)
             self.assertEqual(info["sha256"], hashlib.sha256(artifact.read_bytes()).hexdigest())
-            self.assertEqual(info["cargo_lock_sha256"], build.digest(source / "Cargo.lock"))
+            self.assertEqual(info["cargo_lock_sha256"],
+                             hashlib.sha256(b"locked dependencies\n").hexdigest())
             self.assertEqual(info["bytes"], artifact.stat().st_size)
             self.assertNotIn("pins_sha256", info)
             self.assertNotIn("environment_sha256", info)

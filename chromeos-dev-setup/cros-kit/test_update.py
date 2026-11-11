@@ -146,7 +146,7 @@ class UpdateTests(unittest.TestCase):
         for name in ("flake.nix", "efi.nix", "compatibility.conf", "rw-init.sh"):
             self.assertEqual((self.source / name).read_bytes(), self.original[Path(name)])
         args = [item[0] for item in self.commands]
-        self.assertEqual(args[0], ["nix", "flake", "update", "nixpkgs", "rust-overlay"])
+        self.assertEqual(args[0], ["nix", "flake", "update"])
         self.assertEqual(args[1][4:], [".#efi", ".#rootdev", ".#alpine-repo",
                                      ".#flex-archive", ".#alpine-iso"])
         self.assertEqual(args[2], ["nix", "flake", "check"])
@@ -155,7 +155,7 @@ class UpdateTests(unittest.TestCase):
         self.assertIn("-v", args[3])
 
     def test_validation_failure_preserves_entire_original_tree(self):
-        for failure in ("build", "check", "develop"):
+        for failure in ("update", "build", "check", "develop"):
             with self.subTest(failure=failure):
                 def fail(args, directory, capture=False):
                     if failure in args[1:3]:

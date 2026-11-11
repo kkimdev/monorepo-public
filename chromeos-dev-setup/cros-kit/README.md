@@ -68,7 +68,9 @@ From the repository root:
 nix run path:./chromeos-dev-setup/cros-kit#update
 ```
 
-Refreshes tool/media locks, rebuilds and tests before replacing generated files.
+Refreshes all flake inputs (including firmware sources) and media locks, then
+rebuilds and tests before replacing generated files. Rust and Cargo dependencies
+follow the locked firmware source.
 Unvalidated Flex releases stop the update; the OS compatibility contract stays explicit.
 
 [Validation and manual installation](validation.md) ·
