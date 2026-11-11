@@ -1,0 +1,167 @@
+--- a/crdyboot/src/linux.rs
++++ b/crdyboot/src/linux.rs
+@@ -30,6 +30,7 @@
+ use sha2::{Digest, Sha256};
+ use uefi::boot::{self, AllocateType, MemoryType};
+ use uefi::proto::device_path::text::{AllowShortcuts, DisplayOnly};
++use uefi::proto::device_path::DevicePathNodeEnum;
+ use uefi::proto::media::fs::SimpleFileSystem;
+ use uefi::proto::tcg::PcrIndex;
+ use uefi::{cstr16, CStr16, CString16, Handle, Status};
+@@ -155,6 +156,8 @@
+ 
+     fn verbose_logging(&self) -> bool;
+ 
++    fn normal_boot(&self) -> bool;
++
+     fn log_esp_device_path(&self, uefi: &dyn Uefi);
+ 
+     fn get_valid_flexor_sha256_hashes(&self) -> &'static [&'static str];
+@@ -192,6 +195,24 @@
+ 
+     fn verbose_logging(&self) -> bool {
+         does_verbose_file_exist()
++    }
++
++    fn normal_boot(&self) -> bool {
++        let Ok(image) = UefiImpl.open_loaded_image(boot::image_handle()) else {
++            return false;
++        };
++        let Some(path) = image.file_path() else {
++            return false;
++        };
++        // File paths can span several nodes; only the final file node owns
++        // the executable basename. Do not depend on DevicePathToText firmware.
++        path.node_iter()
++            .filter_map(|node| match node.as_enum() {
++                Ok(DevicePathNodeEnum::MediaFilePath(file)) => Some(file.path_name().to_vec()),
++                _ => None,
++            })
++            .last()
++            .is_some_and(|name| configured_normal_path(&name))
+     }
+ 
+     /// Log the device path of the ESP.
+@@ -312,6 +333,19 @@
+     } else {
+         format!("{base} loglevel=1 printk.devkmsg=ratelimit")
+     }
++}
++
++// The same personalized binary is installed under two filenames. Only the
++// exact normal basename requests normal runtime policy; renamed copies stay
++// Debug. UEFI file paths are UCS-2 and FAT filenames are case-insensitive.
++fn configured_normal_path(path: &[u16]) -> bool {
++    let path = path.strip_suffix(&[0]).unwrap_or(path);
++    let basename = path.rsplit(|c| *c == u16::from(b'\\') || *c == u16::from(b'/'))
++        .next().unwrap_or(&[]);
++    let expected = b"normalx64.efi";
++    basename.len() == expected.len() && basename.iter().zip(expected).all(|(a, b)| {
++        *a == u16::from(*b) || *a == u16::from(b.to_ascii_uppercase())
++    })
+ }
+ 
+ /// Use vboot to load the kernel from the appropriate kernel partition,
+@@ -345,7 +379,7 @@
+     let vboot_kernel;
+     let flexor_kernel;
+     let kernel_data: &[u8];
+-    let kernel_cmdline: String;
++    let mut kernel_cmdline: String;
+ 
+     match vboot::load_kernel(
+         LoadKernelInputs {
+@@ -387,6 +421,36 @@
+             info!("flexor cmdline: {kernel_cmdline}");
+         }
+     }
++
++    // Keep official kernel verification intact. Enable developer mounts and a
++    // separate writable overlay without modifying the verified root partition.
++    kernel_cmdline = kernel_cmdline
++        .split_whitespace()
++        .take_while(|arg| *arg != "--")
++        .filter(|arg| {
++            *arg != "cros_nodebug" && *arg != "cros_debug" && !arg.starts_with("init=")
++        })
++        .collect::<alloc::vec::Vec<_>>()
++        .join(" ");
++    // Linux next_arg accepts one double-quoted init argument, but cannot escape
++    // embedded double quotes. Use only single quotes inside the shell program.
++    // The EXIT trap always restores stock PID 1 if the optional script fails.
++    kernel_cmdline.push_str(if rk.normal_boot() { " cros_nodebug" } else { " cros_debug" });
++    kernel_cmdline.push_str(concat!(
++        " chromiumos.allow_overlayfs init=/bin/sh -- -c \"",
++        "PATH=/sbin:/bin:/usr/sbin:/usr/bin;export PATH;",
++        "mount -t proc -o nosuid,nodev,noexec proc /proc;",
++        "mount -t sysfs -o nosuid,nodev,noexec sysfs /sys;",
++        "mount -t devtmpfs -o nosuid,noexec devtmpfs /dev;",
++        "mount -t tmpfs -o nosuid,nodev,noexec,nosymfollow,mode=1777 tmpfs /tmp;",
++        "mkdir -p /tmp/flex-debug-esp;",
++        "trap 'umount -l /tmp/flex-debug-esp 2>/dev/null;exec /sbin/init' EXIT;",
++        "d=$(rootdev -s -d);case $d in *[0-9])p=${d}p12;;*)p=${d}12;;esac;",
++        "FLEX_DEBUG_INIT_SOURCE=/tmp/flex-debug-esp/EFI/cros-flex-debug/rw-init.sh;",
++        "export FLEX_DEBUG_INIT_SOURCE;",
++        "if mount -t vfat -o ro,nosuid,nodev $p /tmp/flex-debug-esp && ",
++        "[ -r $FLEX_DEBUG_INIT_SOURCE ];then . $FLEX_DEBUG_INIT_SOURCE;fi\"",
++    ));
+ 
+     // Convert kernel command line to UCS-2.
+     let kernel_cmdline = CString16::try_from(kernel_cmdline.as_str())
+@@ -588,6 +652,22 @@
+     use libcrdy::fs::MockFileLoader;
+     use libcrdy::uefi::MockUefi;
+ 
++    #[test]
++    fn test_configured_normal_path() {
++        for path in [r"\EFI\cros-flex-debug\normalx64.efi", "NORMALX64.EFI",
++                     "/EFI/cros-flex-debug/NormalX64.Efi"] {
++            let mut wide: Vec<u16> = path.encode_utf16().collect();
++            assert!(configured_normal_path(&wide), "{path}");
++            wide.push(0);
++            assert!(configured_normal_path(&wide), "{path}");
++        }
++        for path in ["", r"\EFI\normalx64.efi\bootx64.efi", "bootx64.efi",
++                     "xnormalx64.efi", "normalx64.efi.old", "normalx64.efi/",
++                     "normalx64xefi", "normalx64.efi\0evil", "nörmalx64.efi"] {
++            assert!(!configured_normal_path(&path.encode_utf16().collect::<Vec<_>>()), "{path}");
++        }
++    }
++
+     const TEST_DATA: &[u8] = &[1, 2, 3];
+     const FLEXOR_SHA256_TEST_HASHES: &[&str] = &[
+         // SHA256 hash for `TEST_DATA`
+@@ -690,6 +770,7 @@
+     }
+ 
+     fn expect_launch_next_stage(rk: &mut MockRunKernel) {
++        rk.expect_normal_boot().times(1).return_const(false);
+         rk.expect_launch_next_stage()
+             .times(1)
+             .withf(|next_stage| {
+--- a/crdyboot/build.rs
++++ b/crdyboot/build.rs
+@@ -5,19 +5,13 @@
+ use std::path::PathBuf;
+ use std::{env, fs};
+ 
+-/// Generate the vbpubk section. The data for this section comes from a
+-/// test key in vboot_reference. During image signing the real pubkey
+-/// will overwrite this data. In order to allow for a bigger key in the
+-/// image signer, the size of this section is padded out to an
+-/// arbitrarily-chosen size of 8192 bytes.
++/// Reserve the upstream signing section without embedding a development key.
++/// Installation must copy the target's official public verification key here.
++/// An unpersonalized template has no valid key and cannot boot a kernel.
+ fn generate_vbpubk_section() {
+     let padded_len = 8192;
+ 
+-    let mut pubkey =
+-        include_bytes!("../third_party/vboot_reference/tests/devkeys/kernel_subkey.vbpubk")
+-            .to_vec();
+-    assert!(pubkey.len() < padded_len);
+-    pubkey.resize(padded_len, 0);
++    let pubkey = vec![0_u8; padded_len];
+ 
+     let dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+     let out_path = dir.join("padded_vbpubk");

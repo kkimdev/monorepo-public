@@ -113,13 +113,12 @@ cat ~/.ssh/id_ed25519.pub
 
 ## Keyboard Backlight Timeout Config
 
-![Brunch Framework only](brunch-framework-only.svg)
+Use Brunch Framework or boot experimental
+[CrOS Kit’s Flex Debug mode](cros-kit/README.md) (VM-tested; physical testing pending).
 
-1. `[Ctrl]+[Alt]+T` to open crosh terminal
-2. Type `shell` then `[Enter]`
-3.
+Open Crosh (`Ctrl+Alt+T`), run `shell --isolated`, then:
+
 ```bash
-cat /usr/share/power_manager/keyboard_backlight_keep_on_ms
 # 24 hours in milliseconds
 echo "86400000" | sudo tee /usr/share/power_manager/keyboard_backlight_keep_on_ms
 
@@ -138,7 +137,7 @@ Reference: https://www.reddit.com/r/chromeos/comments/1u0niv3/crostini_linux_on_
 
 ### Internal Microphone Not Working in Chrome
 
-![Brunch Framework only](brunch-framework-only.svg)
+Use Brunch Framework or boot [CrOS Kit’s Flex Debug mode](cros-kit/README.md).
 
 **Known to affect:** ThinkBook 16 G6 IRL
 
@@ -149,7 +148,7 @@ stops working again after disconnecting a Bluetooth microphone.
 and maps `Internal Mic` to the actual DMIC (`hw:sofhdadsp,6`, mixer `Dmic0`).
 The default profile instead lets CRAS place the internal mic on analog PCM 0.
 
-Open **ChromeOS crosh** (`Ctrl+Alt+T`), type `shell`, and run the following.
+Open **ChromeOS crosh** (`Ctrl+Alt+T`), type `shell --isolated`, and run the following.
 It skips an already applied fix, preserves the first backup, and restarts
 CRAS only after a change. Playback and recording briefly stop on that restart.
 
@@ -209,14 +208,14 @@ UCM files; recheck the active profile if the issue returns after an update.
 
 ### HDMI Audio Output Not Working
 
-![Brunch Framework only](brunch-framework-only.svg)
+Use Brunch Framework or boot [CrOS Kit’s Flex Debug mode](cros-kit/README.md).
 
 **Known to affect:** ThinkBook 16 G6 IRL
 
 Reference: https://github.com/sebanc/brunch/issues/2273
 
 1. `[Ctrl]+[Alt]+T` to open crosh terminal
-2. Type `shell` then `[Enter]`
+2. Type `shell --isolated` then `[Enter]`
 3. Copy-paste the following for one-off enabling.
 ```bash
 CARD_NUM=$(aplay -l | grep -i "HDMI" | head -n 1 | cut -d" " -f2 | tr -d ":")
