@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import make_usb as builder
+from cros_kit import make_usb as builder
 
 
 def sha(data):
@@ -42,8 +42,8 @@ class LockedInputTests(unittest.TestCase):
                             "CROS_KIT_ALPINE_REPO": str(self.repository)}
 
     def test_exact_inputs_work_with_network_unavailable(self):
-        with patch.dict(os.environ, self.environment), patch.object(
-                builder.urllib.request, "urlopen", side_effect=AssertionError("Network forbidden")):
+        with patch.dict(os.environ, self.environment), patch(
+                "urllib.request.urlopen", side_effect=AssertionError("Network forbidden")):
             self.assertEqual(builder.locked_inputs(self.media), (self.archive, self.iso, self.repository))
 
     def test_changed_archive_iso_index_and_packages_are_rejected(self):
@@ -69,8 +69,7 @@ class LockedInputTests(unittest.TestCase):
                 builder.locked_inputs(self.media)
 
     def test_missing_nix_inputs_never_falls_back_to_latest_downloads(self):
-        with patch.dict(os.environ, {}, clear=True), patch.object(
-                builder.urllib.request, "urlopen") as network:
+        with patch.dict(os.environ, {}, clear=True), patch("urllib.request.urlopen") as network:
             with self.assertRaisesRegex(ValueError, "nix run"):
                 builder.locked_inputs(self.media)
         network.assert_not_called()
@@ -78,7 +77,8 @@ class LockedInputTests(unittest.TestCase):
     def test_requested_package_change_requires_explicit_lock_update(self):
         media = copy.deepcopy(self.media)
         media["packages"].pop()
-        (self.root / "media.json").write_text(json.dumps(media))
+        (self.root / "media").mkdir()
+        (self.root / "media/media.json").write_text(json.dumps(media))
         with patch.object(builder, "HERE", self.root):
             with self.assertRaisesRegex(ValueError, "package list changed"):
                 builder.locked_media()

@@ -13,7 +13,7 @@ There is no list of supported settings paths.
 The Flex backend retains its installed `flex-debug` paths across the CrOS Kit rename
 so existing saved changes, boot entries and removal still work.
 
-[compatibility.conf](compatibility.conf) is the single reference for the validated
+[compatibility.conf](cros_kit/compatibility.conf) is the single reference for the validated
 OS version, kernel release, verified-root digest and original startup-script hash.
 Both readers treat it as data; malformed, duplicate or missing values are rejected.
 The updater refuses an unvalidated stable release before downloading images.
@@ -37,7 +37,7 @@ Overlay compatibility is handled separately:
   are imported into a fresh upper/work tree.
   Sparse files, hardlinks, modes, whiteouts and opaque directories survive; stale
   lower identity xattrs are excluded. Activation uses renames and keeps `root.previous`.
-- A tool-owned compatibility lower contains the [rootdev shim](rootdev-compat.c),
+- A tool-owned compatibility lower contains the [rootdev shim](nix/rootdev-compat.c),
   this OS's original rootdev library and original root device number. The shim
   resolves paths on the root overlay, including `/usr` and `/.`, to the verified
   device and delegates other queries to stock code.
@@ -102,7 +102,7 @@ so production deliberately avoids `--acls`. Sparse-file import is host-tested.
 
 | Check | Status |
 | --- | --- |
-| Current complete suite with pinned Python/compiler | **PASS: 207 tests, no skips (root fixtures)** |
+| Current complete suite with pinned Python/compiler | **PASS: 203 tests, no skips (root fixtures)** |
 | Flake unit, payload and signed offline repository checks | **PASS: sandboxed checks** |
 | Actual one-command dependency update | **PASS: staged rebuild/check/publication; one capability skip without root** |
 | EFI offline rebuild | **PASS: identical complete Nix output** |
@@ -118,7 +118,7 @@ so production deliberately avoids `--acls`. Sparse-file import is host-tested.
 | Combined image payload and primary/backup GPT | **PASS: all 10 files read back exactly** |
 | Actual A/B OS update and postinstall persistence | **UNRUN** |
 | Existing signed-in/encrypted user account | **UNRUN** |
-| Previous locked USB physical write, full byte comparison and payload/GPT readback | **PASS: SanDisk 3.2Gen1** |
+| Current USB write, 12-file bundle, 64 APKs and both GPTs | **PASS: full byte comparison and physical readback** |
 | Physical laptop boot with this full-root runtime | **UNRUN** |
 
 `guard-final-tests.log` records the suite. `combined-guard-final.img` was repackaged
@@ -126,12 +126,12 @@ from the validated combined image, replacing all ten installer files and
 regenerating GRUB (`combined-guard-final-payload.json`). This is not a clean full
 builder run: an earlier rebuild hit the host disk quota.
 
-The SanDisk USB (serial `00015028051925093504`) now contains the locked CrOS Kit
-image, flashed on 2026-11-12. Full byte comparison, both GPTs, ten installer files,
-the signed index and all 64 APKs passed physical readback
-(`cros-kit-physical-flash-final.json`, `cros-kit-physical-flash.log`). Laptop boot
-remains untested. Old preview storage is not imported into the new layer format.
-This USB predates the firmware input update below and has not been reflashed.
+The SanDisk USB (serial `00015028051925093504`) contains the Nix-built CrOS Kit
+image, flashed on 2026-11-12. Full byte comparison, both GPTs, all twelve installer
+files, the signed index and 64 APKs passed physical readback. The copied offline
+Python package also ran from an unrelated working directory
+(`cros-kit-clean-architecture-flash.log`, `cros-kit-clean-architecture-readback.json`).
+Laptop boot remains untested. Old preview storage is not imported into the new layer format.
 
 Initial flake evidence (2026-11-12): `flake-root-tests-final.log`,
 `flake-check-final.log`, `flake-update-final.log`, `flake-image-final.log` and
@@ -142,7 +142,13 @@ small `/tmp` quotas. Physical write/readback evidence is recorded separately abo
 Firmware input update (2026-11-12): `flake-all-inputs-update.log`,
 `flake-all-inputs-root-tests.log` and `flake-all-inputs-efi-rebuild.log` cover
 the actual all-input updater, complete suite and offline EFI rebuild. The new EFI
-has not been boot-tested or written to USB.
+has been written and verified on USB; physical boot remains untested.
+
+Source-only package validation: `clean-architecture-root-tests-final.log`
+records 203 tests without skips. `clean-architecture-update.log`,
+`clean-architecture-check.log` and `clean-architecture-offline-rebuild.log` cover
+the lock-only updater, all flake checks and identical offline EFI/bundle rebuilds.
+The boot runtime, shim source, firmware patch and compatibility contract are unchanged.
 
 ## Updates and recovery
 
@@ -165,26 +171,26 @@ need manual correction. Firmware changes, signing-key rotation or loader revocat
 can require reinstalling/rebuilding these tools. Future update compatibility is not
 guaranteed by the current source review or VM tests.
 
-## Manual installation
+## Build layout
 
-Boot a UEFI Linux live USB with Bash, Python 3, `curl`, `sudo`, `sha256sum`,
-`efibootmgr` and `util-linux`.
-Use `lsblk` to identify the unmounted, already installed Flex disk; replace the path:
+| Directory | Responsibility |
+| --- | --- |
+| `cros_kit/` | USB creation, offline installer and dependency update code |
+| `nix/` | Firmware/shim builds and the assembled installer bundle |
+| `media/` | Media lock and the official signed repository snapshot |
+| `tests/` | Unit and fixture integration tests |
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/kkimdev/monorepo-public/main/chromeos-dev-setup/cros-kit/install.bash \
-  | bash -s -- install --disk /dev/nvme0n1
-```
-
-Add `--dry-run` to validate without writing. Use `status` or `remove` in place of
-`install`; removal retains saved changes and user data.
+Nix builds the binaries, checksums, notices and build metadata; these generated
+files stay outside Git. `install.py` owns disk and firmware changes;
+`wizard.py` handles discovery and confirmation. USB setup uses `cros-kit`,
+including `cros-kit --remove`; there is no separate download installer.
 
 ## Locked builds and updates
 
 From this directory:
 
 ```bash
-nix build path:.#efi path:.#rootdev
+nix build path:.#payload
 nix flake check path:.
 nix run path:.#update
 ```
@@ -193,9 +199,9 @@ nix run path:.#update
 | --- | --- |
 | Nix tools, firmware sources, Rust component hashes | [flake.lock](flake.lock), including rust-overlay |
 | Rust version and Cargo dependencies | Locked crdyboot source's rust-toolchain.toml and Cargo.lock checksums |
-| Flex ZIP, Alpine ISO and every APK | [media.json](media.json), SHA256 per file |
-| Official signed repository snapshot | [alpine-index.tar.gz](alpine-index.tar.gz), hashed in media.json |
-| Built EFI and exact build inputs | [build-info.json](build-info.json), adjacent artifact manifests |
+| Flex ZIP, Alpine ISO and every APK | [media.json](media/media.json), SHA256 per file |
+| Official signed repository snapshot | [alpine-index.tar.gz](media/alpine-index.tar.gz), hashed in media.json |
+| Generated installer bundle and build inputs | `result/cros_kit/`, including build-info.json, notices and checksums |
 
 Normal creation never queries latest releases. Nix fetches the exact locked bytes;
 APK signature and dependency checks run offline using keys from the locked ISO.
@@ -203,9 +209,9 @@ Upstream may remove old downloads: hashes prevent silent substitutions, but do n
 guarantee permanent availability. Keep a Nix cache for long-term rebuilds.
 
 The update command refreshes all flake inputs and official media in a temporary
-source copy, rebuilds EFI/shim, refreshes manifests and runs flake checks plus the
-full local suite. It replaces generated files only after success and refuses
-concurrent source edits; replacement errors and Ctrl+C roll back completed writes.
+source copy, builds the complete installer bundle and runs flake checks plus the
+full local suite. It replaces the three lock/snapshot files only after success
+and refuses concurrent source edits; replacement errors and Ctrl+C roll back completed writes.
 Abrupt power loss during multi-file replacement is not transactional.
 
 Firmware sources track upstream `main`; exact revisions remain in `flake.lock`.
@@ -219,16 +225,6 @@ EFI compilation is sandboxed with vendored Cargo dependencies and `--frozen
 Nix rebuild reproduced the EFI, notices and provenance byte-for-byte. The shim also
 reproduces its previous SHA256. USB images contain fresh partition UUIDs and FAT
 timestamps; they are not byte-identical disk images.
-
-The manual installer resolves `main` once and downloads all payloads from that
-commit. Set `CROS_KIT_REV` to a full commit SHA to select the same payload again.
-
-Current SHA256:
-
-- EFI: `038c9d4afb7cea5b601f718b5875474ef5decc1e4d2074d97627c25249a2ddd7`
-- Runtime: `590f0f70786d893bcbb97876b592ee1670d65c9b11c16d84da898f5b480cc4e6`
-- Shim: `e205e7c36f53d3f0d8b7bd12097a61ba7adad4241e1039cbe74480ecd5814689`
-- Contract: `75d14677bd8103cba2866702622b21669f4c6905a0a2216eb63fc219cbcc8266`
 
 Relevant upstream sources:
 

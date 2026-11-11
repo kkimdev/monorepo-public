@@ -25,7 +25,7 @@
         channel = rustChannel;
         targets = [ "x86_64-unknown-uefi" ];
       };
-      efi = import ./efi.nix {
+      efi = import ./nix/efi.nix {
         inherit pkgs crdyboot vboot;
         rustToolchain = toolchain;
         provenance = {
@@ -36,38 +36,40 @@
           rust_toolchain = rustChannel;
         };
       };
-      rootdev = import ./rootdev-compat.nix { inherit pkgs; };
-      media = import ./media.nix { inherit pkgs; };
+      rootdev = import ./nix/rootdev-compat.nix { inherit pkgs; };
+      payload = import ./nix/payload.nix { inherit pkgs efi rootdev; };
+      media = import ./nix/media.nix { inherit pkgs; };
       tools = with pkgs; [ python3 grub2_efi mtools dosfstools libarchive apk-tools util-linux ];
       kit = pkgs.writeShellApplication {
         name = "cros-kit";
         runtimeInputs = tools;
         text = ''
+          export PYTHONPATH=${self}
+          export CROS_KIT_PAYLOAD=${payload}/cros_kit
           export CROS_KIT_FLEX_ARCHIVE=${media.flex-archive}
           export CROS_KIT_ALPINE_ISO=${media.alpine-iso}
           export CROS_KIT_ALPINE_REPO=${media.alpine-repo}
-          exec python3 ${self}/make_usb.py "$@"
+          exec python3 -P -m cros_kit.make_usb "$@"
         '';
       };
       update = pkgs.writeShellApplication {
         name = "cros-kit-update";
         runtimeInputs = with pkgs; [ python3 apk-tools libarchive gitMinimal ];
-        text = ''exec python3 ${self}/update.py "$@"'';
+        text = ''
+          export PYTHONPATH=${self}
+          exec python3 -P -m cros_kit.update "$@"
+        '';
       };
     in {
-      packages.${system} = media // { inherit efi rootdev; default = kit; };
+      packages.${system} = media // { inherit efi rootdev payload; default = kit; };
       apps.${system} = {
         default = { type = "app"; program = "${kit}/bin/cros-kit"; meta.description = "Create a locked CrOS Kit USB"; };
         update = { type = "app"; program = "${update}/bin/cros-kit-update"; meta.description = "Refresh and validate CrOS Kit dependencies"; };
       };
       checks.${system} = {
         payload = pkgs.runCommand "cros-kit-payload-check" {} ''
-          cd ${self}
+          cd ${payload}/cros_kit
           ${pkgs.coreutils}/bin/sha256sum --check crdyboot-debug.efi.sha256 rw-init.sh.sha256 rootdev-compat.so.sha256
-          cmp crdyboot-debug.efi ${efi}/crdyboot-debug.efi
-          cmp build-info.json ${efi}/build-info.json
-          cmp THIRD_PARTY_NOTICES.txt ${efi}/THIRD_PARTY_NOTICES.txt
-          cmp rootdev-compat.so ${rootdev}/rootdev-compat.so
           touch "$out"
         '';
         unit = pkgs.runCommand "cros-kit-unit-tests" {
@@ -75,26 +77,30 @@
         } ''
           cd ${self}
           export PYTHONDONTWRITEBYTECODE=1
-          python3 -m unittest test_build test_install test_make_usb test_wizard test_update test_media
+          export PYTHONPATH=${self}
+          export CROS_KIT_PAYLOAD=${payload}/cros_kit
+          python3 -m unittest tests.test_build tests.test_install tests.test_make_usb tests.test_wizard tests.test_update tests.test_media tests.test_usb_live
           touch "$out"
         '';
         offline = pkgs.runCommand "cros-kit-offline-check" {
           nativeBuildInputs = [ pkgs.python3 pkgs.apk-tools pkgs.libarchive ];
         } ''
           export PYTHONDONTWRITEBYTECODE=1
+          export PYTHONPATH=${self}
           cd ${self}
           python3 - <<'PYCODE'
 from pathlib import Path
 import os
-import usb_live
+from cros_kit import usb_live
 usb_live.prepare_live("${media.alpine-iso}", Path(os.environ["TMPDIR"]) / "live",
-                      Path.cwd(), "${media.alpine-repo}")
+                      "${payload}/cros_kit", "${media.alpine-repo}")
 PYCODE
           touch "$out"
         '';
       };
       devShells.${system}.default = pkgs.mkShell {
         packages = tools ++ [ pkgs.gcc ];
+        CROS_KIT_PAYLOAD = "${payload}/cros_kit";
       };
     };
 }

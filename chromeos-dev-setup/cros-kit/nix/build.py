@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Validate and package the EFI produced by efi.nix (entirely offline).
 
-For a maintainer build, run `nix build path:.#efi` in this directory.
+For a maintainer build, run `nix build path:.#efi` in the CrOS Kit directory.
 Nix owns source fetching, dependency vendoring, patching and compilation.
 """
 

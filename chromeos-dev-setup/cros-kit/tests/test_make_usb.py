@@ -9,7 +9,6 @@ from pathlib import Path
 import re
 import shlex
 import struct
-import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -18,11 +17,8 @@ import uuid
 import zlib
 
 
-HERE = Path(__file__).resolve().parent
-if str(HERE) not in sys.path:
-    sys.path.insert(0, str(HERE))
-import make_usb as builder
-import test_install as fixtures
+from cros_kit import make_usb as builder
+from tests import test_install as fixtures
 
 
 def recovery_image(**kwargs):
@@ -79,14 +75,14 @@ class CompatibilityGateTests(unittest.TestCase):
                     packages=list(builder.usb_live.PACKAGES))
         with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
             directory = Path(temporary)
-            (directory / "media.json").write_text(json.dumps(lock))
+            (directory / "media").mkdir()
+            (directory / "media/media.json").write_text(json.dumps(lock))
             stack.enter_context(patch.object(builder, "HERE", directory))
             stack.enter_context(patch.object(builder.sys, "argv", [
                 "make_usb.py", "--image", str(directory / "new.img"), "--dry-run"]))
-            network = stack.enter_context(patch.object(builder.urllib.request, "urlopen"))
-            alpine = stack.enter_context(patch.object(builder.usb_live, "latest_release"))
+            network = stack.enter_context(patch("urllib.request.urlopen"))
             effects = [stack.enter_context(patch.object(builder, name))
-                       for name in ("download", "build_image", "publish_image", "flash_image")]
+                       for name in ("build_image", "publish_image", "flash_image")]
             stack.enter_context(redirect_stdout(io.StringIO()))
             error = stack.enter_context(redirect_stderr(io.StringIO()))
             try:
@@ -95,7 +91,6 @@ class CompatibilityGateTests(unittest.TestCase):
             except SystemExit as stopped:
                 code = stopped.code
             network.assert_not_called()
-            alpine.assert_not_called()
             for effect in effects:
                 effect.assert_not_called()
             return code, error.getvalue()
@@ -319,8 +314,8 @@ class MainSelectionTests(unittest.TestCase):
                 stack.enter_context(patch.object(builder.sys, "argv", ["make_usb.py"]))
                 selected = stack.enter_context(patch.object(builder, "select_usb", return_value=self.identity))
                 stack.enter_context(patch("builtins.input", return_value=answer))
-                network = stack.enter_context(patch.object(builder.urllib.request, "urlopen"))
-                download = stack.enter_context(patch.object(builder, "download"))
+                network = stack.enter_context(patch("urllib.request.urlopen"))
+                inputs = stack.enter_context(patch.object(builder, "locked_inputs"))
                 build = stack.enter_context(patch.object(builder, "build_image"))
                 write = stack.enter_context(patch.object(builder, "flash_image"))
                 stack.enter_context(redirect_stdout(io.StringIO()))
@@ -329,7 +324,7 @@ class MainSelectionTests(unittest.TestCase):
                     builder.main()
                 self.assertNotEqual(stopped.exception.code, 0)
                 selected.assert_called_once_with()
-                for effect in (network, download, build, write):
+                for effect in (network, inputs, build, write):
                     effect.assert_not_called()
 
     def test_matching_selected_path_allows_preparation(self):
@@ -337,7 +332,7 @@ class MainSelectionTests(unittest.TestCase):
               patch.object(builder, "select_usb", return_value=self.identity) as selected,
               patch("builtins.input", return_value=self.identity["path"]) as confirmed,
               patch.object(builder, "locked_media", side_effect=RuntimeError("preparation reached")) as locked,
-              patch.object(builder.urllib.request, "urlopen") as network,
+              patch("urllib.request.urlopen") as network,
               redirect_stdout(io.StringIO())):
             with self.assertRaisesRegex(RuntimeError, "preparation reached"):
                 builder.main()
@@ -349,7 +344,7 @@ class MainSelectionTests(unittest.TestCase):
     def test_cancelled_selection_has_no_network_or_write_effects(self):
         with (patch.object(builder.sys, "argv", ["make_usb.py"]),
               patch.object(builder, "select_usb", side_effect=ValueError("Cancelled")),
-              patch.object(builder.urllib.request, "urlopen") as network,
+              patch("urllib.request.urlopen") as network,
               patch.object(builder, "build_image") as build,
               patch.object(builder, "flash_image") as write,
               redirect_stderr(io.StringIO())):
@@ -362,7 +357,7 @@ class MainSelectionTests(unittest.TestCase):
         with (patch.object(builder.sys, "argv", ["make_usb.py", "--disk", "/dev/sdc"]),
               patch.object(builder.sys.stdin, "isatty", return_value=False),
               patch.object(builder, "select_usb") as selected,
-              patch.object(builder.urllib.request, "urlopen") as network,
+              patch("urllib.request.urlopen") as network,
               patch.object(builder, "flash_image") as write,
               redirect_stderr(io.StringIO())):
             with self.assertRaises(SystemExit):
@@ -397,6 +392,37 @@ class MainSelectionTests(unittest.TestCase):
             flash.side_effect = inspect
             builder.main()
             flash.assert_called_once()
+
+    def test_prepared_image_uses_module_entrypoint_with_explicit_pythonpath_after_sudo(self):
+        with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+            root = Path(temporary)
+            media = dict(flex=ReleaseTests().release(), alpine=dict(version="3.24.4"))
+            stack.enter_context(patch.object(builder.sys, "argv", [
+                "make_usb.py", "--disk", self.identity["path"], "--erase"]))
+            stack.enter_context(patch.dict(builder.os.environ, CROS_KIT_PAYLOAD=str(root / "payload"),
+                                           XDG_CACHE_HOME=str(root), PATH="/pinned/tools"))
+            stack.enter_context(patch.object(builder, "check_usb", return_value=self.identity))
+            stack.enter_context(patch.object(builder, "locked_media", return_value=media))
+            stack.enter_context(patch.object(builder.shutil, "which", return_value="/pinned/tool"))
+            stack.enter_context(patch.object(builder, "locked_inputs", return_value=(
+                root / "flex.zip", root / "alpine.iso", root / "repository")))
+            stack.enter_context(patch.object(builder, "extract_flex",
+                                            side_effect=lambda archive, release, image: image.touch()))
+            stack.enter_context(patch.object(builder.usb_live, "prepare_live",
+                                            side_effect=lambda iso, live, payload, repo: live.mkdir()))
+            stack.enter_context(patch.object(builder, "build_image"))
+            stack.enter_context(patch.object(builder.os, "geteuid", return_value=1000))
+            ran = stack.enter_context(patch.object(builder.subprocess, "run"))
+            stack.enter_context(redirect_stdout(io.StringIO()))
+            builder.main()
+            ran.assert_called_once()
+            command = ran.call_args.args[0]
+            self.assertEqual(command[:7], ["sudo", "env", "PYTHONPATH=" + str(builder.HERE),
+                                           builder.sys.executable, "-P", "-m", "cros_kit.make_usb"])
+            self.assertEqual(command[command.index("--disk") + 1], self.identity["path"])
+            self.assertEqual(json.loads(command[command.index("--expected-target") + 1]), self.identity)
+            self.assertEqual(command[command.index("--tool-path") + 1], "/pinned/tools")
+            self.assertTrue(ran.call_args.kwargs["check"])
 
 
 class ImagePublicationTests(unittest.TestCase):

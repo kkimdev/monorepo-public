@@ -2,59 +2,19 @@
 """Offline media selection/preparation tests; no downloads or devices."""
 
 import hashlib
-import importlib.util
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
 
 
-HERE = Path(__file__).resolve().parent
-SPEC = importlib.util.spec_from_file_location("cros_kit_usb_live", HERE / "usb_live.py")
-live = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(live)
-
-
-def release_block(flavor="standard", arch="x86_64"):
-    return f"""-
-  title: "Standard"
-  desc: |
-    Network connection is required.
-  branch: v3.24
-  arch: {arch}
-  version: 3.24.4
-  flavor: alpine-{flavor}
-  file: alpine-{flavor}-3.24.4-{arch}.iso
-  size: 370147328
-  sha256: {'a' * 64}
-"""
-
-
-class ReleaseTests(unittest.TestCase):
-    def test_standard_not_virtual_or_other_arch(self):
-        metadata = release_block("virt") + release_block(arch="aarch64") + release_block()
-        release = live.latest_release(metadata)
-        self.assertEqual(release["filename"], "alpine-standard-3.24.4-x86_64.iso")
-        self.assertEqual(release["url"], live.ALPINE + "/v3.24/releases/x86_64/" + release["filename"])
-        self.assertEqual(release["sha256"], "a" * 64)
-
-    def test_rejects_missing_or_duplicate_standard(self):
-        for metadata in (release_block("virt"), release_block() * 2):
-            with self.subTest(metadata=metadata), self.assertRaises(ValueError):
-                live.latest_release(metadata)
-
-    def test_rejects_invalid_digest_filename_branch_and_size(self):
-        original = release_block()
-        for before, after in (("a" * 64, "not-a-digest"),
-                              ("file: alpine-standard", "file: ../alpine-standard"),
-                              ("branch: v3.24", "branch: v3.23"),
-                              ("size: 370147328", "size: -1")):
-            with self.subTest(field=before), self.assertRaises(ValueError):
-                live.latest_release(original.replace(before, after))
+from cros_kit import usb_live as live
+from tests import SOURCE
 
 
 class OverlayTests(unittest.TestCase):
@@ -73,7 +33,9 @@ class OverlayTests(unittest.TestCase):
                 inittab = archive.extractfile("etc/inittab").read().decode()
                 self.assertIn("agetty --autologin root", inittab)
                 profile = archive.extractfile("etc/profile.d/cros-kit.sh").read().decode()
-                self.assertIn("/media/*/cros-kit/wizard.py", profile)
+                self.assertIn("/media/*/cros-kit", profile)
+                self.assertIn("cros_kit/wizard.py", profile)
+                self.assertIn("python3 -P -m cros_kit.wizard", profile)
                 self.assertNotIn("/media/CROSKIT", profile)
                 self.assertEqual(archive.extractfile("etc/motd").read(), b"")
                 subprocess.run(["sh", "-n"], input=profile, text=True, check=True)
@@ -95,15 +57,16 @@ class WizardProfileTests(unittest.TestCase):
         with tarfile.open(archive_path) as archive:
             profile = archive.extractfile("etc/profile.d/cros-kit.sh").read().decode()
         self.profile = self.root / "profile.sh"
-        self.wizard = self.root / "media/disk with spaces/cros-kit/wizard.py"
+        self.kit = self.root / "media/disk with spaces/cros-kit"
+        self.wizard = self.kit / "cros_kit/wizard.py"
         self.wizard.parent.mkdir(parents=True)
         self.wizard.write_text("# test wizard\n")
-        self.profile.write_text(profile.replace("/media/*/cros-kit/wizard.py",
-                                               str(self.root / "media/*/cros-kit/wizard.py")))
+        self.profile.write_text(profile.replace("/media/*/cros-kit",
+                                               str(self.root / "media/*/cros-kit")))
         self.bin = self.root / "bin"
         self.bin.mkdir()
         executable = self.bin / "python3"
-        executable.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$FLEX_TEST_LOG"\n')
+        executable.write_text('#!/bin/sh\nprintf "%s|%s\\n" "$PYTHONPATH" "$*" >> "$FLEX_TEST_LOG"\n')
         executable.chmod(0o755)
         self.log = self.root / "calls"
         self.environment = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
@@ -121,11 +84,22 @@ class WizardProfileTests(unittest.TestCase):
     def test_alias_launches_dynamic_path_and_forwards_arguments(self):
         self.shell('. "$FLEX_TEST_PROFILE"\ncros-kit\ncros-kit --remove\n')
         self.assertEqual(self.log.read_text().splitlines(),
-                         [str(self.wizard), str(self.wizard) + " --remove"])
+                         [f"{self.kit}|-P -m cros_kit.wizard", f"{self.kit}|-P -m cros_kit.wizard --remove"])
 
     def test_noninteractive_shell_does_not_launch(self):
         self.shell('. "$FLEX_TEST_PROFILE"', interactive=False)
         self.assertFalse(self.log.exists())
+
+
+class BuiltPayloadTests(unittest.TestCase):
+    def test_generated_offline_bundle_runs_as_module_from_unrelated_directory(self):
+        package = Path(os.environ["CROS_KIT_PAYLOAD"])
+        with tempfile.TemporaryDirectory() as temporary:
+            result = subprocess.run([sys.executable, "-B", "-P", "-m", "cros_kit.wizard", "--help"],
+                                    cwd=temporary, capture_output=True, text=True,
+                                    env=dict(os.environ, PYTHONPATH=str(package.parent)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--remove", result.stdout)
 
 
 class PrepareTests(unittest.TestCase):
@@ -137,7 +111,8 @@ class PrepareTests(unittest.TestCase):
         self.installer.mkdir()
         for name in live.INSTALLER_FILES:
             (self.installer / name).write_bytes(name.encode())
-        (self.installer / "compatibility.conf").write_bytes((HERE / "compatibility.conf").read_bytes())
+        for name in ("__init__.py", "install.py", "wizard.py", "compatibility.conf", "rw-init.sh"):
+            (self.installer / name).write_bytes((SOURCE / name).read_bytes())
         for name in ("crdyboot-debug.efi", "rw-init.sh", "rootdev-compat.so"):
             digest = hashlib.sha256((self.installer / name).read_bytes()).hexdigest()
             (self.installer / (name + ".sha256")).write_text(digest + "  " + name + "\n")
@@ -189,7 +164,7 @@ class PrepareTests(unittest.TestCase):
         return ""
 
     def prepare(self):
-        with patch.object(live, "_run", side_effect=self.fake_run):
+        with patch.object(live, "run", side_effect=self.fake_run):
             return live.prepare_live(self.root / "alpine.iso", self.destination, self.installer, self.repository)
 
     def test_signed_index_snapshot_complete_offline_checks_and_private_apk_root(self):
@@ -199,7 +174,7 @@ class PrepareTests(unittest.TestCase):
         self.assertFalse((self.destination / "apks/x86_64/obsolete-1.0-r0.apk").exists())
         self.assertEqual((self.destination / "boot/modloop-lts").read_bytes(), b"modloop")
         for name in live.INSTALLER_FILES:
-            self.assertEqual((self.destination / "cros-kit" / name).read_bytes(),
+            self.assertEqual((self.destination / "cros-kit/cros_kit" / name).read_bytes(),
                              (self.installer / name).read_bytes())
         self.assertTrue((self.destination / "cros-kit.apkovl.tar.gz").is_file())
         apk_calls = [args for args in self.calls if args[0] == "apk"]
@@ -211,6 +186,14 @@ class PrepareTests(unittest.TestCase):
             self.assertNotEqual(args[args.index("--root") + 1], "/")
             self.assertNotIn("--allow-untrusted", args)
             self.assertNotIn("--force-no-chroot", args)
+
+    def test_payload_runs_as_package_from_arbitrary_directory(self):
+        self.prepare()
+        result = subprocess.run([sys.executable, "-P", "-m", "cros_kit.wizard", "--help"],
+                                cwd=self.root, capture_output=True, text=True,
+                                env=dict(os.environ, PYTHONPATH=str(self.destination / "cros-kit")))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--remove", result.stdout)
 
     def test_rejects_overwriting_existing_directory(self):
         self.destination.mkdir()
@@ -269,7 +252,7 @@ class NativeCommandTests(unittest.TestCase):
         result = subprocess.CompletedProcess(["apk"], 0, "", "ERROR: unable to select packages\n")
         with patch.object(live.subprocess, "run", return_value=result):
             with self.assertRaisesRegex(ValueError, "unable to select packages"):
-                live._run(["apk", "fetch", "missing-package"])
+                live.run(["apk", "fetch", "missing-package"])
 
 
 if __name__ == "__main__":

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Configure normal and Debug Flex boots from a UEFI Linux live USB."""
+"""Validate and apply Flex boot changes for the offline setup wizard."""
 
-import argparse
 from contextlib import contextmanager
 import hashlib
 import json
@@ -12,7 +11,6 @@ import shutil
 import stat
 import struct
 import subprocess
-import sys
 import tempfile
 import uuid
 import zlib
@@ -574,20 +572,3 @@ def manage(args):
                 directory.rmdir()
             print("Removed. Stock firmware entries, kernels, root filesystem and user data retained.")
 
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("install", "remove", "status"))
-    parser.add_argument("--disk", type=Path, required=True, help="installed Flex whole disk, e.g. /dev/nvme0n1")
-    parser.add_argument("--template", type=Path, default=Path(__file__).with_name("crdyboot-debug.efi"))
-    parser.add_argument("--dry-run", action="store_true", help="validate and show changes without writing disk/firmware")
-    args = parser.parse_args()
-    try:
-        manage(args)
-    except (ValueError, OSError, json.JSONDecodeError, subprocess.CalledProcessError) as error:
-        detail = error.stderr.strip() if isinstance(error, subprocess.CalledProcessError) else str(error)
-        parser.exit(1, f"ERROR: {detail}\n")
-
-
-if __name__ == "__main__":
-    main()

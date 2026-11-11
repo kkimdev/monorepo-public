@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 
 
-SPEC = importlib.util.spec_from_file_location("cros_kit_build", Path(__file__).with_name("build.py"))
+SPEC = importlib.util.spec_from_file_location("cros_kit_build", Path(__file__).resolve().parent.parent / "nix/build.py")
 build = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(build)
 

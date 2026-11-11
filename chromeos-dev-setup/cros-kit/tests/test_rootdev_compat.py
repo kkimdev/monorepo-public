@@ -13,7 +13,7 @@ class RootdevCompatTests(unittest.TestCase):
         compiler = shlex.split(os.environ.get("CC", "cc"))
         if not compiler or not shutil.which(compiler[0]):
             self.skipTest("C compiler unavailable (run in nix develop)")
-        source = Path(__file__).with_name("rootdev-compat.c").read_text()
+        source = (Path(__file__).resolve().parent.parent / "nix/rootdev-compat.c").read_text()
         # Inject only system-call and symbol-resolution probes, leaving the
         # implementation's control flow and ABI intact.
         source = source.replace("dlsym(", "probe_dlsym(")

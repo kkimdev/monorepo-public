@@ -11,7 +11,7 @@ from pathlib import Path
 import subprocess
 from types import SimpleNamespace
 
-import install as installer
+from . import install as installer
 
 
 ERRORS = (ValueError, OSError, subprocess.CalledProcessError)
@@ -33,10 +33,6 @@ def disks():
 def identity(tree):
     return tuple(tree.get(field) for field in
                  ("name", "size", "model", "serial", "wwn", "maj:min"))
-
-
-root_files = installer.root_files
-flex_release = installer.flex_release
 
 
 @dataclass(frozen=True)

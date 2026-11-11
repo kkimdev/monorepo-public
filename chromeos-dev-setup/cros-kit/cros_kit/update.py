@@ -11,24 +11,88 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 
-import make_usb
-import usb_live
+from . import make_usb
+from . import usb_live
 
 
-PUBLISHED = ("media.json", "alpine-index.tar.gz", "flake.lock",
-             "crdyboot-debug.efi", "crdyboot-debug.efi.sha256",
-             "THIRD_PARTY_NOTICES.txt", "build-info.json",
-             "rootdev-compat.so", "rootdev-compat.so.sha256", "rw-init.sh.sha256")
+PUBLISHED = ("media/media.json", "media/alpine-index.tar.gz", "flake.lock")
 
 
-_apk_run = usb_live._run
+FLEX_METADATA = "https://dl.google.com/dl/edgedl/chromeos/recovery/cloudready_recovery2.json"
+ALPINE = "https://dl-cdn.alpinelinux.org/alpine"
+RELEASES = f"{ALPINE}/latest-stable/releases/x86_64/latest-releases.yaml"
+
+
+def download(url, path, digest, algorithm="sha256", size=None):
+    if path.exists() and (size is None or path.stat().st_size == size) and make_usb.file_hash(path, algorithm) == digest:
+        print(f"Using verified cache: {path.name}", flush=True)
+        return path
+    temporary = path.with_name(path.name + ".part")
+    received = 0
+    checksum = hashlib.new(algorithm)
+    started = last = time.monotonic()
+    print(f"Downloading {path.name}", flush=True)
+    try:
+        with urllib.request.urlopen(url, timeout=60) as response, temporary.open("wb") as output:
+            while data := response.read(make_usb.CHUNK):
+                received += len(data)
+                if size is not None and received > size:
+                    raise ValueError("Download exceeds its published size")
+                checksum.update(data)
+                output.write(data)
+                now = time.monotonic()
+                if now - last >= 5:
+                    print(f"  {received / make_usb.MIB:.0f} MiB, {now - started:.1f}s", flush=True)
+                    last = now
+        if (size is not None and received != size) or checksum.hexdigest() != digest:
+            raise ValueError(f"Download checksum/size mismatch: {path.name}")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return path
+
+
+def latest_release(metadata=None):
+    """Select official stable STANDARD x86_64 media, with its published digest."""
+    if metadata is None:
+        with urllib.request.urlopen(RELEASES, timeout=60) as response:
+            metadata = response.read().decode("utf-8")
+    # Only flat release fields are needed; descriptions are indented YAML text.
+    matches = []
+    for block in re.split(r"(?m)^-\s*$", metadata):
+        fields = dict(re.findall(r"(?m)^  ([a-z0-9_]+): ([^\n]+)$", block))
+        fields = {key: value.strip().strip('"') for key, value in fields.items()}
+        if fields.get("flavor") == "alpine-standard" and fields.get("arch") == "x86_64":
+            matches.append(fields)
+    if len(matches) != 1:
+        raise ValueError("Official Alpine metadata must contain one STANDARD x86_64 release")
+    fields = matches[0]
+    version = fields.get("version", "")
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        raise ValueError("Invalid Alpine stable version")
+    branch = "v" + ".".join(version.split(".")[:2])
+    filename = f"alpine-standard-{version}-x86_64.iso"
+    digest = fields.get("sha256", "")
+    if (fields.get("branch") != branch or fields.get("file") != filename
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)):
+        raise ValueError("Invalid Alpine release filename, branch or SHA256")
+    try:
+        size = int(fields["size"])
+    except (KeyError, ValueError) as error:
+        raise ValueError("Invalid Alpine ISO size") from error
+    if not 0 < size < 4 * 1024**3:
+        raise ValueError("Invalid Alpine ISO size")
+    return {"version": version, "branch": branch, "filename": filename,
+            "url": f"{ALPINE}/{branch}/releases/x86_64/{filename}",
+            "sha256": digest, "size": size}
 
 
 def _cache_in_nix(path, name):
     # fetchurl uses the same flat SHA256 store identity: avoid downloading twice.
-    _apk_run(["nix", "store", "add-file", "--hash-algo", "sha256", "--name", name, path])
+    usb_live.run(["nix", "store", "add-file", "--hash-algo", "sha256", "--name", name, path])
 
 
 def resolve_media(directory, cache):
@@ -39,70 +103,41 @@ def resolve_media(directory, cache):
     The existing OS compatibility contract is checked before large downloads.
     """
     directory, cache = Path(directory), Path(cache)
-    with urllib.request.urlopen(make_usb.FLEX_METADATA, timeout=60) as response:
+    with urllib.request.urlopen(FLEX_METADATA, timeout=60) as response:
         flex = make_usb.stable_release(json.load(response))
-    make_usb.installer.require_supported_version(flex["version"], directory)
-    alpine = usb_live.latest_release()
+    make_usb.installer.require_supported_version(flex["version"], directory / "cros_kit")
+    alpine = latest_release()
     cache.mkdir(parents=True, exist_ok=True)
-    archive = make_usb.download(flex["url"], cache / (flex["file"] + ".zip"),
-                                flex["sha1"], "sha1", flex["zipfilesize"])
+    archive = download(flex["url"], cache / (flex["file"] + ".zip"),
+                       flex["sha1"], "sha1", flex["zipfilesize"])
     flex = {key: flex[key] for key in ("channel", "model", "version", "chrome_version",
                                      "file", "filesize", "url", "sha1", "zipfilesize")}
     flex["sha256"] = make_usb.file_hash(archive, "sha256")
     _cache_in_nix(archive, flex["file"] + ".zip")
-    iso = make_usb.download(alpine["url"], cache / alpine["filename"],
-                            alpine["sha256"], size=alpine["size"])
+    iso = download(alpine["url"], cache / alpine["filename"],
+                   alpine["sha256"], size=alpine["size"])
     _cache_in_nix(iso, alpine["filename"])
     with tempfile.TemporaryDirectory(prefix="cros-kit-resolve-") as temporary:
         work = Path(temporary)
         media = work / "media"
-        media.mkdir()
-        _apk_run(["bsdtar", "-xf", iso, "-C", media])
-        media.chmod(0o755)
-        for item in media.rglob("*"):
-            if item.is_symlink() or not (item.is_file() or item.is_dir()):
-                raise ValueError("Unexpected nonregular file in Alpine ISO")
-            item.chmod(0o755 if item.is_dir() else 0o644)
-        release = (media / ".alpine-release").read_text().strip()
-        if not re.fullmatch(r"alpine-standard-" + re.escape(alpine["version"]) + r"(?: \d+)?", release):
-            raise ValueError("Alpine ISO version differs from official release metadata")
-        for name in ("boot/vmlinuz-lts", "boot/initramfs-lts", "boot/modloop-lts",
-                     "apks/.boot_repository"):
-            if not (media / name).is_file():
-                raise ValueError(f"Missing Alpine boot file: {name}")
-        packages = media / "apks/x86_64"
-        keys_apk = list(packages.glob("alpine-keys-*.apk"))
-        if len(keys_apk) != 1:
-            raise ValueError("Expected one trusted alpine-keys package in the ISO")
-        keys = work / "keys"
-        keys.mkdir()
-        _apk_run(["bsdtar", "-xf", keys_apk[0], "-C", keys])
-        keys_dir = keys / "etc/apk/keys"
-        if not list(keys_dir.glob("*.pub")):
-            raise ValueError("Official Alpine ISO contains no package signing keys")
-        root, apk_cache = work / "root", work / "cache"
-        root.mkdir()
-        apk_cache.mkdir()
-        repositories = work / "repositories"
-        repositories.write_text("")
-        apk = ["apk", "--root", root, "--arch", "x86_64", "--keys-dir", keys_dir,
-               "--cache-dir", apk_cache, "--repositories-file", repositories]
-        _apk_run([*apk, "add", "--initdb", "--usermode", "--no-network"])
-        repository = f"{usb_live.ALPINE}/{alpine['branch']}/main"
+        _, packages, apk, repositories = usb_live.prepare_media(
+            iso, media, work, expected_version=alpine["version"])
+        apk_cache = work / "cache"
+        repository = f"{ALPINE}/{alpine['branch']}/main"
         repositories.write_text(repository + "\n")
-        _apk_run([*apk, "update"])
+        usb_live.run([*apk, "update"])
         indexes = list(apk_cache.glob("APKINDEX.*.tar.gz"))
         if len(indexes) != 1:
             raise ValueError("Expected one signed Alpine APKINDEX snapshot")
         for package in packages.glob("*.apk"):
             package.unlink()
-        _apk_run([*apk, "fetch", "--recursive", "--output", packages, *usb_live.PACKAGES])
+        usb_live.run([*apk, "fetch", "--recursive", "--output", packages, *usb_live.PACKAGES])
         shutil.copyfile(indexes[0], packages / "APKINDEX.tar.gz")
         repositories.write_text(str(media / "apks") + "\n")
-        _apk_run([*apk, "--no-network", "add", "--simulate", *usb_live.PACKAGES])
+        usb_live.run([*apk, "--no-network", "add", "--simulate", *usb_live.PACKAGES])
         verified = work / "verified"
         verified.mkdir()
-        _apk_run([*apk, "--no-network", "fetch", "--recursive", "--link",
+        usb_live.run([*apk, "--no-network", "fetch", "--recursive", "--link",
                   "--output", verified, *usb_live.PACKAGES])
         if not list(verified.glob("*.apk")):
             raise ValueError("Offline Alpine tools package set is empty")
@@ -117,9 +152,9 @@ def resolve_media(directory, cache):
                                 for path in sorted(packages.glob("*.apk"))])
         for package in sorted(packages.glob("*.apk")):
             _cache_in_nix(package, package.name)
-        shutil.copyfile(indexes[0], directory / "alpine-index.tar.gz")
+        shutil.copyfile(indexes[0], directory / "media/alpine-index.tar.gz")
     lock = {"format": 1, "flex": flex, "alpine": alpine, "packages": list(usb_live.PACKAGES)}
-    (directory / "media.json").write_text(json.dumps(lock, indent=2) + "\n")
+    (directory / "media/media.json").write_text(json.dumps(lock, indent=2) + "\n")
     return lock
 
 
@@ -131,13 +166,10 @@ def _snapshot(directory):
             and path.is_file()}
 
 
-def _command(arguments, directory, capture=False):
+def _command(arguments, directory):
     print("+ " + " ".join(map(str, arguments)), flush=True)
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
-    result = subprocess.run([str(arg) for arg in arguments], cwd=directory,
-                            env=env, check=True, text=True,
-                            stdout=subprocess.PIPE if capture else None)
-    return result.stdout if capture else None
+    subprocess.run([str(arg) for arg in arguments], cwd=directory, env=env, check=True)
 
 
 def _publish(directory, staged, original):
@@ -148,6 +180,7 @@ def _publish(directory, staged, original):
     with tempfile.TemporaryDirectory(prefix=".cros-kit-publish-", dir=directory) as temporary:
         pending = Path(temporary)
         for name in PUBLISHED:
+            (pending / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(staged / name, pending / name)
         changed = []
         try:
@@ -173,30 +206,18 @@ def update(directory, cache):
         if _snapshot(staged) != original:
             raise ValueError("CrOS Kit source changed while copying; retry the update")
         resolve_media(staged, cache)
-        runtime = staged / "rw-init.sh"
-        (staged / "rw-init.sh.sha256").write_text(
-            f"{make_usb.file_hash(runtime, 'sha256')}  {runtime.name}\n")
         print("Updating all flake inputs, including firmware sources and toolchain definitions.", flush=True)
         _command(["nix", "flake", "update"], staged)
-        outputs = _command(["nix", "build", "--no-link", "--print-out-paths",
-                            ".#efi", ".#rootdev", ".#alpine-repo", ".#flex-archive", ".#alpine-iso"],
-                           staged, capture=True).splitlines()
-        for name in ("crdyboot-debug.efi", "crdyboot-debug.efi.sha256",
-                     "THIRD_PARTY_NOTICES.txt", "build-info.json", "rootdev-compat.so"):
-            candidates = [Path(output) / name for output in outputs if (Path(output) / name).is_file()]
-            if len(candidates) != 1:
-                raise ValueError(f"Expected exactly one built artifact: {name}")
-            shutil.copyfile(candidates[0], staged / name)
-        shim = staged / "rootdev-compat.so"
-        (staged / "rootdev-compat.so.sha256").write_text(
-            f"{make_usb.file_hash(shim, 'sha256')}  {shim.name}\n")
+        _command(["nix", "build", "--no-link", ".#payload", ".#alpine-repo",
+                  ".#flex-archive", ".#alpine-iso"], staged)
         _command(["nix", "flake", "check"], staged)
         print("Running the complete local suite; verbose output reports any capability-dependent skips. "
               "This command does not acquire root privileges.", flush=True)
         _command(["nix", "develop", "path:" + str(staged), "--command", "python3",
-                  "-m", "unittest", "discover", "-s", str(staged), "-p", "test_*.py", "-v"], staged)
+                  "-m", "unittest", "discover", "-s", str(staged / "tests"),
+                  "-t", str(staged), "-p", "test_*.py", "-v"], staged)
         _publish(directory, staged, original)
-    print("Updated locked media, toolchain inputs and built artifacts after validation.", flush=True)
+    print("Updated media and flake locks after building and validating the installer payload.", flush=True)
 
 
 def main():

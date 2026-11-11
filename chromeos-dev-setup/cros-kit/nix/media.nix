@@ -1,7 +1,7 @@
 # The signed index is retained because upstream replaces it in place.
 { pkgs }:
 let
-  lock = builtins.fromJSON (builtins.readFile ./media.json);
+  lock = builtins.fromJSON (builtins.readFile ../media/media.json);
   fetch = name: item: pkgs.fetchurl {
     inherit name;
     url = item.url;
@@ -13,13 +13,13 @@ let
   ) lock.alpine.packages;
 in
 assert lock.format == 1;
-assert builtins.hashFile "sha256" ./alpine-index.tar.gz == lock.alpine.index_sha256;
+assert builtins.hashFile "sha256" ../media/alpine-index.tar.gz == lock.alpine.index_sha256;
 {
   flex-archive = fetch "${lock.flex.file}.zip" lock.flex;
   alpine-iso = fetch lock.alpine.filename lock.alpine;
   alpine-repo = pkgs.runCommand "cros-kit-alpine-repo" {} ''
     mkdir -p "$out/x86_64"
-    cp ${./alpine-index.tar.gz} "$out/x86_64/APKINDEX.tar.gz"
+    cp ${../media/alpine-index.tar.gz} "$out/x86_64/APKINDEX.tar.gz"
     ${pkgs.lib.concatMapStringsSep "\n" (item: ''
       ln -s ${item.path} "$out/x86_64/${item.name}"
     '') packages}

@@ -13,10 +13,7 @@ import unittest
 from unittest.mock import patch
 
 
-HERE = Path(__file__).resolve().parent
-if str(HERE) not in sys.path:
-    sys.path.insert(0, str(HERE))
-import wizard
+from cros_kit import wizard
 
 
 ESP = "00000000-0000-4000-8000-000000000012"
@@ -58,10 +55,10 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(target.version, "16836.32.0")
         self.assertIn("SERIAL", target.describe())
         for board in ("reven", "reven-signed-mp-v11keys"):
-            self.assertEqual(wizard.flex_release(f"CHROMEOS_RELEASE_BOARD={board}\nCHROMEOS_RELEASE_VERSION=123"), "123")
+            self.assertEqual(wizard.installer.flex_release(f"CHROMEOS_RELEASE_BOARD={board}\nCHROMEOS_RELEASE_VERSION=123"), "123")
         for board in ("", "glados", "reven-other", "reven-signed-", "revenevil"):
             with self.subTest(board=board), self.assertRaises(ValueError):
-                wizard.flex_release(f"CHROMEOS_RELEASE_BOARD={board}")
+                wizard.installer.flex_release(f"CHROMEOS_RELEASE_BOARD={board}")
 
     def test_mounted_disks_and_tools_usb_are_excluded_before_opening_them(self):
         mounted = copy.deepcopy(self.tree)
@@ -107,7 +104,7 @@ class DiscoveryTests(unittest.TestCase):
     def test_root_identification_never_replays_journal_and_unmounts_after_error(self):
         with patch.object(wizard.installer, "run") as run:
             with self.assertRaisesRegex(RuntimeError, "probe stopped"):
-                with wizard.root_files("/dev/fake3"):
+                with wizard.installer.root_files("/dev/fake3"):
                     raise RuntimeError("probe stopped")
         mount, unmount = run.call_args_list
         self.assertEqual(mount.args[:5], ("mount", "-t", "ext4", "-o", "ro,noload,nosuid,nodev,noexec"))
@@ -128,7 +125,7 @@ class DiscoveryTests(unittest.TestCase):
         with (patch.object(wizard.installer.tempfile, "mkdtemp", return_value=str(mounted)),
               patch.object(wizard.installer, "run", side_effect=run)):
             with self.assertRaisesRegex(ValueError, "Mount and files retained") as raised:
-                with wizard.root_files("/dev/fake3"):
+                with wizard.installer.root_files("/dev/fake3"):
                     self.assertTrue(release.is_file())
         self.assertIn(str(mounted), str(raised.exception))
         self.assertEqual(release.read_text(), "CHROMEOS_RELEASE_BOARD=reven\n")

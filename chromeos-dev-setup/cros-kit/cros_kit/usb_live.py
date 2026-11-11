@@ -10,59 +10,21 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
-import urllib.request
 
-from install import compatibility, verified_payload
+from .install import compatibility, verified_payload
 
 
-ALPINE = "https://dl-cdn.alpinelinux.org/alpine"
-RELEASES = f"{ALPINE}/latest-stable/releases/x86_64/latest-releases.yaml"
 # Alpine splits util-linux into subpackages. blockdev is in util-linux-misc.
 # initramfs adds alpine-base and openssl (signed modloop) during diskless boot.
 PACKAGES = ("alpine-base", "openssl", "python3", "efibootmgr", "lsblk",
             "mount", "umount", "util-linux-misc", "agetty")
-INSTALLER_FILES = ("install.py", "wizard.py", "compatibility.conf", "crdyboot-debug.efi",
+INSTALLER_FILES = ("__init__.py", "install.py", "wizard.py", "compatibility.conf", "crdyboot-debug.efi",
                    "crdyboot-debug.efi.sha256", "rw-init.sh", "rw-init.sh.sha256",
                    "rootdev-compat.so", "rootdev-compat.so.sha256",
-                   "THIRD_PARTY_NOTICES.txt")
+                   "THIRD_PARTY_NOTICES.txt", "build-info.json")
 
 
-def latest_release(metadata=None):
-    """Select official stable STANDARD x86_64 media, with its published digest."""
-    if metadata is None:
-        with urllib.request.urlopen(RELEASES, timeout=60) as response:
-            metadata = response.read().decode("utf-8")
-    # Only flat release fields are needed; descriptions are indented YAML text.
-    matches = []
-    for block in re.split(r"(?m)^-\s*$", metadata):
-        fields = dict(re.findall(r"(?m)^  ([a-z0-9_]+): ([^\n]+)$", block))
-        fields = {key: value.strip().strip('"') for key, value in fields.items()}
-        if fields.get("flavor") == "alpine-standard" and fields.get("arch") == "x86_64":
-            matches.append(fields)
-    if len(matches) != 1:
-        raise ValueError("Official Alpine metadata must contain one STANDARD x86_64 release")
-    fields = matches[0]
-    version = fields.get("version", "")
-    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
-        raise ValueError("Invalid Alpine stable version")
-    branch = "v" + ".".join(version.split(".")[:2])
-    filename = f"alpine-standard-{version}-x86_64.iso"
-    digest = fields.get("sha256", "")
-    if (fields.get("branch") != branch or fields.get("file") != filename
-            or not re.fullmatch(r"[0-9a-f]{64}", digest)):
-        raise ValueError("Invalid Alpine release filename, branch or SHA256")
-    try:
-        size = int(fields["size"])
-    except (KeyError, ValueError) as error:
-        raise ValueError("Invalid Alpine ISO size") from error
-    if not 0 < size < 4 * 1024**3:
-        raise ValueError("Invalid Alpine ISO size")
-    return {"version": version, "branch": branch, "filename": filename,
-            "url": f"{ALPINE}/{branch}/releases/x86_64/{filename}",
-            "sha256": digest, "size": size}
-
-
-def _run(arguments):
+def run(arguments):
     result = subprocess.run([str(argument) for argument in arguments],
                             capture_output=True, text=True)
     # apk 3.0 fetch can print solver errors while returning zero.
@@ -84,15 +46,15 @@ tty2::respawn:/sbin/getty 38400 tty2
     profile = """# Offer one short command from any interactive tools shell.
 case $- in
   *i*)
-    for cros_kit_wizard in /media/*/cros-kit/wizard.py; do
-      [ -f "$cros_kit_wizard" ] || continue
-      CROS_KIT_WIZARD=$cros_kit_wizard
-      export CROS_KIT_WIZARD
-      alias cros-kit='python3 "$CROS_KIT_WIZARD"'
+    for cros_kit_root in /media/*/cros-kit; do
+      [ -f "$cros_kit_root/cros_kit/wizard.py" ] || continue
+      CROS_KIT_ROOT=$cros_kit_root
+      export CROS_KIT_ROOT
+      alias cros-kit='PYTHONPATH="$CROS_KIT_ROOT" python3 -P -m cros_kit.wizard'
       printf '\\n%s\\n' 'Run cros-kit to set up CrOS Kit (disk detected automatically).'
       break
     done
-    unset cros_kit_wizard
+    unset cros_kit_root
     ;;
 esac
 """
@@ -116,6 +78,53 @@ esac
                     archive.addfile(info, io.BytesIO(contents))
 
 
+def prepare_media(iso_path, destination, work, apk_command="apk", bsdtar_command="bsdtar",
+                  expected_version=None):
+    """Validate Alpine media and prepare trusted keys plus a private APK root."""
+    destination, work = Path(destination), Path(work)
+    destination.mkdir(parents=True, exist_ok=True)
+    if any(destination.iterdir()):
+        raise ValueError("Alpine staging directory must be empty")
+    run([bsdtar_command, "-xf", Path(iso_path).resolve(), "-C", destination])
+    # ISO media has read-only modes; this is a writable staging copy.
+    destination.chmod(0o755)
+    for item in destination.rglob("*"):
+        if item.is_symlink() or not (item.is_file() or item.is_dir()):
+            raise ValueError("Unexpected nonregular file in Alpine ISO")
+        item.chmod(0o755 if item.is_dir() else 0o644)
+    release = (destination / ".alpine-release").read_text().strip()
+    match = re.fullmatch(r"alpine-standard-(\d+\.\d+\.\d+)(?: \d+)?", release)
+    if not match:
+        raise ValueError("Expected Alpine STANDARD release media")
+    version = match[1]
+    if expected_version is not None and version != expected_version:
+        raise ValueError("Alpine ISO version differs from official release metadata")
+    for name in ("boot/vmlinuz-lts", "boot/initramfs-lts", "boot/modloop-lts",
+                 "apks/.boot_repository"):
+        if not (destination / name).is_file():
+            raise ValueError(f"Missing Alpine boot file: {name}")
+    packages_dir = destination / "apks/x86_64"
+    keys_apk = list(packages_dir.glob("alpine-keys-*.apk"))
+    if len(keys_apk) != 1:
+        raise ValueError("Expected one trusted alpine-keys package in the ISO")
+    keys = work / "keys"
+    keys.mkdir()
+    run([bsdtar_command, "-xf", keys_apk[0], "-C", keys])
+    keys_dir = keys / "etc/apk/keys"
+    if not list(keys_dir.glob("*.pub")):
+        raise ValueError("Official Alpine ISO contains no package signing keys")
+    root, cache = work / "root", work / "cache"
+    root.mkdir()
+    cache.mkdir()
+    repositories = work / "repositories"
+    repositories.write_text("")
+    apk = [apk_command, "--root", root, "--arch", "x86_64",
+           "--keys-dir", keys_dir, "--cache-dir", cache,
+           "--repositories-file", repositories]
+    run([*apk, "add", "--initdb", "--usermode", "--no-network"])
+    return version, packages_dir, apk, repositories
+
+
 def prepare_live(iso_path, destination, installer_dir, repository,
                  apk_command="apk", bsdtar_command="bsdtar"):
     """Extract a checksum-verified STANDARD ISO and add signed offline tools.
@@ -135,44 +144,11 @@ def prepare_live(iso_path, destination, installer_dir, repository,
         if not (installer_dir / name).is_file():
             raise ValueError(f"Missing CrOS Kit payload: {name}")
     compatibility(installer_dir)
-    _run([bsdtar_command, "-xf", Path(iso_path).resolve(), "-C", destination])
-    # ISO media has read-only modes; this is a writable staging copy.
-    destination.chmod(0o755)
-    for item in destination.rglob("*"):
-        if item.is_symlink() or not (item.is_file() or item.is_dir()):
-            raise ValueError("Unexpected nonregular file in Alpine ISO")
-        item.chmod(0o755 if item.is_dir() else 0o644)
-    release = (destination / ".alpine-release").read_text().strip()
-    match = re.fullmatch(r"alpine-standard-(\d+\.\d+\.\d+)(?: \d+)?", release)
-    if not match:
-        raise ValueError("Expected Alpine STANDARD release media")
-    version = match[1]
-    for name in ("boot/vmlinuz-lts", "boot/initramfs-lts", "boot/modloop-lts",
-                 "apks/.boot_repository"):
-        if not (destination / name).is_file():
-            raise ValueError(f"Missing Alpine boot file: {name}")
     repository = Path(repository).resolve()
-    packages_dir = destination / "apks/x86_64"
-    keys_apk = list(packages_dir.glob("alpine-keys-*.apk"))
-    if len(keys_apk) != 1:
-        raise ValueError("Expected one trusted alpine-keys package in the ISO")
     with tempfile.TemporaryDirectory(prefix="cros-kit-apk-") as temporary:
         work = Path(temporary)
-        keys = work / "keys"
-        keys.mkdir()
-        _run([bsdtar_command, "-xf", keys_apk[0], "-C", keys])
-        keys_dir = keys / "etc/apk/keys"
-        if not list(keys_dir.glob("*.pub")):
-            raise ValueError("Official Alpine ISO contains no package signing keys")
-        root, cache = work / "root", work / "cache"
-        root.mkdir()
-        cache.mkdir()
-        repositories = work / "repositories"
-        repositories.write_text("")
-        apk = [apk_command, "--root", root, "--arch", "x86_64",
-               "--keys-dir", keys_dir, "--cache-dir", cache,
-               "--repositories-file", repositories]
-        _run([*apk, "add", "--initdb", "--usermode", "--no-network"])
+        version, packages_dir, apk, repositories = prepare_media(
+            iso_path, destination, work, apk_command, bsdtar_command)
         # The flake supplies exact, hash-locked files and the signed index.
         # Never refresh repositories or resolve against the live network here.
         for package in packages_dir.glob("*.apk"):
@@ -183,16 +159,16 @@ def prepare_live(iso_path, destination, installer_dir, repository,
         repositories.write_text(str(destination / "apks") + "\n")
         # Check both solving and fetching against the final local-only media.
         # Fetch also checks every file is present; no network/cache fallback.
-        _run([*apk, "--no-network", "add", "--simulate", *PACKAGES])
+        run([*apk, "--no-network", "add", "--simulate", *PACKAGES])
         verified = work / "verified"
         verified.mkdir()
-        _run([*apk, "--no-network", "fetch", "--recursive", "--link",
+        run([*apk, "--no-network", "fetch", "--recursive", "--link",
               "--output", verified, *PACKAGES])
         package_count = len(list(verified.glob("*.apk")))
         if not package_count:
             raise ValueError("Offline Alpine tools package set is empty")
-    payload = destination / "cros-kit"
-    payload.mkdir()
+    payload = destination / "cros-kit/cros_kit"
+    payload.mkdir(parents=True)
     for name in INSTALLER_FILES:
         shutil.copyfile(installer_dir / name, payload / name)
     _overlay(destination / "cros-kit.apkovl.tar.gz")

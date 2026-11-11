@@ -4,7 +4,6 @@
 import argparse
 import fcntl
 import hashlib
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -17,18 +16,14 @@ import sys
 import tempfile
 import time
 import urllib.parse
-import urllib.request
 import uuid
 import zipfile
 import zlib
 
-import usb_live
+from . import install as installer
+from . import usb_live
 
-HERE = Path(__file__).resolve().parent
-SPEC = importlib.util.spec_from_file_location("cros_kit_install", HERE / "install.py")
-installer = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(installer)
-FLEX_METADATA = "https://dl.google.com/dl/edgedl/chromeos/recovery/cloudready_recovery2.json"
+HERE = Path(__file__).resolve().parent.parent
 MIB = 1024 * 1024
 CHUNK = 8 * MIB
 TOOLS_LABEL = "CROSKIT"
@@ -60,35 +55,6 @@ def file_hash(path, algorithm):
         while data := stream.read(CHUNK):
             digest.update(data)
     return digest.hexdigest()
-
-
-def download(url, path, digest, algorithm="sha256", size=None):
-    if path.exists() and (size is None or path.stat().st_size == size) and file_hash(path, algorithm) == digest:
-        print(f"Using verified cache: {path.name}", flush=True)
-        return path
-    temporary = path.with_name(path.name + ".part")
-    received = 0
-    checksum = hashlib.new(algorithm)
-    started = last = time.monotonic()
-    print(f"Downloading {path.name}", flush=True)
-    try:
-        with urllib.request.urlopen(url, timeout=60) as response, temporary.open("wb") as output:
-            while data := response.read(CHUNK):
-                received += len(data)
-                if size is not None and received > size:
-                    raise ValueError("Download exceeds its published size")
-                checksum.update(data)
-                output.write(data)
-                now = time.monotonic()
-                if now - last >= 5:
-                    print(f"  {received / MIB:.0f} MiB, {now - started:.1f}s", flush=True)
-                    last = now
-        if (size is not None and received != size) or checksum.hexdigest() != digest:
-            raise ValueError(f"Download checksum/size mismatch: {path.name}")
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
-    return path
 
 
 def extract_flex(archive, release, output):
@@ -435,7 +401,7 @@ def publish_image(image, destination):
 
 
 def locked_media():
-    media = json.loads((HERE / "media.json").read_text())
+    media = json.loads((HERE / "media/media.json").read_text())
     if media["format"] != 1 or media["packages"] != list(usb_live.PACKAGES):
         raise ValueError("Media lock format or requested package list changed; run the update command")
     release = stable_release([media["flex"]])
@@ -521,10 +487,10 @@ def main():
         missing = [tool for tool in tools if not shutil.which(tool)]
         if missing:
             raise ValueError("Missing tools: " + ", ".join(missing) + "; use nix run path:" + str(HERE))
-        checksum = (HERE / "crdyboot-debug.efi.sha256").read_text().split()[0]
-        if file_hash(HERE / "crdyboot-debug.efi", "sha256") != checksum:
-            raise ValueError("Debug EFI template checksum mismatch")
-        installer.verified_rw_init()
+        try:
+            payload = Path(os.environ["CROS_KIT_PAYLOAD"])
+        except KeyError as error:
+            raise ValueError("Use nix run path:" + str(HERE) + " to build the installer payload") from error
         archive, iso, repository = locked_inputs(media)
         # Recovery images exceed many systems' /tmp quotas or tmpfs capacity.
         staging = (args.image.resolve().parent if args.image else
@@ -536,7 +502,7 @@ def main():
             print("Preparing official Flex image", flush=True)
             extract_flex(archive, release, image)
             live = work / "live"
-            usb_live.prepare_live(iso, live, HERE, repository)
+            usb_live.prepare_live(iso, live, payload, repository)
             (live / "cros-kit.json").write_text(json.dumps(media, indent=2) + "\n")
             build_image(image, live, work)
             if args.image:
@@ -547,7 +513,8 @@ def main():
                     flash_image(image, expected)
                 else:
                     print("Image prepared; requesting root only to write and verify the USB.", flush=True)
-                    subprocess.run(["sudo", sys.executable, str(Path(__file__).resolve()), "--disk", expected["path"],
+                    subprocess.run(["sudo", "env", "PYTHONPATH=" + str(HERE), sys.executable,
+                                    "-P", "-m", "cros_kit.make_usb", "--disk", expected["path"],
                                     "--erase", "--write-image", str(image), "--expected-target", json.dumps(expected),
                                     "--tool-path", os.environ["PATH"]], check=True)
     except (EOFError, KeyboardInterrupt):

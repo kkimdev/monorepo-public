@@ -6,11 +6,11 @@ import subprocess
 import tempfile
 import unittest
 
-import install
+from cros_kit import install
+from tests import SOURCE as SOURCE_DIR
 
 
-HERE = Path(__file__).resolve().parent
-SOURCE = (HERE / "rw-init.sh").read_text().rsplit('\nrw_main "$@"', 1)[0]
+SOURCE = (SOURCE_DIR / "rw-init.sh").read_text().rsplit('\nrw_main "$@"', 1)[0]
 
 
 class CompatibilityContractTests(unittest.TestCase):

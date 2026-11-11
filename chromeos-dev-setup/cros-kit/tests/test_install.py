@@ -3,7 +3,7 @@
 
 from contextlib import contextmanager, nullcontext
 import hashlib
-import importlib.util
+import os
 import io
 import json
 from pathlib import Path
@@ -17,10 +17,11 @@ import uuid
 import zlib
 
 
-HERE = Path(__file__).resolve().parent
-SPEC = importlib.util.spec_from_file_location("cros_kit_install", HERE / "install.py")
-installer = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(installer)
+from cros_kit import install as installer
+from tests import SOURCE
+
+
+HERE = SOURCE
 REAL_VALIDATE_INSTALLATION = installer.validate_installation
 ESP_UUID = "00000000-0000-4000-8000-000000000012"
 OTHER_UUID = "00000000-0000-4000-8000-000000000099"
@@ -330,8 +331,8 @@ class ExecutableValidationTests(unittest.TestCase):
         self.assertEqual(result[512:], packed_key().ljust(8192, b"\0"))
         self.assertEqual(len(result), len(template))
 
-    def test_repository_template_accepts_current_key_format(self):
-        template = (HERE / "crdyboot-debug.efi").read_bytes()
+    def test_built_template_accepts_current_key_format(self):
+        template = (Path(os.environ["CROS_KIT_PAYLOAD"]) / "crdyboot-debug.efi").read_bytes()
         result = installer.make_loader(template, pe_image(packed_key()))
         start, length = installer.key_section(template)
         self.assertEqual(result[:start], template[:start])

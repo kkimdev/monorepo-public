@@ -14,7 +14,7 @@ nix run path:./chromeos-dev-setup/cros-kit
 ```
 
 Downloads the locked official Flex image and signed offline tools. Creation uses
-[fixed inputs](media.json), without checking for newer releases.
+[fixed inputs](media/media.json), without checking for newer releases.
 
 ## Install on the laptop
 
@@ -69,9 +69,9 @@ nix run path:./chromeos-dev-setup/cros-kit#update
 ```
 
 Refreshes all flake inputs (including firmware sources) and media locks, then
-rebuilds and tests before replacing generated files. Rust and Cargo dependencies
-follow the locked firmware source.
+builds and tests the installer bundle before publishing the locks. Rust and Cargo
+dependencies follow the locked firmware source.
 Unvalidated Flex releases stop the update; the OS compatibility contract stays explicit.
 
-[Validation and manual installation](validation.md) ·
-[Source](cros-debug.patch) · [Licenses](THIRD_PARTY_NOTICES.txt)
+[Builds and validation](validation.md) ·
+[Source](nix/cros-debug.patch)

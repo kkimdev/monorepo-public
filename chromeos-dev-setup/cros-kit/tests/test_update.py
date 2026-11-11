@@ -10,7 +10,82 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import update
+from cros_kit import update
+
+
+def release_block(flavor="standard", arch="x86_64"):
+    return f"""-
+  title: "Standard"
+  desc: |
+    Network connection is required.
+  branch: v3.24
+  arch: {arch}
+  version: 3.24.4
+  flavor: alpine-{flavor}
+  file: alpine-{flavor}-3.24.4-{arch}.iso
+  size: 370147328
+  sha256: {'a' * 64}
+"""
+
+
+class ReleaseTests(unittest.TestCase):
+    def test_standard_not_virtual_or_other_arch(self):
+        metadata = release_block("virt") + release_block(arch="aarch64") + release_block()
+        release = update.latest_release(metadata)
+        self.assertEqual(release["filename"], "alpine-standard-3.24.4-x86_64.iso")
+        self.assertEqual(release["url"], update.ALPINE + "/v3.24/releases/x86_64/" + release["filename"])
+        self.assertEqual(release["sha256"], "a" * 64)
+
+    def test_rejects_missing_or_duplicate_standard(self):
+        for metadata in (release_block("virt"), release_block() * 2):
+            with self.subTest(metadata=metadata), self.assertRaises(ValueError):
+                update.latest_release(metadata)
+
+    def test_rejects_invalid_digest_filename_branch_and_size(self):
+        original = release_block()
+        for before, after in (("a" * 64, "not-a-digest"),
+                              ("file: alpine-standard", "file: ../alpine-standard"),
+                              ("branch: v3.24", "branch: v3.23"),
+                              ("size: 370147328", "size: -1")):
+            with self.subTest(field=before), self.assertRaises(ValueError):
+                update.latest_release(original.replace(before, after))
+
+
+class DownloadTests(unittest.TestCase):
+    def test_verified_cache_never_contacts_network(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "locked.zip"
+            path.write_bytes(b"verified cache")
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            with patch("urllib.request.urlopen") as network:
+                self.assertEqual(update.download("https://example.test/locked.zip", path, digest,
+                                                 size=path.stat().st_size), path)
+            network.assert_not_called()
+
+    def test_changed_cache_is_replaced_only_after_download_verification(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "locked.zip"
+            path.write_bytes(b"changed cache")
+            contents = b"verified download"
+            with patch("urllib.request.urlopen", return_value=io.BytesIO(contents)) as network:
+                update.download("https://example.test/locked.zip", path,
+                                hashlib.sha256(contents).hexdigest(), size=len(contents))
+            network.assert_called_once()
+            self.assertEqual(path.read_bytes(), contents)
+            self.assertFalse(path.with_name(path.name + ".part").exists())
+
+    def test_invalid_download_preserves_existing_cache_and_removes_partial(self):
+        contents = b"download"
+        for digest, size in (("0" * 64, len(contents)),
+                             (hashlib.sha256(contents).hexdigest(), len(contents) + 1)):
+            with self.subTest(digest=digest, size=size), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "locked.zip"
+                path.write_bytes(b"old cache")
+                with patch("urllib.request.urlopen", return_value=io.BytesIO(contents)):
+                    with self.assertRaisesRegex(ValueError, "checksum/size mismatch"):
+                        update.download("https://example.test/locked.zip", path, digest, size=size)
+                self.assertEqual(path.read_bytes(), b"old cache")
+                self.assertFalse(path.with_name(path.name + ".part").exists())
 
 
 class MediaResolutionTests(unittest.TestCase):
@@ -20,6 +95,7 @@ class MediaResolutionTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.source = self.root / "source"
         self.source.mkdir()
+        (self.source / "media").mkdir()
         self.flex = {"channel": "STABLE", "model": "ChromeOS Flex", "version": "1.2.3",
                      "chrome_version": "1.0", "file": "recovery.bin", "filesize": 100,
                      "url": "https://dl.google.com/recovery.bin.zip", "sha1": "a" * 40,
@@ -29,20 +105,20 @@ class MediaResolutionTests(unittest.TestCase):
                        "sha256": "b" * 64, "size": 3}
 
     def test_unsupported_flex_preserves_lock_and_stops_before_downloads(self):
-        lock = self.source / "media.json"
+        lock = self.source / "media/media.json"
         lock.write_bytes(b"old lock")
         with patch.object(update.urllib.request, "urlopen", return_value=io.BytesIO(b"[]")), \
              patch.object(update.make_usb, "stable_release", return_value=self.flex), \
              patch.object(update.make_usb.installer, "require_supported_version",
                           side_effect=ValueError("unsupported")), \
-             patch.object(update.make_usb, "download") as download, \
-             patch.object(update.usb_live, "latest_release") as alpine:
+             patch.object(update, "download") as download, \
+             patch.object(update, "latest_release") as alpine:
             with self.assertRaisesRegex(ValueError, "unsupported"):
                 update.resolve_media(self.source, self.root / "cache")
         download.assert_not_called()
         alpine.assert_not_called()
         self.assertEqual(lock.read_bytes(), b"old lock")
-        self.assertFalse((self.source / "alpine-index.tar.gz").exists())
+        self.assertFalse((self.source / "media/alpine-index.tar.gz").exists())
 
     def test_resolution_snapshots_verified_closure_and_exact_signed_index(self):
         archive, iso = self.root / "flex.zip", self.root / "alpine.iso"
@@ -78,13 +154,13 @@ class MediaResolutionTests(unittest.TestCase):
         with patch.object(update.urllib.request, "urlopen", return_value=io.BytesIO(b"[]")), \
              patch.object(update.make_usb, "stable_release", return_value=self.flex), \
              patch.object(update.make_usb.installer, "require_supported_version"), \
-             patch.object(update.usb_live, "latest_release", return_value=self.alpine), \
-             patch.object(update.make_usb, "download", side_effect=[archive, iso]) as download, \
-             patch.object(update, "_apk_run", side_effect=apk):
+             patch.object(update, "latest_release", return_value=self.alpine), \
+             patch.object(update, "download", side_effect=[archive, iso]) as download, \
+             patch.object(update.usb_live, "run", side_effect=apk):
             lock = update.resolve_media(self.source, self.root / "cache")
         self.assertEqual(download.call_args_list[0].args[2:], ("a" * 40, "sha1", 5))
         self.assertEqual(lock["flex"]["sha256"], hashlib.sha256(archive.read_bytes()).hexdigest())
-        self.assertEqual((self.source / "alpine-index.tar.gz").read_bytes(), b"signed index bytes")
+        self.assertEqual((self.source / "media/alpine-index.tar.gz").read_bytes(), b"signed index bytes")
         self.assertEqual(lock["alpine"]["index_sha256"], hashlib.sha256(b"signed index bytes").hexdigest())
         self.assertEqual([item["filename"] for item in lock["alpine"]["packages"]],
                          ["a-1.apk", "b-2.apk"])
@@ -92,7 +168,7 @@ class MediaResolutionTests(unittest.TestCase):
             self.assertEqual(package["sha256"], hashlib.sha256(contents).hexdigest())
             self.assertEqual(package["size"], len(contents))
             self.assertTrue(package["url"].endswith("/x86_64/" + package["filename"]))
-        self.assertEqual(json.loads((self.source / "media.json").read_text()), lock)
+        self.assertEqual(json.loads((self.source / "media/media.json").read_text()), lock)
         self.assertTrue(any("--usermode" in args and "--initdb" in args for args in commands))
         offline = [args for args in commands if "--no-network" in args]
         self.assertTrue(any("--simulate" in args for args in offline))
@@ -107,60 +183,53 @@ class UpdateTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.source = self.root / "source"
         self.source.mkdir()
-        for name in (*update.PUBLISHED, "flake.nix", "efi.nix", "compatibility.conf", "rw-init.sh"):
+        for name in (*update.PUBLISHED, "flake.nix", "nix/efi.nix",
+                     "cros_kit/compatibility.conf", "cros_kit/rw-init.sh"):
+            (self.source / name).parent.mkdir(parents=True, exist_ok=True)
             (self.source / name).write_bytes(("old " + name).encode())
         self.original = update._snapshot(self.source)
-        self.efi, self.shim = self.root / "efi", self.root / "shim"
-        self.efi.mkdir()
-        self.shim.mkdir()
-        for name in ("crdyboot-debug.efi", "crdyboot-debug.efi.sha256",
-                     "THIRD_PARTY_NOTICES.txt", "build-info.json"):
-            (self.efi / name).write_bytes(("new " + name).encode())
-        (self.shim / "rootdev-compat.so").write_bytes(b"new shim")
         self.commands = []
 
     def resolve(self, directory, cache):
         self.assertNotEqual(directory, self.source)
-        (directory / "media.json").write_bytes(b"new media")
-        (directory / "alpine-index.tar.gz").write_bytes(b"new index")
+        (directory / "media/media.json").write_bytes(b"new media")
+        (directory / "media/alpine-index.tar.gz").write_bytes(b"new index")
 
-    def command(self, args, directory, capture=False):
+    def command(self, args, directory):
         self.commands.append((args, directory))
         self.assertNotEqual(directory, self.source)
         if args[1:3] == ["flake", "update"]:
             (directory / "flake.lock").write_bytes(b"new flake lock")
-        if args[1] == "build":
-            return f"{self.efi}\n{self.shim}\n"
 
     def test_success_validates_staging_before_publishing_only_allowlist(self):
         with patch.object(update, "resolve_media", side_effect=self.resolve), \
              patch.object(update, "_command", side_effect=self.command):
             update.update(self.source, self.root / "cache")
-        self.assertEqual((self.source / "media.json").read_bytes(), b"new media")
+        self.assertEqual((self.source / "media/media.json").read_bytes(), b"new media")
         self.assertEqual((self.source / "flake.lock").read_bytes(), b"new flake lock")
-        self.assertEqual((self.source / "rootdev-compat.so").read_bytes(), b"new shim")
-        self.assertEqual((self.source / "rootdev-compat.so.sha256").read_text(),
-                         hashlib.sha256(b"new shim").hexdigest() + "  rootdev-compat.so\n")
-        self.assertEqual((self.source / "rw-init.sh.sha256").read_text(),
-                         hashlib.sha256(self.original[Path("rw-init.sh")]).hexdigest() + "  rw-init.sh\n")
-        for name in ("flake.nix", "efi.nix", "compatibility.conf", "rw-init.sh"):
+        self.assertEqual(set(update.PUBLISHED), {"media/media.json", "media/alpine-index.tar.gz", "flake.lock"})
+        self.assertEqual(set(update._snapshot(self.source)), set(self.original))
+        for name in ("flake.nix", "nix/efi.nix", "cros_kit/compatibility.conf", "cros_kit/rw-init.sh"):
             self.assertEqual((self.source / name).read_bytes(), self.original[Path(name)])
         args = [item[0] for item in self.commands]
         self.assertEqual(args[0], ["nix", "flake", "update"])
-        self.assertEqual(args[1][4:], [".#efi", ".#rootdev", ".#alpine-repo",
-                                     ".#flex-archive", ".#alpine-iso"])
+        self.assertEqual([arg for arg in args[1] if arg.startswith(".#")],
+                         [".#payload", ".#alpine-repo", ".#flex-archive", ".#alpine-iso"])
+        self.assertIn("--no-link", args[1])
         self.assertEqual(args[2], ["nix", "flake", "check"])
         self.assertEqual(args[3][:2], ["nix", "develop"])
         self.assertIn("unittest", args[3])
+        self.assertEqual(Path(args[3][args[3].index("-s") + 1]), self.commands[3][1] / "tests")
+        self.assertEqual(Path(args[3][args[3].index("-t") + 1]), self.commands[3][1])
         self.assertIn("-v", args[3])
 
     def test_validation_failure_preserves_entire_original_tree(self):
         for failure in ("update", "build", "check", "develop"):
             with self.subTest(failure=failure):
-                def fail(args, directory, capture=False):
+                def fail(args, directory):
                     if failure in args[1:3]:
                         raise subprocess.CalledProcessError(1, args)
-                    return self.command(args, directory, capture)
+                    return self.command(args, directory)
                 with patch.object(update, "resolve_media", side_effect=self.resolve), \
                      patch.object(update, "_command", side_effect=fail):
                     with self.assertRaises(subprocess.CalledProcessError):
@@ -168,16 +237,16 @@ class UpdateTests(unittest.TestCase):
                 self.assertEqual(update._snapshot(self.source), self.original)
 
     def test_concurrent_source_edit_is_preserved_and_blocks_publication(self):
-        def edit(args, directory, capture=False):
+        def edit(args, directory):
             if args[1] == "develop":
-                (self.source / "compatibility.conf").write_bytes(b"concurrent edit")
-            return self.command(args, directory, capture)
+                (self.source / "cros_kit/compatibility.conf").write_bytes(b"concurrent edit")
+            return self.command(args, directory)
         with patch.object(update, "resolve_media", side_effect=self.resolve), \
              patch.object(update, "_command", side_effect=edit):
             with self.assertRaisesRegex(ValueError, "source changed"):
                 update.update(self.source, self.root / "cache")
         expected = dict(self.original)
-        expected[Path("compatibility.conf")] = b"concurrent edit"
+        expected[Path("cros_kit/compatibility.conf")] = b"concurrent edit"
         self.assertEqual(update._snapshot(self.source), expected)
 
     def test_publication_errors_and_interrupts_restore_originals(self):

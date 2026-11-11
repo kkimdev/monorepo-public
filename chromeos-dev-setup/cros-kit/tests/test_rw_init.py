@@ -13,7 +13,10 @@ import tempfile
 import unittest
 
 
-SCRIPT = Path(__file__).with_name("rw-init.sh")
+from tests import SOURCE as SOURCE_DIR
+
+
+SCRIPT = SOURCE_DIR / "rw-init.sh"
 SOURCE = SCRIPT.read_text().rsplit('\nrw_main "$@"', 1)[0]
 
 
