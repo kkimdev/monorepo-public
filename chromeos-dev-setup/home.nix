@@ -662,6 +662,31 @@ in
       rm -rf -- "$tempDir"
     '';
 
+    # ~/.agents/AGENTS.md is the single user-owned global guidance shared by
+    # Codex and Claude Code. Only the links are managed here: the content stays
+    # out of this public repository and out of the read-only Nix store so
+    # agents can keep editing it. Existing files or foreign links are left in
+    # place with a warning instead of being replaced.
+    linkSharedAgentGuidance = lib.hm.dag.entryAfter ["writeBoundary"] ''
+      sharedGuidance="$HOME/.agents/AGENTS.md"
+      linkTarget="../.agents/AGENTS.md"
+      if [ ! -f "$sharedGuidance" ]; then
+        echo "warning: $sharedGuidance is missing; not linking agent guidance." >&2
+      else
+        for guidanceLink in "$HOME/.codex/AGENTS.md" "$HOME/.claude/CLAUDE.md"; do
+          if [ -L "$guidanceLink" ] && [ "$(readlink -- "$guidanceLink")" = "$linkTarget" ]; then
+            continue
+          fi
+          if [ -e "$guidanceLink" ] || [ -L "$guidanceLink" ]; then
+            echo "warning: $guidanceLink exists and is not a link to $sharedGuidance; leaving it unchanged." >&2
+            continue
+          fi
+          run mkdir -p -- "$(dirname -- "$guidanceLink")"
+          run ln -s -- "$linkTarget" "$guidanceLink"
+        done
+      fi
+    '';
+
     linkDesktopApplications = lib.hm.dag.entryAfter ["writeBoundary"] ''
       rm -rf "${crosDesktopShareDir}/applications" "${crosDesktopShareDir}/icons"
       mkdir -p "${crosDesktopShareDir}/applications" "${crosDesktopShareDir}/icons"
