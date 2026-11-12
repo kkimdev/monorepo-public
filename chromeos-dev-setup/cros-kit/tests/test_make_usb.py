@@ -19,6 +19,7 @@ import zlib
 
 from cros_kit import make_usb as builder
 from tests import test_install as fixtures
+from tests.test_media import PARAMS, live_image
 
 
 def recovery_image(**kwargs):
@@ -71,8 +72,7 @@ class ReleaseTests(unittest.TestCase):
 class CompatibilityGateTests(unittest.TestCase):
     def dry_run(self, version):
         release = ReleaseTests().release(version, sha256="b" * 64)
-        lock = dict(format=1, flex=release, alpine=dict(version="3.24.4", sha256="c" * 64),
-                    packages=list(builder.usb_live.PACKAGES))
+        lock = dict(format=2, flex=release)
         with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
             directory = Path(temporary)
             (directory / "media").mkdir()
@@ -198,7 +198,7 @@ class PatchedChunkTests(unittest.TestCase):
 
 class GrubConfigTests(unittest.TestCase):
     def test_each_menu_selects_its_exported_root_before_device_free_boot_paths(self):
-        config = builder.grub_config()
+        config = builder.grub_config(PARAMS)
         preamble = config.split("menuentry", 1)[0]
         statements = [shlex.split(line) for line in preamble.splitlines() if line.strip()]
         assignments = dict(command[1].split("=", 1) for command in statements
@@ -226,8 +226,48 @@ class GrubConfigTests(unittest.TestCase):
                         self.assertNotIn("$", command[1])
                         self.assertNotIn("(", command[1])
                         if command[0] == "linux":
-                            self.assertIn("modules=loop,squashfs,sd-mod,usb-storage", command)
-                            self.assertFalse(any(arg.startswith("alpine_dev=") for arg in command))
+                            self.assertEqual(command[1], "/boot/vmlinuz")
+                            self.assertEqual(command[2:], PARAMS.split())
+
+
+class LivePartitionTests(unittest.TestCase):
+    def test_combined_image_contains_exact_iso_and_preserves_flex_partitions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary)
+            image = work / "combined.img"
+            original = recovery_image()
+            image.write_bytes(original)
+            live = work / "live"
+            live.mkdir()
+            iso = bytes(live_image())
+            (live / "image.iso").write_bytes(iso)
+            (live / "kernel-params").write_text(PARAMS)
+            commands = []
+
+            def tools(*args):
+                commands.append(args)
+                if args[0] == "mcopy" and args[-2] == "::/efi/boot/crdybootx64.efi":
+                    Path(args[-1]).write_bytes(fixtures.pe_image(fixtures.packed_key()))
+                elif args[0] == "grub-mkstandalone":
+                    output = next(arg.split("=", 1)[1] for arg in args if arg.startswith("--output="))
+                    Path(output).write_bytes(b"grub")
+                return ""
+
+            with patch.object(builder, "run", side_effect=tools):
+                layout = builder.build_image(image, live, work)
+            result = image.read_bytes()
+            _, parts = builder.installer.read_gpt(io.BytesIO(result))
+            self.assertEqual(result[parts[13]["first"] * 512:(parts[13]["last"] + 1) * 512], iso)
+            self.assertEqual(layout["size"], len(iso))
+            _, old_parts = builder.installer.read_gpt(io.BytesIO(original))
+            for number, part in old_parts.items():
+                if number != 12:
+                    start, end = part["first"] * 512, (part["last"] + 1) * 512
+                    self.assertEqual(result[start:end], original[start:end])
+            GptTests().assert_valid_backup(result)
+            grub = next(args for args in commands if args[0] == "grub-mkstandalone")
+            self.assertTrue(any("iso9660" in arg for arg in grub if arg.startswith("--modules=")))
+            self.assertEqual({path.name for path in live.iterdir()}, {"image.iso", "kernel-params"})
 
 
 class UsbSelectionTests(unittest.TestCase):
@@ -396,20 +436,17 @@ class MainSelectionTests(unittest.TestCase):
     def test_prepared_image_uses_module_entrypoint_with_explicit_pythonpath_after_sudo(self):
         with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
             root = Path(temporary)
-            media = dict(flex=ReleaseTests().release(), alpine=dict(version="3.24.4"))
+            media = dict(flex=ReleaseTests().release())
             stack.enter_context(patch.object(builder.sys, "argv", [
                 "make_usb.py", "--disk", self.identity["path"], "--erase"]))
-            stack.enter_context(patch.dict(builder.os.environ, CROS_KIT_PAYLOAD=str(root / "payload"),
-                                           XDG_CACHE_HOME=str(root), PATH="/pinned/tools"))
+            stack.enter_context(patch.dict(builder.os.environ, XDG_CACHE_HOME=str(root), PATH="/pinned/tools"))
             stack.enter_context(patch.object(builder, "check_usb", return_value=self.identity))
             stack.enter_context(patch.object(builder, "locked_media", return_value=media))
             stack.enter_context(patch.object(builder.shutil, "which", return_value="/pinned/tool"))
             stack.enter_context(patch.object(builder, "locked_inputs", return_value=(
-                root / "flex.zip", root / "alpine.iso", root / "repository")))
+                root / "flex.zip", root / "live")))
             stack.enter_context(patch.object(builder, "extract_flex",
                                             side_effect=lambda archive, release, image: image.touch()))
-            stack.enter_context(patch.object(builder.usb_live, "prepare_live",
-                                            side_effect=lambda iso, live, payload, repo: live.mkdir()))
             stack.enter_context(patch.object(builder, "build_image"))
             stack.enter_context(patch.object(builder.os, "geteuid", return_value=1000))
             ran = stack.enter_context(patch.object(builder.subprocess, "run"))

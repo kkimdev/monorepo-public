@@ -555,8 +555,7 @@ class FirmwareTransactionTests(unittest.TestCase):
         self.template = self.root / "template.efi"
         self.template.write_bytes(pe_image())
         self.firmware = Firmware()
-        self.args = SimpleNamespace(action="install", disk=self.disk,
-                                    template=self.template, dry_run=False)
+        self.options = dict(remove=False, dry_run=False)
         self.rw_script = b"#!/bin/sh\nexec /sbin/init\n"
         self.rootdev_library = b"ELF library fixture"
         validation = patch.object(installer, "validate_installation")
@@ -582,17 +581,17 @@ class FirmwareTransactionTests(unittest.TestCase):
             self.addCleanup(item.stop)
 
     def test_install_is_idempotent_and_retains_other_entries(self):
-        installer.manage(self.args)
+        installer.configure(self.disk, template=self.template, **self.options)
         self.assertEqual(self.firmware.order, ["0003", "0001", "0008", "0002"])
         self.assertEqual(self.firmware.entries["0008"][0], "Other OS")
         self.firmware.commands.clear()
         with patch.object(installer, "atomic_write", wraps=installer.atomic_write) as written:
-            installer.manage(self.args)
+            installer.configure(self.disk, template=self.template, **self.options)
             written.assert_not_called()
         self.assertTrue(all(command == ("efibootmgr", "--verbose") for command in self.firmware.commands))
 
     def test_old_installs_gain_configured_mode_without_replacing_stock_files(self):
-        installer.manage(self.args)
+        installer.configure(self.disk, template=self.template, **self.options)
         directory = self.esp / installer.OWN_DIR
         original_stock = (self.esp / "EFI/BOOT/crdybootx64.efi").read_bytes()
         for version in (1, 2, 3):
@@ -605,7 +604,7 @@ class FirmwareTransactionTests(unittest.TestCase):
                 if version == 1:
                     (directory / "rw-init.sh").unlink()
                 (directory / "install.json").write_text(json.dumps(dict(format=version, esp_uuid=ESP_UUID)))
-                installer.manage(self.args)
+                installer.configure(self.disk, template=self.template, **self.options)
                 self.assertEqual((directory / "rw-init.sh").read_bytes(), self.rw_script)
                 self.assertEqual((directory / "rootdev-compat.so").read_bytes(), self.rootdev_library)
                 self.assertEqual((directory / "normalx64.efi").read_bytes(), (directory / "bootx64.efi").read_bytes())
@@ -614,25 +613,25 @@ class FirmwareTransactionTests(unittest.TestCase):
                 self.assertEqual(self.firmware.order, ["0003", "0001", "0008", "0002"])
 
     def test_changed_script_is_replaced_atomically_without_firmware_changes(self):
-        installer.manage(self.args)
+        installer.configure(self.disk, template=self.template, **self.options)
         self.firmware.commands.clear()
         directory = self.esp / installer.OWN_DIR
         changed = self.rw_script + b"# updated\n"
         with (patch.object(installer, "verified_rw_init", return_value=changed),
               patch.object(installer, "atomic_write", wraps=installer.atomic_write) as written):
-            installer.manage(self.args)
+            installer.configure(self.disk, template=self.template, **self.options)
         written.assert_called_once_with(directory / "rw-init.sh", changed)
         self.assertEqual((directory / "rw-init.sh").read_bytes(), changed)
         self.assertTrue(all(command == ("efibootmgr", "--verbose") for command in self.firmware.commands))
 
     def test_changed_rootdev_library_and_checksum_are_replaced_without_firmware_changes(self):
-        installer.manage(self.args)
+        installer.configure(self.disk, template=self.template, **self.options)
         self.firmware.commands.clear()
         directory = self.esp / installer.OWN_DIR
         changed = b"ELF updated library"
         with (patch.object(installer, "verified_rootdev", return_value=changed),
               patch.object(installer, "atomic_write", wraps=installer.atomic_write) as written):
-            installer.manage(self.args)
+            installer.configure(self.disk, template=self.template, **self.options)
         self.assertEqual(written.call_count, 2)
         self.assertEqual((directory / "rootdev-compat.so").read_bytes(), changed)
         self.assertEqual((directory / "rootdev-compat.so.sha256").read_text(),
@@ -641,36 +640,36 @@ class FirmwareTransactionTests(unittest.TestCase):
 
     def test_rootdev_integrity_failure_changes_no_files_or_firmware(self):
         for dry_run in (False, True):
-            self.args.dry_run = dry_run
+            self.options["dry_run"] = dry_run
             self.firmware.commands.clear()
             with (self.subTest(dry_run=dry_run),
                   patch.object(installer, "verified_rootdev", side_effect=ValueError("rootdev-compat.so checksum mismatch"))):
                 with self.assertRaisesRegex(ValueError, "checksum mismatch"):
-                    installer.manage(self.args)
+                    installer.configure(self.disk, template=self.template, **self.options)
             self.assertFalse((self.esp / installer.OWN_DIR).exists())
             self.assertTrue(all(command == ("efibootmgr", "--verbose") for command in self.firmware.commands))
 
     def test_rootdev_copy_failure_keeps_loader_and_boot_order_unchanged(self):
-        installer.manage(self.args)
+        installer.configure(self.disk, template=self.template, **self.options)
         directory = self.esp / installer.OWN_DIR
         original = (directory / "bootx64.efi").read_bytes()
         order = self.firmware.order[:]
         with (patch.object(installer, "verified_rootdev", return_value=b"new library"),
               patch.object(installer, "atomic_write", side_effect=OSError("library copy failed"))):
             with self.assertRaisesRegex(OSError, "library copy failed"):
-                installer.manage(self.args)
+                installer.configure(self.disk, template=self.template, **self.options)
         self.assertEqual((directory / "bootx64.efi").read_bytes(), original)
         self.assertEqual(self.firmware.order, order)
 
     def test_script_copy_failure_keeps_loader_and_boot_order_unchanged(self):
-        installer.manage(self.args)
+        installer.configure(self.disk, template=self.template, **self.options)
         directory = self.esp / installer.OWN_DIR
         original = (directory / "bootx64.efi").read_bytes()
         order = self.firmware.order[:]
         with (patch.object(installer, "verified_rw_init", return_value=b"new script"),
               patch.object(installer, "atomic_write", side_effect=OSError("copy failed"))):
             with self.assertRaisesRegex(OSError, "copy failed"):
-                installer.manage(self.args)
+                installer.configure(self.disk, template=self.template, **self.options)
         self.assertEqual((directory / "bootx64.efi").read_bytes(), original)
         self.assertEqual(self.firmware.order, order)
 
@@ -684,70 +683,70 @@ class FirmwareTransactionTests(unittest.TestCase):
 
         with patch.object(installer, "atomic_write", side_effect=fail_normal):
             with self.assertRaisesRegex(OSError, "normal copy failed"):
-                installer.manage(self.args)
+                installer.configure(self.disk, template=self.template, **self.options)
         self.assertEqual(self.firmware.order, ["0001", "0008"])
         self.assertEqual(set(self.firmware.entries), {"0001", "0008"})
         self.assertTrue(all(command == ("efibootmgr", "--verbose") for command in self.firmware.commands))
-        installer.manage(self.args)
+        installer.configure(self.disk, template=self.template, **self.options)
         self.assertEqual(self.firmware.order, ["0003", "0001", "0008", "0002"])
 
     def test_rw_integrity_failure_changes_no_files_or_firmware(self):
         for dry_run in (False, True):
-            self.args.dry_run = dry_run
+            self.options["dry_run"] = dry_run
             self.firmware.commands.clear()
             with (self.subTest(dry_run=dry_run),
                   patch.object(installer, "verified_rw_init", side_effect=ValueError("rw-init.sh checksum mismatch"))):
                 with self.assertRaisesRegex(ValueError, "checksum mismatch"):
-                    installer.manage(self.args)
+                    installer.configure(self.disk, template=self.template, **self.options)
             self.assertFalse((self.esp / installer.OWN_DIR).exists())
             self.assertTrue(all(command == ("efibootmgr", "--verbose") for command in self.firmware.commands))
 
     def test_unknown_owned_directory_file_is_never_overwritten_or_deleted(self):
-        installer.manage(self.args)
+        installer.configure(self.disk, template=self.template, **self.options)
         other = self.esp / installer.OWN_DIR / "personal-file"
         other.write_bytes(b"preserve")
         for action in ("install", "remove"):
-            self.args.action = action
+            self.options["remove"] = action == "remove"
             with self.subTest(action=action), self.assertRaisesRegex(ValueError, "Unexpected files"):
-                installer.manage(self.args)
+                installer.configure(self.disk, template=self.template, **self.options)
             self.assertEqual(other.read_bytes(), b"preserve")
 
     def test_legacy_debug_default_is_moved_last_on_reinstall(self):
-        installer.manage(self.args)
+        installer.configure(self.disk, template=self.template, **self.options)
         original_loader = (self.esp / installer.OWN_DIR / "bootx64.efi").read_bytes()
         self.firmware.order = ["0002", "0001", "0008"]
-        installer.manage(self.args)
+        installer.configure(self.disk, template=self.template, **self.options)
         self.assertEqual(self.firmware.order, ["0003", "0001", "0008", "0002"])
         self.assertEqual((self.esp / installer.OWN_DIR / "bootx64.efi").read_bytes(), original_loader)
 
     def test_unrelated_relative_order_is_preserved_after_configured_default(self):
         self.firmware.order = ["0008", "0001"]
-        installer.manage(self.args)
+        installer.configure(self.disk, template=self.template, **self.options)
         self.assertEqual(self.firmware.order, ["0003", "0008", "0001", "0002"])
 
     def test_duplicate_owned_entries_are_consolidated_after_stock(self):
-        installer.manage(self.args)
+        installer.configure(self.disk, template=self.template, **self.options)
         self.firmware.entries["0004"] = installer.LABEL, ESP_UUID, installer.LOADER, True
         self.firmware.order = ["0004", "0008", "0002", "0001", "0003"]
-        installer.manage(self.args)
+        installer.configure(self.disk, template=self.template, **self.options)
         self.assertEqual(self.firmware.order, ["0003", "0008", "0001", "0004"])
         self.assertEqual(set(self.firmware.entries), {"0001", "0003", "0004", "0008"})
 
     def test_configured_duplicates_consolidate_without_touching_another_disk(self):
-        installer.manage(self.args)
+        installer.configure(self.disk, template=self.template, **self.options)
         self.firmware.entries["0004"] = installer.NORMAL_LABEL, ESP_UUID, installer.NORMAL_LOADER, True
         self.firmware.entries["0009"] = installer.NORMAL_LABEL, OTHER_UUID, installer.NORMAL_LOADER, True
         self.firmware.order = ["0004", "0009", "0008", "0003", "0001", "0002"]
-        installer.manage(self.args)
+        installer.configure(self.disk, template=self.template, **self.options)
         self.assertEqual(self.firmware.order, ["0004", "0009", "0008", "0001", "0002"])
         self.assertEqual(set(self.firmware.entries), {"0001", "0002", "0004", "0008", "0009"})
 
     def test_inactive_legacy_default_is_moved_last_before_activation(self):
-        installer.manage(self.args)
+        installer.configure(self.disk, template=self.template, **self.options)
         self.firmware.entries["0002"] = installer.LABEL, ESP_UUID, installer.LOADER, False
         self.firmware.order = ["0002", "0001", "0008"]
         self.firmware.commands.clear()
-        installer.manage(self.args)
+        installer.configure(self.disk, template=self.template, **self.options)
         self.assertEqual(self.firmware.order, ["0003", "0001", "0008", "0002"])
         self.assertTrue(self.firmware.entries["0002"][-1])
         mutations = [command for command in self.firmware.commands if command != ("efibootmgr", "--verbose")]
@@ -755,50 +754,78 @@ class FirmwareTransactionTests(unittest.TestCase):
                                      ("efibootmgr", "--bootnum", "0002", "--active")])
 
     def test_dry_run_does_not_write_files_or_firmware(self):
-        self.args.dry_run = True
-        installer.manage(self.args)
+        self.options["dry_run"] = True
+        self.validation.return_value = {"FLEX_OS_VERSION": "16836.32.0"}
+        info = installer.configure(self.disk, template=self.template, **self.options)
+        self.assertEqual((info.disk, info.esp, info.version), (self.disk, ESP_UUID, "16836.32.0"))
+        self.validation.assert_called_once()
         self.assertFalse((self.esp / installer.OWN_DIR).exists())
         self.assertEqual(self.firmware.commands, [("efibootmgr", "--verbose")])
 
+    def test_changed_gpt_or_esp_identity_refuses_before_os_probe_or_writable_esp(self):
+        with self.disk.open("rb") as stream:
+            gpt, parts = installer.read_gpt(stream)
+        for expected in (("changed-gpt", parts[12]["uuid"]), (gpt, "changed-esp")):
+            with (self.subTest(expected=expected), patch.object(installer, "mounted_esp") as mounted,
+                  patch.object(installer, "atomic_write") as written):
+                with self.assertRaisesRegex(ValueError, "changed or became unavailable"):
+                    installer.configure(self.disk, template=self.template, expected=expected)
+                self.validation.assert_not_called()
+                mounted.assert_not_called()
+                written.assert_not_called()
+                self.assertEqual(self.firmware.commands, [])
+
     def test_legacy_migration_dry_run_preserves_files_and_order(self):
-        installer.manage(self.args)
+        installer.configure(self.disk, template=self.template, **self.options)
         self.firmware.order = ["0002", "0001", "0008"]
         self.firmware.commands.clear()
         directory = self.esp / installer.OWN_DIR
         before = {path.name: path.read_bytes() for path in directory.iterdir()}
-        self.args.dry_run = True
-        installer.manage(self.args)
+        self.options["dry_run"] = True
+        installer.configure(self.disk, template=self.template, **self.options)
         self.assertEqual(self.firmware.order, ["0002", "0001", "0008"])
         self.assertEqual(self.firmware.commands, [("efibootmgr", "--verbose")])
         self.assertEqual({path.name: path.read_bytes() for path in directory.iterdir()}, before)
 
-    def test_missing_stock_entry_refuses_install(self):
-        self.firmware.order.remove("0001")
-        with self.assertRaisesRegex(ValueError, "stock"):
-            installer.manage(self.args)
-        self.assertFalse((self.esp / installer.OWN_DIR).exists())
+    def test_missing_inactive_wrong_or_unordered_stock_entry_refuses_install(self):
+        stock = self.firmware.entries["0001"]
+        for entry, ordered in ((None, True), ((*stock[:3], False), True),
+                               ((stock[0], OTHER_UUID, stock[2], True), True),
+                               ((stock[0], stock[1], r"\another\boot.efi", True), True),
+                               (stock, False)):
+            with self.subTest(entry=entry, ordered=ordered):
+                self.firmware.order = ["0001", "0008"] if ordered else ["0008"]
+                if entry is None:
+                    self.firmware.entries.pop("0001", None)
+                else:
+                    self.firmware.entries["0001"] = entry
+                with patch.object(installer, "mounted_esp") as mounted:
+                    with self.assertRaisesRegex(ValueError, "stock"):
+                        installer.configure(self.disk, template=self.template, **self.options)
+                    mounted.assert_not_called()
+                self.assertFalse((self.esp / installer.OWN_DIR).exists())
 
     def test_same_label_on_another_disk_is_not_owned(self):
         self.firmware.entries["0009"] = installer.LABEL, OTHER_UUID, installer.LOADER, True
         self.firmware.order.append("0009")
-        installer.manage(self.args)
+        installer.configure(self.disk, template=self.template, **self.options)
         self.assertIn("0009", self.firmware.order)
         self.assertIn("0009", self.firmware.entries)
 
     def test_firmware_creation_failure_keeps_original_order(self):
         self.firmware.fail_on = "--create-only"
         with self.assertRaises(subprocess.CalledProcessError):
-            installer.manage(self.args)
+            installer.configure(self.disk, template=self.template, **self.options)
         self.assertEqual(self.firmware.order, ["0001", "0008"])
 
     def test_bootorder_failure_on_new_install_keeps_debug_out_of_default(self):
         self.firmware.fail_on = "--bootorder"
         with self.assertRaises(subprocess.CalledProcessError):
-            installer.manage(self.args)
+            installer.configure(self.disk, template=self.template, **self.options)
         self.assertEqual(self.firmware.order, ["0001", "0008"])
         self.assertTrue((self.esp / installer.OWN_DIR / "bootx64.efi").exists())
         self.firmware.fail_on = None
-        installer.manage(self.args)
+        installer.configure(self.disk, template=self.template, **self.options)
         self.assertEqual(self.firmware.order, ["0003", "0001", "0008", "0002"])
 
     def test_ignored_bootorder_write_is_reported_as_failure(self):
@@ -809,10 +836,10 @@ class FirmwareTransactionTests(unittest.TestCase):
 
         with patch.object(installer, "run", side_effect=ignore_order):
             with self.assertRaisesRegex(ValueError, "did not retain"):
-                installer.manage(self.args)
+                installer.configure(self.disk, template=self.template, **self.options)
 
     def test_ignored_legacy_bootorder_does_not_activate_or_delete_entries(self):
-        installer.manage(self.args)
+        installer.configure(self.disk, template=self.template, **self.options)
         self.firmware.entries["0002"] = installer.LABEL, ESP_UUID, installer.LOADER, False
         self.firmware.entries["0004"] = installer.LABEL, ESP_UUID, installer.LOADER, True
         self.firmware.order = ["0002", "0001", "0004", "0008", "0003"]
@@ -824,7 +851,7 @@ class FirmwareTransactionTests(unittest.TestCase):
 
         with patch.object(installer, "run", side_effect=ignore_order):
             with self.assertRaisesRegex(ValueError, "did not retain"):
-                installer.manage(self.args)
+                installer.configure(self.disk, template=self.template, **self.options)
         self.assertFalse(self.firmware.entries["0002"][-1])
         self.assertFalse(any("--active" in command or "--delete-bootnum" in command
                              for command in self.firmware.commands))
@@ -832,22 +859,22 @@ class FirmwareTransactionTests(unittest.TestCase):
         self.assertEqual(set(self.firmware.entries), {"0001", "0002", "0003", "0004", "0008"})
 
     def test_activation_failure_keeps_stock_boot_first(self):
-        installer.manage(self.args)
+        installer.configure(self.disk, template=self.template, **self.options)
         self.firmware.entries["0002"] = installer.LABEL, ESP_UUID, installer.LOADER, False
         self.firmware.order = ["0002", "0001", "0008"]
         self.firmware.fail_on = "--active"
         with self.assertRaises(subprocess.CalledProcessError):
-            installer.manage(self.args)
+            installer.configure(self.disk, template=self.template, **self.options)
         self.assertEqual(self.firmware.order, ["0003", "0001", "0008", "0002"])
 
     def test_failed_migration_does_not_activate_inactive_debug_default(self):
-        installer.manage(self.args)
+        installer.configure(self.disk, template=self.template, **self.options)
         self.firmware.entries["0002"] = installer.LABEL, ESP_UUID, installer.LOADER, False
         self.firmware.order = ["0002", "0001", "0008"]
         self.firmware.commands.clear()
         self.firmware.fail_on = "--bootorder"
         with self.assertRaises(subprocess.CalledProcessError):
-            installer.manage(self.args)
+            installer.configure(self.disk, template=self.template, **self.options)
         self.assertFalse(self.firmware.entries["0002"][-1])
         self.assertFalse(any("--active" in command or "--delete-bootnum" in command
                              for command in self.firmware.commands))
@@ -855,19 +882,33 @@ class FirmwareTransactionTests(unittest.TestCase):
         self.assertTrue(self.firmware.entries["0001"][-1])
 
     def test_removal_failure_retains_loader(self):
-        installer.manage(self.args)
-        self.args.action = "remove"
+        installer.configure(self.disk, template=self.template, **self.options)
+        self.options["remove"] = True
         self.firmware.fail_on = "--delete-bootnum"
         with self.assertRaises(subprocess.CalledProcessError):
-            installer.manage(self.args)
+            installer.configure(self.disk, template=self.template, **self.options)
         self.assertTrue((self.esp / installer.OWN_DIR / "bootx64.efi").exists())
 
+    def test_remove_without_active_stock_fallback_keeps_existing_installation(self):
+        installer.configure(self.disk, template=self.template, **self.options)
+        stock = self.firmware.entries["0001"]
+        self.firmware.entries["0001"] = (*stock[:3], False)
+        order = list(self.firmware.order)
+        self.firmware.commands.clear()
+        with patch.object(installer, "mounted_esp") as mounted:
+            with self.assertRaisesRegex(ValueError, "stock"):
+                installer.configure(self.disk, remove=True)
+            mounted.assert_not_called()
+        self.assertEqual(self.firmware.order, order)
+        self.assertEqual(self.firmware.commands, [("efibootmgr", "--verbose")])
+        self.assertTrue((self.esp / installer.OWN_DIR / "bootx64.efi").is_file())
+
     def test_remove_preserves_stock_and_unrelated_entries(self):
-        installer.manage(self.args)
+        installer.configure(self.disk, template=self.template, **self.options)
         self.firmware.entries["0009"] = installer.NORMAL_LABEL, OTHER_UUID, installer.NORMAL_LOADER, True
         self.firmware.order = ["0003", "0009", "0008", "0001", "0002"]
-        self.args.action = "remove"
-        installer.manage(self.args)
+        self.options["remove"] = True
+        installer.configure(self.disk, template=self.template, **self.options)
         self.assertEqual(self.firmware.order, ["0009", "0008", "0001"])
         self.assertEqual(set(self.firmware.entries), {"0001", "0008", "0009"})
         self.assertFalse((self.esp / installer.OWN_DIR).exists())
@@ -918,18 +959,18 @@ class InstallGuardTests(unittest.TestCase):
     def test_supported_a_and_trial_b_are_both_read_only_and_update_is_idempotent(self):
         self.enable_b()
         with patch.object(installer, "atomic_write", wraps=installer.atomic_write) as written:
-            installer.manage(self.args)
+            installer.configure(self.disk, template=self.template, **self.options)
         names = [call.args[0].name for call in written.call_args_list]
         self.assertLess(names.index("compatibility.conf"), names.index("rw-init.sh"))
         self.assertEqual((self.esp / installer.OWN_DIR / "compatibility.conf").read_bytes(),
                          (HERE / "compatibility.conf").read_bytes())
         self.assertEqual([name for name, _ in self.root_mounts], ["/dev/test3", "/dev/test5"])
         with patch.object(installer, "atomic_write", wraps=installer.atomic_write) as written:
-            installer.manage(self.args)
+            installer.configure(self.disk, template=self.template, **self.options)
             written.assert_not_called()
 
     def test_unknown_highest_priority_b_never_mounts_esp_or_changes_existing_files(self):
-        installer.manage(self.args)
+        installer.configure(self.disk, template=self.template, **self.options)
         self.enable_b(priority=15, a_priority=14)
         root = self.os_roots[5]
         (root / "etc/lsb-release").write_text("CHROMEOS_RELEASE_BOARD=reven\nCHROMEOS_RELEASE_VERSION=99999.1.0\n")
@@ -939,7 +980,7 @@ class InstallGuardTests(unittest.TestCase):
         self.enable_b(priority=2, a_priority=1)
         (self.os_roots[3] / "etc/lsb-release").write_text(
             "CHROMEOS_RELEASE_BOARD=reven\nCHROMEOS_RELEASE_VERSION=11111.1.0\n")
-        installer.manage(self.args)
+        installer.configure(self.disk, template=self.template, **self.options)
         self.assertEqual([name for name, _ in self.root_mounts], ["/dev/test5"])
         self.assertTrue((self.esp / installer.OWN_DIR / "bootx64.efi").is_file())
 
@@ -960,12 +1001,12 @@ class InstallGuardTests(unittest.TestCase):
         before = {str(path.relative_to(self.esp)): path.read_bytes()
                   for path in self.esp.rglob("*") if path.is_file()}
         for dry_run in (False, True):
-            self.args.dry_run = dry_run
+            self.options["dry_run"] = dry_run
             self.firmware.commands.clear()
             with (self.subTest(dry_run=dry_run), patch.object(installer, "mounted_esp") as esp_mount,
                   patch.object(installer, "atomic_write") as written):
                 with self.assertRaisesRegex(ValueError, message):
-                    installer.manage(self.args)
+                    installer.configure(self.disk, template=self.template, **self.options)
                 esp_mount.assert_not_called()
                 written.assert_not_called()
                 self.assertEqual(self.firmware.commands, [])
@@ -996,19 +1037,17 @@ class InstallGuardTests(unittest.TestCase):
             struct.pack_into("<Q", entries, 128 + 48, 0)))
         self.assert_rejected_without_writes("No bootable")
 
-    def test_missing_config_blocks_install_before_esp_and_status_remove_still_work(self):
-        installer.manage(self.args)
+    def test_missing_config_blocks_install_before_esp_but_removal_still_works(self):
+        installer.configure(self.disk, template=self.template, **self.options)
         with patch.object(installer, "compatibility", side_effect=FileNotFoundError("missing compatibility.conf")):
             with patch.object(installer, "mounted_esp") as esp_mount:
                 with self.assertRaises(FileNotFoundError):
-                    installer.manage(self.args)
+                    installer.configure(self.disk, template=self.template, **self.options)
                 esp_mount.assert_not_called()
             (self.os_roots[3] / "etc/lsb-release").write_text("CHROMEOS_RELEASE_BOARD=other\n")
             self.validation.reset_mock()
-            self.args.action = "status"
-            installer.manage(self.args)
-            self.args.action = "remove"
-            installer.manage(self.args)
+            self.options["remove"] = True
+            installer.configure(self.disk, template=self.template, **self.options)
             self.validation.assert_not_called()
         self.assertFalse((self.esp / installer.OWN_DIR).exists())
         self.assertTrue((self.esp / "EFI/BOOT/crdybootx64.efi").is_file())

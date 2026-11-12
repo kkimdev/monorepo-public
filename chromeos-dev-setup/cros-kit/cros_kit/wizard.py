@@ -9,18 +9,11 @@ import io
 import os
 from pathlib import Path
 import subprocess
-from types import SimpleNamespace
 
 from . import install as installer
 
 
 ERRORS = (ValueError, OSError, subprocess.CalledProcessError)
-
-
-def nodes(tree):
-    yield tree
-    for child in tree.get("children", []):
-        yield from nodes(child)
 
 
 def disks():
@@ -52,24 +45,18 @@ class Target:
                 f"{serial} (Flex {self.version})")
 
 
-def inspect(tree, entries, order, remove=False):
-    children = list(nodes(tree))
+def inspect(tree, remove=False):
+    children = list(installer.block_nodes(tree))
     # Exclude the live USB even if someone unmounted it, and any in-use disk.
     if (tree.get("type") != "disk"
-            or any(node.get("label") in ("CROSKIT", "FLEXTOOLS") for node in children)
+            or any(node.get("label") in ("CROSKIT", "CROSKIT_LIVE", "FLEXTOOLS") for node in children)
             or any(any(node.get("mountpoints") or []) for node in children)):
         return None
-    disk, _, sector_size = installer.check_environment(Path(tree["name"]))
-    with disk.open("rb", buffering=0) as stream:
-        gpt, parts = installer.read_gpt(stream, sector_size)
-    esp = parts[12]["uuid"]
-    if not any(number in order and entry["active"] and entry["uuid"] == esp
-               and entry["path"] == r"\efi\boot\bootx64.efi"
-               for number, entry in entries.items()):
-        raise ValueError("No stock Flex boot entry; boot the installed Flex once first")
-    # Removal must remain available when the installed OS is newer/unknown.
-    version = "unknown" if remove else installer.validate_installation(disk, parts, sector_size)["FLEX_OS_VERSION"]
-    return Target(disk, identity(tree), gpt, esp, version,
+    # Complete the same read-only preflight used just before application. Only
+    # fully validated targets are offered for confirmation.
+    with redirect_stdout(io.StringIO()):
+        info = installer.configure(Path(tree["name"]), remove=remove, dry_run=True)
+    return Target(info.disk, identity(tree), info.gpt, info.esp, info.version,
                   (tree.get("model") or "Unknown model").strip(),
                   int(tree["size"]), (tree.get("serial") or "").strip())
 
@@ -79,11 +66,10 @@ def detail(error):
 
 
 def discover(remove=False):
-    order, entries = installer.firmware_entries(installer.run("efibootmgr", "--verbose"))
     found = []
     for tree in disks():
         try:
-            target = inspect(tree, entries, order, remove)
+            target = inspect(tree, remove)
             if target:
                 found.append(target)
         except ERRORS as error:
@@ -91,10 +77,10 @@ def discover(remove=False):
     return found
 
 
-def recheck(target, remove=False):
-    order, entries = installer.firmware_entries(installer.run("efibootmgr", "--verbose"))
+def recheck(target):
+    # GPT and ESP identity are rechecked by configure before its writable mount.
     matches = [tree for tree in disks() if identity(tree) == target.hardware]
-    if len(matches) != 1 or inspect(matches[0], entries, order, remove) != target:
+    if len(matches) != 1:
         raise ValueError("Selected disk changed or became unavailable; restart setup")
 
 
@@ -133,11 +119,6 @@ def setup(remove=False):
     if target is None:
         print("Cancelled. Nothing was changed.")
         return False
-    args = SimpleNamespace(action="remove" if remove else "install", disk=target.disk,
-                           template=Path(__file__).with_name("crdyboot-debug.efi"), dry_run=True)
-    # Validate stock loader, template and ownership before asking for approval.
-    with redirect_stdout(io.StringIO()):
-        installer.manage(args)
     if remove:
         print("\nRemove the Configured/Debug boot entries and their EFI files.")
     else:
@@ -146,11 +127,10 @@ def setup(remove=False):
     if input("Continue? [y/N]: ").strip().lower() not in ("y", "yes"):
         print("Cancelled. Nothing was changed.")
         return False
-    recheck(target, remove)
-    args.dry_run = False
+    recheck(target)
     print("Applying CrOS Kit setup...", flush=True)
     with redirect_stdout(io.StringIO()):
-        installer.manage(args)
+        installer.configure(target.disk, remove=remove, expected=(target.gpt, target.esp))
     print("\nDone. Remove the USB after shutdown.")
     if not remove:
         print("Daily boot: ChromeOS Flex Configured (developer mode disabled).")

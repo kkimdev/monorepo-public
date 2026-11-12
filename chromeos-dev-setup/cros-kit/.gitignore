@@ -1,3 +1,6 @@
 __pycache__/
-/result
-/result-*
+result*
+*.img
+*.iso
+*.qcow2
+*.zip

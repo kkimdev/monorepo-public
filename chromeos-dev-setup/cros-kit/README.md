@@ -13,8 +13,8 @@ device path. **The selected USB will be erased.**
 nix run path:./chromeos-dev-setup/cros-kit
 ```
 
-Downloads the locked official Flex image and signed offline tools. Creation uses
-[fixed inputs](media/media.json), without checking for newer releases.
+Builds a minimal offline NixOS environment and downloads the locked official Flex
+image. Dependencies are pinned in [flake.lock](flake.lock) and [media.json](media/media.json).
 
 ## Install on the laptop
 
@@ -69,7 +69,7 @@ nix run path:./chromeos-dev-setup/cros-kit#update
 ```
 
 Refreshes all flake inputs (including firmware sources) and media locks, then
-builds and tests the installer bundle before publishing the locks. Rust and Cargo
+builds the live image and runs all checks before publishing the locks. Rust and Cargo
 dependencies follow the locked firmware source.
 Unvalidated Flex releases stop the update; the OS compatibility contract stays explicit.
 

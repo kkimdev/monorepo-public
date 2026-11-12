@@ -34,21 +34,12 @@ class DiscoveryTests(unittest.TestCase):
                          size=64 * 1024**3, wwn="WWN", **{"maj:min": "8:0"},
                          mountpoints=[None], children=[dict(name="/dev/test3", partn=3,
                          type="part", label="ROOT-A", mountpoints=[None])])
-        self.entries = {"0001": dict(active=True, uuid=ESP, path=r"\efi\boot\bootx64.efi")}
+        self.info = wizard.installer.DiskInfo(self.disk, "disk-guid", ESP, "16836.32.0")
 
-    def mocks(self, stack):
-        environment = stack.enter_context(patch.object(wizard.installer, "check_environment",
-            return_value=(self.disk, Path("/dev/test12"), 512)))
-        stack.enter_context(patch.object(wizard.installer, "read_gpt",
-            return_value=("disk-guid", {12: {"uuid": ESP}})))
-        files = stack.enter_context(patch.object(wizard.installer, "validate_installation",
-            return_value={"FLEX_OS_VERSION": "16836.32.0"}))
-        return environment, files
-
-    def test_identifies_only_reven_and_preserves_selected_identity(self):
-        with ExitStack() as stack:
-            self.mocks(stack)
-            target = wizard.inspect(self.tree, self.entries, ["0001"])
+    def test_full_read_only_preflight_preserves_selected_identity(self):
+        with patch.object(wizard.installer, "configure", return_value=self.info) as configure:
+            target = wizard.inspect(self.tree)
+        configure.assert_called_once_with(self.disk, remove=False, dry_run=True)
         self.assertEqual(target.disk, self.disk)
         self.assertEqual(target.hardware, wizard.identity(self.tree))
         self.assertEqual(target.esp, ESP)
@@ -68,38 +59,27 @@ class DiscoveryTests(unittest.TestCase):
                                      label="CROSKIT", mountpoints=[None]))
         legacy_tools = copy.deepcopy(tools)
         legacy_tools["children"][-1]["label"] = "FLEXTOOLS"
+        nixos_tools = copy.deepcopy(tools)
+        nixos_tools["children"][-1]["label"] = "CROSKIT_LIVE"
         partition = dict(self.tree, type="part")
-        with ExitStack() as stack:
-            environment, files = self.mocks(stack)
-            for tree in (mounted, tools, legacy_tools, partition):
+        with patch.object(wizard.installer, "configure") as configure:
+            for tree in (mounted, tools, legacy_tools, nixos_tools, partition):
                 with self.subTest(tree=tree):
-                    self.assertIsNone(wizard.inspect(tree, self.entries, ["0001"]))
-            environment.assert_not_called()
-            files.assert_not_called()
-
-    def test_missing_inactive_or_wrong_stock_entry_is_rejected_before_root_mount(self):
-        wrong_entries = ({}, {"0001": dict(self.entries["0001"], active=False)},
-                         {"0001": dict(self.entries["0001"], uuid="another-esp")},
-                         {"0001": dict(self.entries["0001"], path=r"\another\boot.efi")})
-        with ExitStack() as stack:
-            _, files = self.mocks(stack)
-            for entries in wrong_entries:
-                with self.subTest(entries=entries), self.assertRaisesRegex(ValueError, "stock Flex boot entry"):
-                    wizard.inspect(self.tree, entries, ["0001"])
-            with self.assertRaisesRegex(ValueError, "stock Flex boot entry"):
-                wizard.inspect(self.tree, self.entries, [])
-            files.assert_not_called()
+                    self.assertIsNone(wizard.inspect(tree))
+            configure.assert_not_called()
 
     def test_remove_discovery_does_not_depend_on_supported_os_or_config(self):
-        with ExitStack() as stack:
-            _, validated = self.mocks(stack)
-            validated.side_effect = ValueError("Unknown newer OS")
-            with self.assertRaisesRegex(ValueError, "Unknown newer OS"):
-                wizard.inspect(self.tree, self.entries, ["0001"])
-            validated.reset_mock()
-            target = wizard.inspect(self.tree, self.entries, ["0001"], remove=True)
+        with patch.object(wizard.installer, "configure", return_value=replace(self.info, version="unknown")) as configure:
+            target = wizard.inspect(self.tree, remove=True)
             self.assertEqual(target.version, "unknown")
-            validated.assert_not_called()
+            configure.assert_called_once_with(self.disk, remove=True, dry_run=True)
+
+    def test_failed_preflight_never_offers_the_disk(self):
+        with (patch.object(wizard, "disks", return_value=[self.tree]),
+              patch.object(wizard.installer, "configure", side_effect=ValueError("Invalid stock loader")),
+              redirect_stdout(io.StringIO()) as output):
+            self.assertEqual(wizard.discover(), [])
+        self.assertIn("Invalid stock loader", output.getvalue())
 
     def test_root_identification_never_replays_journal_and_unmounts_after_error(self):
         with patch.object(wizard.installer, "run") as run:
@@ -147,16 +127,19 @@ class WizardFlowTests(unittest.TestCase):
                 raise value
             return value
 
-        def manage(args):
-            # Snapshot the flag: setup intentionally reuses and mutates args.
-            events.append(("manage", args.action, args.dry_run, args.disk))
+        def configure(disk, *, remove=False, expected=None):
+            events.append(("configure", remove, expected, disk))
+
+        def discover(remove=False):
+            events.append(("discover", remove))
+            return targets if targets is not None else [self.target]
 
         stack.enter_context(patch.object(wizard.os, "geteuid", return_value=0))
         stack.enter_context(patch.object(Path, "is_dir", return_value=True))
         stack.enter_context(patch.object(wizard.installer, "check_secure_boot"))
-        stack.enter_context(patch.object(wizard, "discover", return_value=targets if targets is not None else [self.target]))
-        managed = stack.enter_context(patch.object(wizard.installer, "manage", side_effect=manage))
-        rechecked = stack.enter_context(patch.object(wizard, "recheck", side_effect=lambda target, remove=False: events.append(("recheck", target))))
+        stack.enter_context(patch.object(wizard, "discover", side_effect=discover))
+        managed = stack.enter_context(patch.object(wizard.installer, "configure", side_effect=configure))
+        rechecked = stack.enter_context(patch.object(wizard, "recheck", side_effect=lambda target: events.append(("recheck", target))))
         ran = stack.enter_context(patch.object(wizard.installer, "run"))
         prompted = stack.enter_context(patch("builtins.input", side_effect=answer))
         stack.enter_context(redirect_stdout(io.StringIO()))
@@ -174,29 +157,29 @@ class WizardFlowTests(unittest.TestCase):
 
     def test_default_confirmation_cancels_after_read_only_preflight(self):
         with ExitStack() as stack:
-            events, _, rechecked, ran, _ = self.setup_mocks(stack, [""])
+            events, configured, rechecked, ran, _ = self.setup_mocks(stack, [""])
             self.assertFalse(wizard.setup())
-            self.assertEqual(events[0], ("manage", "install", True, self.target.disk))
-            self.assertEqual(sum(event[0] == "manage" for event in events), 1)
+            self.assertEqual(events[0], ("discover", False))
+            configured.assert_not_called()
             rechecked.assert_not_called()
             ran.assert_not_called()
 
     def test_eof_before_confirmation_is_handled_without_writes(self):
         with ExitStack() as stack:
-            events, _, rechecked, ran, _ = self.setup_mocks(stack, [EOFError()])
+            _, configured, rechecked, ran, _ = self.setup_mocks(stack, [EOFError()])
             stack.enter_context(patch.object(sys, "argv", ["wizard.py"]))
             self.assertEqual(wizard.main(), 1)
-            self.assertEqual([event for event in events if event[0] == "manage"],
-                             [("manage", "install", True, self.target.disk)])
+            configured.assert_not_called()
             rechecked.assert_not_called()
             ran.assert_not_called()
 
-    def test_preflight_failure_never_asks_for_confirmation(self):
+    def test_discovery_failure_never_asks_for_confirmation(self):
         with ExitStack() as stack:
-            _, managed, _, ran, prompted = self.setup_mocks(stack, [])
-            managed.side_effect = ValueError("Invalid stock loader")
-            with self.assertRaisesRegex(ValueError, "Invalid stock loader"):
+            _, configured, _, ran, prompted = self.setup_mocks(stack, [])
+            wizard.discover.side_effect = OSError("Cannot list disks")
+            with self.assertRaisesRegex(OSError, "Cannot list disks"):
                 wizard.setup()
+            configured.assert_not_called()
             prompted.assert_not_called()
             ran.assert_not_called()
 
@@ -207,10 +190,10 @@ class WizardFlowTests(unittest.TestCase):
                 output = io.StringIO()
                 stack.enter_context(redirect_stdout(output))
                 self.assertTrue(wizard.setup())
-                self.assertEqual(events[0], ("manage", "install", True, self.target.disk))
+                self.assertEqual(events[0], ("discover", False))
                 self.assertTrue(events[1][1].startswith("Continue?"))
                 self.assertEqual(events[2], ("recheck", self.target))
-                self.assertEqual(events[3], ("manage", "install", False, self.target.disk))
+                self.assertEqual(events[3], ("configure", False, (self.target.gpt, self.target.esp), self.target.disk))
                 self.assertIn("Configured and Debug share saved OS changes", output.getvalue())
                 self.assertIn("ChromeOS Flex Configured (developer mode disabled)", output.getvalue())
                 self.assertIn("Debug enables passwordless host root", output.getvalue())
@@ -219,33 +202,41 @@ class WizardFlowTests(unittest.TestCase):
                 else:
                     ran.assert_not_called()
 
-    def test_identity_or_gpt_change_blocks_the_write(self):
+    def test_hardware_change_disappearance_or_duplicate_identity_blocks_the_write(self):
         tree = dict(name="/dev/flex", size=self.target.size, model="Disk", serial="SERIAL",
                     wwn=None, **{"maj:min": "8:0"})
         target = replace(self.target, hardware=wizard.identity(tree))
-        for changed_tree, probed in ((dict(tree, serial="REPLACEMENT"), target),
-                                     (tree, replace(target, gpt="changed-guid")),
-                                     (tree, replace(target, esp="changed-esp"))):
-            with self.subTest(tree=changed_tree, probe=probed), ExitStack() as stack:
-                events, _, mocked_recheck, ran, _ = self.setup_mocks(stack, ["yes"], targets=[target])
+        for trees in ([dict(tree, serial="REPLACEMENT")], [], [tree, tree]):
+            with self.subTest(trees=trees), ExitStack() as stack:
+                _, configured, mocked_recheck, ran, _ = self.setup_mocks(stack, ["yes"], targets=[target])
                 # Exercise the real recheck rather than simulating its failure.
                 mocked_recheck.side_effect = REAL_RECHECK
-                stack.enter_context(patch.object(wizard, "disks", return_value=[changed_tree]))
-                stack.enter_context(patch.object(wizard, "inspect", return_value=probed))
-                stack.enter_context(patch.object(wizard.installer, "firmware_entries", return_value=([], {})))
+                stack.enter_context(patch.object(wizard, "disks", return_value=trees))
                 with self.assertRaisesRegex(ValueError, "changed or became unavailable"):
                     wizard.setup()
-                self.assertEqual([event[2] for event in events if event[0] == "manage"], [True])
+                configured.assert_not_called()
                 self.assertNotIn("poweroff", [call.args[0] for call in ran.call_args_list])
 
-    def test_remove_reuses_same_preflight_confirmation_and_manage_path(self):
+    def test_remove_reuses_same_preflight_confirmation_and_backend(self):
         with ExitStack() as stack:
             events, _, _, _, _ = self.setup_mocks(stack, ["y", "s"])
             self.assertTrue(wizard.setup(remove=True))
-            self.assertEqual([event[1:3] for event in events if event[0] == "manage"],
-                             [("remove", True), ("remove", False)])
+            self.assertEqual(events[0], ("discover", True))
+            self.assertEqual([event[1:3] for event in events if event[0] == "configure"],
+                             [(True, (self.target.gpt, self.target.esp))])
 
-    def test_no_targets_never_prompts_or_calls_manage(self):
+    def test_backend_identity_rejection_prevents_shutdown(self):
+        with ExitStack() as stack:
+            _, configured, rechecked, ran, _ = self.setup_mocks(stack, ["y"])
+            configured.side_effect = ValueError("Selected disk changed or became unavailable")
+            with self.assertRaisesRegex(ValueError, "changed or became unavailable"):
+                wizard.setup()
+            rechecked.assert_called_once_with(self.target)
+            configured.assert_called_once_with(self.target.disk, remove=False,
+                                              expected=(self.target.gpt, self.target.esp))
+            ran.assert_not_called()
+
+    def test_no_targets_never_prompts_or_calls_backend(self):
         with ExitStack() as stack:
             _, managed, _, ran, prompted = self.setup_mocks(stack, [], targets=[])
             self.assertFalse(wizard.setup())

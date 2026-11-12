@@ -13,11 +13,20 @@ let
     patch_sha256 = builtins.hashFile "sha256" ./cros-debug.patch;
     recipe_sha256 = builtins.hashFile "sha256" ./efi.nix;
     helper_sha256 = builtins.hashFile "sha256" ./build.py;
+    boot_policy_sha256 = builtins.hashFile "sha256" ./boot-policy.rs;
   });
+  policyCheck = pkgs.runCommand "cros-kit-efi-policy-check" {
+    nativeBuildInputs = [ rustToolchain ];
+  } ''
+    rustc --edition=2021 --test ${./boot-policy.rs} -o policy-tests
+    ./policy-tests --nocapture
+    touch "$out"
+  '';
 in
 pkgs.stdenv.mkDerivation {
   pname = "cros-kit-efi";
   version = "1";
+  passthru = { inherit policyCheck; };
   src = crdyboot;
   patches = [ ./cros-debug.patch ];
   patchFlags = [ "-p1" "--fuzz=0" ];
@@ -45,6 +54,7 @@ pkgs.stdenv.mkDerivation {
   strictDeps = true;
 
   postPatch = ''
+    cp ${./boot-policy.rs} crdyboot/src/cros_kit.rs
     cp -r ${vboot} third_party/vboot_reference
     chmod -R u+w third_party/vboot_reference
   '';

@@ -59,10 +59,46 @@ Reference: official Flex stable **156.0.8078.93 / 16836.32.0**, downloaded
 matched Google's metadata. Guest kernel: `6.12.100-01491-g094d98275718`.
 Local proof files below are under `~/.cache/flex-usb-lab/`.
 
-VM and image evidence below predates the CrOS Kit flake conversion. Runtime,
-shim and compatibility contract are unchanged. EFI was rebuilt from the locked
-upstream sources using the sandboxed recipe; its new artifact has not
-been boot-tested. Flake checks validate the current offline media tree and payloads.
+Current live tools are built from the same locked nixpkgs as the host tools.
+The USB appends their ISO9660 filesystem as GPT13; GRUB in the original ESP loads
+its kernel and initrd. NixOS locates `CROSKIT_LIVE` and mounts the included store
+squashfs. Installation needs no network or package downloads.
+
+Current NixOS validation (2026-11-12):
+
+| Check | Result |
+| --- | --- |
+| Complete Python suite | **PASS: 192 tests, no skips with root fixtures** |
+| Sandboxed Python suite | **PASS: 192 tests; 3 filesystem capability skips** |
+| Shared production EFI policy | **PASS: 4 executable Rust tests** |
+| EFI offline rebuild | **PASS: complete output identical** |
+| One-command updater | **PASS: staged live build and all flake checks** |
+| Combined USB image | **PASS: exact live ISO bytes and preserved Flex partitions** |
+| Outer UEFI/GRUB to NixOS, no network | **PASS: autologin and offline installer** |
+| Install and reapply on preinstalled NVMe fixture | **PASS: all four stock EFI files unchanged** |
+| Installer Enter-to-poweroff | **PASS: exit 0, no failed units or unmount errors** |
+| Exact installed Debug EFI to Flex setup GUI | **PASS: SATA VM** |
+| New EFI mode flags, overlay and Configured startup | **UNPROVEN in this run; older runtime baseline below** |
+
+Logs: `cros-kit-nixos-root-tests.log`, `cros-kit-nixos-update.log`,
+`cros-kit-nixos-release-image.log`, `cros-kit-nixos-release-image-proof.json`,
+`nixos-kit-release-serial.log` and `nixos-kit-release-proof.json`.
+The final live filesystem is 1,315,217,408 bytes; the combined USB image is
+10,840,178,688 bytes. Both GPTs and the exact embedded ISO bytes were verified.
+The fixture supplies an existing Flex installation and a stock firmware entry;
+this does not establish a fresh-laptop OS installation. New physical USB write,
+laptop boot and actual A/B updates remain untested.
+
+The installed Debug EFI verified the signed kernel and reached Flex graphical
+setup (`efi-mode-runtime-proof.json`). This probe used SATA: the OVMF fixture
+did not expose its NVMe device to firmware, so even stock NVMe boot failed.
+Native mode/overlay probes produced no marker; the bounded Configured observation
+remained at firmware splash. Neither result establishes those runtime properties.
+`cros-kit-nixos-committed-flake-check.log` records the final Git-sourced checks.
+
+Earlier VM and physical USB evidence below used Alpine and predates this live
+environment and boot-policy change. It remains a baseline for the unchanged
+overlay runtime, shim and compatibility contract; current evidence is recorded separately.
 
 The guarded production payload booted without diagnostic hooks. Live runtime,
 shim and contract hashes matched source; native chronos login and sudo, SELinux,
@@ -102,8 +138,8 @@ so production deliberately avoids `--acls`. Sparse-file import is host-tested.
 
 | Check | Status |
 | --- | --- |
-| Current complete suite with pinned Python/compiler | **PASS: 203 tests, no skips (root fixtures)** |
-| Flake unit, payload and signed offline repository checks | **PASS: sandboxed checks** |
+| Pre-NixOS complete suite with pinned Python/compiler | **PASS: 203 tests, no skips (root fixtures)** |
+| Pre-NixOS flake unit, payload and signed repository checks | **PASS: sandboxed checks** |
 | Actual one-command dependency update | **PASS: staged rebuild/check/publication; one capability skip without root** |
 | EFI offline rebuild | **PASS: identical complete Nix output** |
 | Previous locked USB image, 10 payloads, 64 APKs, signed index, both GPTs | **PASS: offline creation and exact readback** |
@@ -118,7 +154,7 @@ so production deliberately avoids `--acls`. Sparse-file import is host-tested.
 | Combined image payload and primary/backup GPT | **PASS: all 10 files read back exactly** |
 | Actual A/B OS update and postinstall persistence | **UNRUN** |
 | Existing signed-in/encrypted user account | **UNRUN** |
-| Current USB write, 12-file bundle, 64 APKs and both GPTs | **PASS: full byte comparison and physical readback** |
+| Pre-NixOS USB write, 12-file bundle, 64 APKs and both GPTs | **PASS: full byte comparison and physical readback** |
 | Physical laptop boot with this full-root runtime | **UNRUN** |
 
 `guard-final-tests.log` records the suite. `combined-guard-final.img` was repackaged
@@ -126,7 +162,7 @@ from the validated combined image, replacing all ten installer files and
 regenerating GRUB (`combined-guard-final-payload.json`). This is not a clean full
 builder run: an earlier rebuild hit the host disk quota.
 
-The SanDisk USB (serial `00015028051925093504`) contains the Nix-built CrOS Kit
+The SanDisk USB (serial `00015028051925093504`) contains the previous Alpine-based CrOS Kit
 image, flashed on 2026-11-12. Full byte comparison, both GPTs, all twelve installer
 files, the signed index and 64 APKs passed physical readback. The copied offline
 Python package also ran from an unrelated working directory
@@ -177,12 +213,13 @@ guaranteed by the current source review or VM tests.
 | --- | --- |
 | `cros_kit/` | USB creation, offline installer and dependency update code |
 | `nix/` | Firmware/shim builds and the assembled installer bundle |
-| `media/` | Media lock and the official signed repository snapshot |
+| `media/` | Official Flex archive lock |
 | `tests/` | Unit and fixture integration tests |
 
 Nix builds the binaries, checksums, notices and build metadata; these generated
 files stay outside Git. `install.py` owns disk and firmware changes;
-`wizard.py` handles discovery and confirmation. USB setup uses `cros-kit`,
+`wizard.py` handles discovery and confirmation. `nix/live.nix` builds the offline
+NixOS environment; the USB maker copies it unchanged. USB setup uses `cros-kit`,
 including `cros-kit --remove`; there is no separate download installer.
 
 ## Locked builds and updates
@@ -197,20 +234,22 @@ nix run path:.#update
 
 | Input | Lock |
 | --- | --- |
-| Nix tools, firmware sources, Rust component hashes | [flake.lock](flake.lock), including rust-overlay |
+| NixOS live system, tools, firmware sources, Rust component hashes | [flake.lock](flake.lock), including rust-overlay |
 | Rust version and Cargo dependencies | Locked crdyboot source's rust-toolchain.toml and Cargo.lock checksums |
-| Flex ZIP, Alpine ISO and every APK | [media.json](media/media.json), SHA256 per file |
-| Official signed repository snapshot | [alpine-index.tar.gz](media/alpine-index.tar.gz), hashed in media.json |
+| Official Flex ZIP | [media.json](media/media.json), archive SHA256 |
 | Generated installer bundle and build inputs | `result/cros_kit/`, including build-info.json, notices and checksums |
 
-Normal creation never queries latest releases. Nix fetches the exact locked bytes;
-APK signature and dependency checks run offline using keys from the locked ISO.
+Normal creation never queries latest releases. Nix fetches locked inputs and
+builds the complete offline live system. No downloaded binaries or OS images are
+checked into Git; generated files stay in the Nix store or local cache.
 Upstream may remove old downloads: hashes prevent silent substitutions, but do not
 guarantee permanent availability. Keep a Nix cache for long-term rebuilds.
 
 The update command refreshes all flake inputs and official media in a temporary
-source copy, builds the complete installer bundle and runs flake checks plus the
-full local suite. It replaces the three lock/snapshot files only after success
+source copy, builds the live image and runs `nix flake check`. This executes the
+complete Python suite and the same Rust boot-policy source compiled into EFI.
+Capability-dependent skips are visible in the verbose Python log. It replaces the
+two lock files only after success
 and refuses concurrent source edits; replacement errors and Ctrl+C roll back completed writes.
 Abrupt power loss during multi-file replacement is not transactional.
 
@@ -225,6 +264,10 @@ EFI compilation is sandboxed with vendored Cargo dependencies and `--frozen
 Nix rebuild reproduced the EFI, notices and provenance byte-for-byte. The shim also
 reproduces its previous SHA256. USB images contain fresh partition UUIDs and FAT
 timestamps; they are not byte-identical disk images.
+
+Only the exact Debug executable basename enables developer mode. Missing or
+unreadable UEFI path metadata and unknown filenames select non-debug policy.
+`nix/boot-policy.rs` is shared by the firmware build and executable host tests.
 
 Relevant upstream sources:
 

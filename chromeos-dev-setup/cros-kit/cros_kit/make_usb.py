@@ -21,7 +21,6 @@ import zipfile
 import zlib
 
 from . import install as installer
-from . import usb_live
 
 HERE = Path(__file__).resolve().parent.parent
 MIB = 1024 * 1024
@@ -174,7 +173,12 @@ def write_all(stream, data):
         remaining = remaining[written:]
 
 
-def grub_config():
+def grub_config(kernel_params):
+    if not re.fullmatch(r"[-A-Za-z0-9_./:=,+@% ]+", kernel_params):
+        raise ValueError("Invalid NixOS kernel parameters")
+    if not any(re.fullmatch(r"init=/nix/store/[^ /]+/init", arg)
+               for arg in kernel_params.split()):
+        raise ValueError("NixOS kernel parameters have no system init")
     # cmdpath identifies this USB, unlike the stock FAT UUID copied to installed disks.
     return r'''set timeout=10
 set default=0
@@ -192,10 +196,10 @@ menuentry 'Install ChromeOS Flex' {
 }
 menuentry 'Set up CrOS Kit (after installing Flex)' {
   set root="${tools}"
-  linux /boot/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage quiet
-  initrd /boot/initramfs-lts
+  linux /boot/vmlinuz @KERNEL_PARAMS@
+  initrd /boot/initrd
 }
-'''
+'''.replace('@KERNEL_PARAMS@', kernel_params)
 
 
 def build_image(image, live, work):
@@ -211,27 +215,21 @@ def build_image(image, live, work):
     stock = (work / "stock.efi").read_bytes()
     start, length = installer.key_section(stock)
     installer.validate_key(stock[start:start + length])
-    run("mcopy", "-i", str(esp), "::/efi/boot/bootx64.efi", str(live / "official-bootx64.efi"))
     config = work / "grub.cfg"
-    config.write_text(grub_config())
+    config.write_text(grub_config((live / "kernel-params").read_text().strip()))
     grub = work / "bootx64.efi"
     run("grub-mkstandalone", "--format=x86_64-efi", f"--output={grub}",
-        "--modules=part_gpt fat chain linux normal regexp sleep halt", f"boot/grub/grub.cfg={config}")
+        "--modules=part_gpt fat iso9660 chain linux normal regexp sleep halt", f"boot/grub/grub.cfg={config}")
     run("mcopy", "-o", "-i", str(esp), str(grub), "::/efi/boot/bootx64.efi")
-    payload_size = sum(path.stat().st_size for path in live.rglob("*") if path.is_file())
-    tools_size = max(512 * MIB, align(payload_size * 5 // 4 + 32 * MIB))
-    fat = work / "tools.img"
-    with fat.open("wb") as target:
-        target.truncate(tools_size)
-    run("mkfs.fat", "-F", "32", "-n", TOOLS_LABEL, str(fat))
-    run("mcopy", "-s", "-i", str(fat), *(str(path) for path in sorted(live.iterdir())), "::/")
+    tools_image = live / "image.iso"
+    tools_size = tools_image.stat().st_size
     with image.open("r+b") as output:
         tools = add_tools_partition(output, tools_size)
         output.seek(esp_part["first"] * 512)
         with esp.open("rb") as source:
             copy_region(source, output, esp_size)
         output.seek(tools["first"] * 512)
-        with fat.open("rb") as source:
+        with tools_image.open("rb") as source:
             copy_region(source, output, tools_size)
         output.flush()
         os.fsync(output.fileno())
@@ -402,38 +400,33 @@ def publish_image(image, destination):
 
 def locked_media():
     media = json.loads((HERE / "media/media.json").read_text())
-    if media["format"] != 1 or media["packages"] != list(usb_live.PACKAGES):
-        raise ValueError("Media lock format or requested package list changed; run the update command")
+    if media["format"] != 2:
+        raise ValueError("Unsupported media lock format; run the update command")
     release = stable_release([media["flex"]])
     installer.require_supported_version(release["version"])
-    for item in (release, media["alpine"]):
-        if not re.fullmatch(r"[0-9a-f]{64}", item["sha256"]):
-            raise ValueError("Invalid media SHA256 lock")
+    if not re.fullmatch(r"[0-9a-f]{64}", release["sha256"]):
+        raise ValueError("Invalid media SHA256 lock")
     return media
 
 
 def locked_inputs(media):
     try:
         archive = Path(os.environ["CROS_KIT_FLEX_ARCHIVE"])
-        iso = Path(os.environ["CROS_KIT_ALPINE_ISO"])
-        repository = Path(os.environ["CROS_KIT_ALPINE_REPO"])
+        live = Path(os.environ["CROS_KIT_LIVE"])
     except KeyError as error:
         raise ValueError("Use nix run path:" + str(HERE) + " to obtain the locked inputs") from error
-    for path, item, size_key in ((archive, media["flex"], "zipfilesize"),
-                                  (iso, media["alpine"], "size")):
-        if path.stat().st_size != item[size_key] or file_hash(path, "sha256") != item["sha256"]:
-            raise ValueError(f"Locked input checksum/size mismatch: {path.name}")
-    package_dir = repository / "x86_64"
-    if file_hash(package_dir / "APKINDEX.tar.gz", "sha256") != media["alpine"]["index_sha256"]:
-        raise ValueError("Locked Alpine index checksum mismatch")
-    expected = {item["filename"] for item in media["alpine"]["packages"]}
-    if {path.name for path in package_dir.glob("*.apk")} != expected:
-        raise ValueError("Locked Alpine package set differs")
-    for item in media["alpine"]["packages"]:
-        path = package_dir / item["filename"]
-        if path.stat().st_size != item["size"] or file_hash(path, "sha256") != item["sha256"]:
-            raise ValueError(f"Locked Alpine package checksum/size mismatch: {path.name}")
-    return archive, iso, repository
+    release = media["flex"]
+    if archive.stat().st_size != release["zipfilesize"] or file_hash(archive, "sha256") != release["sha256"]:
+        raise ValueError(f"Locked input checksum/size mismatch: {archive.name}")
+    iso = live / "image.iso"
+    with iso.open("rb") as stream:
+        stream.seek(16 * 2048)
+        descriptor = stream.read(72)
+    if (iso.stat().st_size % 2048 or descriptor[:7] != b"\x01CD001\x01"
+            or descriptor[40:72].rstrip(b" ") != b"CROSKIT_LIVE"):
+        raise ValueError("Invalid CrOS Kit live filesystem image")
+    grub_config((live / "kernel-params").read_text().strip())
+    return archive, live
 
 
 def main():
@@ -473,9 +466,9 @@ def main():
         if args.image and args.image.exists():
             raise ValueError("Output image already exists; choose a new path")
         media = locked_media()
-        release, alpine = media["flex"], media["alpine"]
+        release = media["flex"]
         print(f"Locked Flex: {release['chrome_version']} / {release['version']}", flush=True)
-        print(f"CrOS Kit tools: Alpine {alpine['version']} (offline)", flush=True)
+        print("CrOS Kit tools: NixOS (offline, pinned by flake.lock)", flush=True)
         if expected:
             print(f"Target: {expected['path']} | {expected['model']} | "
                   f"{expected['size'] / 1024**3:.1f} GiB | serial: {expected['serial']}", flush=True)
@@ -483,15 +476,11 @@ def main():
             print(f"Target: {args.image}", flush=True)
         if args.dry_run:
             return
-        tools = ("apk", "bsdtar", "grub-mkstandalone", "mcopy", "mkfs.fat")
+        tools = ("grub-mkstandalone", "mcopy")
         missing = [tool for tool in tools if not shutil.which(tool)]
         if missing:
             raise ValueError("Missing tools: " + ", ".join(missing) + "; use nix run path:" + str(HERE))
-        try:
-            payload = Path(os.environ["CROS_KIT_PAYLOAD"])
-        except KeyError as error:
-            raise ValueError("Use nix run path:" + str(HERE) + " to build the installer payload") from error
-        archive, iso, repository = locked_inputs(media)
+        archive, live = locked_inputs(media)
         # Recovery images exceed many systems' /tmp quotas or tmpfs capacity.
         staging = (args.image.resolve().parent if args.image else
                    Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "cros-kit")
@@ -501,9 +490,6 @@ def main():
             image = work / "cros-kit.img"
             print("Preparing official Flex image", flush=True)
             extract_flex(archive, release, image)
-            live = work / "live"
-            usb_live.prepare_live(iso, live, payload, repository)
-            (live / "cros-kit.json").write_text(json.dumps(media, indent=2) + "\n")
             build_image(image, live, work)
             if args.image:
                 publish_image(image, args.image)

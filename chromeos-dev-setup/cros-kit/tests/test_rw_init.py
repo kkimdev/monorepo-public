@@ -13,11 +13,11 @@ import tempfile
 import unittest
 
 
-from tests import SOURCE as SOURCE_DIR
+from tests import SOURCE as SOURCE_DIR, runtime_functions
 
 
 SCRIPT = SOURCE_DIR / "rw-init.sh"
-SOURCE = SCRIPT.read_text().rsplit('\nrw_main "$@"', 1)[0]
+SOURCE = runtime_functions()
 
 
 class RuntimeFixture(unittest.TestCase):
@@ -253,6 +253,10 @@ rw_layer
             os.setxattr(opaque, "trusted.overlay.origin", b"old lower identity")
         except PermissionError:
             self.skipTest("Trusted overlay xattrs require CAP_SYS_ADMIN")
+        except OSError as error:
+            if error.errno == errno.EOPNOTSUPP:
+                self.skipTest("Fixture filesystem does not support trusted overlay xattrs")
+            raise
         self.change_version()
         result = self.shell("rw_layer")
         self.assertEqual(result.returncode, 0, result.stderr)

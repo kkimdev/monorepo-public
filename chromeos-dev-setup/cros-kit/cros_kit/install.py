@@ -2,6 +2,7 @@
 """Validate and apply Flex boot changes for the offline setup wizard."""
 
 from contextlib import contextmanager
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -343,6 +344,12 @@ def check_secure_boot(efivars=Path("/sys/firmware/efi/efivars"), mounts=Path("/p
     return "disabled"
 
 
+def block_nodes(tree):
+    yield tree
+    for child in tree.get("children", []):
+        yield from block_nodes(child)
+
+
 def check_environment(disk):
     if os.geteuid() != 0:
         fail("Run with sudo from a UEFI Linux live USB")
@@ -354,16 +361,11 @@ def check_environment(disk):
             fail(f"Required command is missing: {command}")
     disk = disk.resolve(strict=True)
     if not stat.S_ISBLK(disk.stat().st_mode):
-        fail("--disk must name a whole block device, not a file")
+        fail("Target must name a whole block device, not a file")
     tree = json.loads(run("lsblk", "--json", "--paths", "--output", "NAME,TYPE,MAJ:MIN,MOUNTPOINTS,PARTN", str(disk)))["blockdevices"]
     if len(tree) != 1 or tree[0]["type"] != "disk":
-        fail("--disk must name a whole disk")
-    nodes = []
-    def visit(node):
-        nodes.append(node)
-        for child in node.get("children", []):
-            visit(child)
-    visit(tree[0])
+        fail("Target must name a whole disk")
+    nodes = list(block_nodes(tree[0]))
     for node in nodes:
         if any(node.get("mountpoints") or []):
             fail(f"Target is mounted/in use: {node['name']}; unmount all its partitions first")
@@ -423,31 +425,50 @@ def atomic_write(path, data):
         os.close(directory)
 
 
-def manage(args):
-    disk, partition, sector_size = check_environment(args.disk)
+@dataclass(frozen=True)
+class DiskInfo:
+    disk: Path
+    gpt: str
+    esp: str
+    version: str
+
+
+def probe_disk(disk, *, remove=False, expected=None):
+    """Identify and validate the disk, including its kernel partition mapping."""
+    disk, partition, sector_size = check_environment(disk)
     with disk.open("rb", buffering=0) as stream:
         disk_uuid, parts = read_gpt(stream, sector_size)
     check_partition_mapping(partition, parts[12], sector_size)
-    if args.action == "install":
-        validate_installation(disk, parts, sector_size)
-        config_data = Path(__file__).with_name("compatibility.conf").read_bytes()
     esp_uuid = parts[12]["uuid"]
+    if expected is not None and (disk_uuid, esp_uuid) != expected:
+        fail("Selected disk changed or became unavailable; restart setup")
+    # Removal must remain possible after an unsupported OS update.
+    version = "unknown" if remove else validate_installation(disk, parts, sector_size)["FLEX_OS_VERSION"]
+    return DiskInfo(disk, disk_uuid, esp_uuid, version), partition
+
+
+def configure(disk, *, remove=False, dry_run=False, expected=None, template=None):
+    """Preflight or apply installation/removal; return the validated disk identity.
+
+    Discovery uses a read-only dry run. Application repeats the same checks and
+    compares GPT/ESP identity before opening the target ESP for writing.
+    """
+    info, partition = probe_disk(disk, remove=remove, expected=expected)
+    disk, disk_uuid, esp_uuid = info.disk, info.gpt, info.esp
     order, entries = firmware_entries(run("efibootmgr", "--verbose"))
+    if not any(number in order and entry["active"] and entry["uuid"] == esp_uuid
+               and entry["path"] == r"\efi\boot\bootx64.efi"
+               for number, entry in entries.items()):
+        fail("No active stock Flex firmware entry in BootOrder for this disk; boot/install stock Flex first")
     ours = owned_entries(entries, esp_uuid)
     normal = owned_entries(entries, esp_uuid, NORMAL_LABEL, NORMAL_LOADER)
-    writable = args.action != "status" and not args.dry_run
-    with mounted_esp(partition, writable) as esp:
+    with mounted_esp(partition, not dry_run) as esp:
         stock_path = esp / "EFI/BOOT/crdybootx64.efi"
         stock = key = None
-        if args.action != "remove":
-            try:
-                stock = stock_path.read_bytes()
-                key_start, key_length = key_section(stock)
-                key = validate_key(stock[key_start:key_start + key_length])
-            except (OSError, ValueError) as error:
-                if args.action == "install":
-                    raise
-                print(f"Stock kernel key unavailable: {error}")
+        if not remove:
+            stock = stock_path.read_bytes()
+            key_start, key_length = key_section(stock)
+            key = validate_key(stock[key_start:key_start + key_length])
         directory = esp / OWN_DIR
         target = directory / "bootx64.efi"
         normal_target = directory / "normalx64.efi"
@@ -467,31 +488,17 @@ def manage(args):
         print(f"Target: {disk} (GPT {disk_uuid}), ESP: {partition}")
         if key is not None:
             print(f"Installed kernel key SHA256: {hashlib.sha256(key).hexdigest()}")
-        if args.action == "status":
-            print(f"Debug EFI: {'present' if target.exists() else 'absent'}; firmware entries: {','.join(ours) or 'none'}")
-            print(f"Configured EFI: {'present' if normal_target.exists() else 'absent'}; firmware entries: {','.join(normal) or 'none'}")
-            print(f"RW init script: {'present' if rw_target.exists() else 'absent'}")
-            print(f"Root device compatibility library: {'present' if rootdev_target.exists() else 'absent'}")
-            print(f"BootOrder: {','.join(order)}")
-            if target.exists() and key is not None:
-                installed = target.read_bytes()
-                start, length = key_section(installed)
-                print(f"Debug key matches stock: {installed[start:start + length] == key.ljust(length, bytes(1))}")
-            return
-        if args.action == "install":
-            stock_entries = [number for number, entry in entries.items()
-                             if entry["uuid"] == esp_uuid and entry["active"]
-                             and entry["path"] == r"\efi\boot\bootx64.efi" and number in order]
-            if not stock_entries:
-                fail("No active stock Flex firmware entry in BootOrder for this disk; boot/install stock Flex first")
-            image = make_loader(args.template.read_bytes(), stock)
+        if not remove:
+            config_data = Path(__file__).with_name("compatibility.conf").read_bytes()
+            template = Path(template) if template is not None else Path(__file__).with_name("crdyboot-debug.efi")
+            image = make_loader(template.read_bytes(), stock)
             rw_script = verified_rw_init()
             rootdev_library = verified_rootdev()
             rootdev_manifest = (hashlib.sha256(rootdev_library).hexdigest() + "  rootdev-compat.so\n").encode()
             print(f"Debug EFI SHA256: {hashlib.sha256(image).hexdigest()}")
-            if args.dry_run:
+            if dry_run:
                 print(f"Dry run: write both EFI modes, rw-init.sh, rootdev-compat.so and its checksum in {OWN_DIR}; make '{NORMAL_LABEL}' default, keep stock fallback, '{LABEL}' last")
-                return
+                return info
             directory.mkdir(exist_ok=True)
             marker_data = (json.dumps(dict(format=3, esp_uuid=esp_uuid)) + "\n").encode()
             if not marker.exists():
@@ -553,9 +560,9 @@ def manage(args):
             print(f"For host root, select '{LABEL}' in the firmware boot menu, press Ctrl+Alt+F2, log in as chronos, then run: sudo id")
             print("Configured boots keep developer mode disabled; use stock Flex for initial OS-update testing.")
         else:
-            if args.dry_run:
+            if dry_run:
                 print(f"Dry run: remove only {OWN_DIR} files and matching Configured/Debug firmware entries")
-                return
+                return info
             all_owned = ours + normal
             new_order = [number for number in order if number not in all_owned]
             if new_order != order:
@@ -571,4 +578,5 @@ def manage(args):
                     (directory / name).unlink(missing_ok=True)
                 directory.rmdir()
             print("Removed. Stock firmware entries, kernels, root filesystem and user data retained.")
+    return info
 

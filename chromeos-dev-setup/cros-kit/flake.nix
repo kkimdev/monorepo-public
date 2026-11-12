@@ -39,62 +39,64 @@
       rootdev = import ./nix/rootdev-compat.nix { inherit pkgs; };
       payload = import ./nix/payload.nix { inherit pkgs efi rootdev; };
       media = import ./nix/media.nix { inherit pkgs; };
-      tools = with pkgs; [ python3 grub2_efi mtools dosfstools libarchive apk-tools util-linux ];
+      live = import ./nix/live.nix { inherit pkgs nixpkgs payload; };
+      tools = with pkgs; [ python3 grub2_efi mtools util-linux ];
       kit = pkgs.writeShellApplication {
         name = "cros-kit";
         runtimeInputs = tools;
         text = ''
           export PYTHONPATH=${self}
-          export CROS_KIT_PAYLOAD=${payload}/cros_kit
           export CROS_KIT_FLEX_ARCHIVE=${media.flex-archive}
-          export CROS_KIT_ALPINE_ISO=${media.alpine-iso}
-          export CROS_KIT_ALPINE_REPO=${media.alpine-repo}
+          export CROS_KIT_LIVE=${live}
           exec python3 -P -m cros_kit.make_usb "$@"
         '';
       };
       update = pkgs.writeShellApplication {
         name = "cros-kit-update";
-        runtimeInputs = with pkgs; [ python3 apk-tools libarchive gitMinimal ];
+        runtimeInputs = with pkgs; [ python3 gitMinimal ];
         text = ''
           export PYTHONPATH=${self}
           exec python3 -P -m cros_kit.update "$@"
         '';
       };
     in {
-      packages.${system} = media // { inherit efi rootdev payload; default = kit; };
+      packages.${system} = media // { inherit efi rootdev payload live; default = kit; };
       apps.${system} = {
         default = { type = "app"; program = "${kit}/bin/cros-kit"; meta.description = "Create a locked CrOS Kit USB"; };
         update = { type = "app"; program = "${update}/bin/cros-kit-update"; meta.description = "Refresh and validate CrOS Kit dependencies"; };
       };
       checks.${system} = {
+        efi-policy = efi.policyCheck;
         payload = pkgs.runCommand "cros-kit-payload-check" {} ''
           cd ${payload}/cros_kit
           ${pkgs.coreutils}/bin/sha256sum --check crdyboot-debug.efi.sha256 rw-init.sh.sha256 rootdev-compat.so.sha256
           touch "$out"
         '';
         unit = pkgs.runCommand "cros-kit-unit-tests" {
-          nativeBuildInputs = [ pkgs.python3 ];
+          nativeBuildInputs = with pkgs; [ python3 gcc bash gnutar coreutils findutils gnugrep gnused gawk ];
         } ''
           cd ${self}
           export PYTHONDONTWRITEBYTECODE=1
           export PYTHONPATH=${self}
           export CROS_KIT_PAYLOAD=${payload}/cros_kit
-          python3 -m unittest tests.test_build tests.test_install tests.test_make_usb tests.test_wizard tests.test_update tests.test_media tests.test_usb_live
+          python3 -m unittest discover -s tests -v
           touch "$out"
         '';
         offline = pkgs.runCommand "cros-kit-offline-check" {
-          nativeBuildInputs = [ pkgs.python3 pkgs.apk-tools pkgs.libarchive ];
+          nativeBuildInputs = [ pkgs.libarchive pkgs.util-linux ];
         } ''
-          export PYTHONDONTWRITEBYTECODE=1
-          export PYTHONPATH=${self}
-          cd ${self}
-          python3 - <<'PYCODE'
-from pathlib import Path
-import os
-from cros_kit import usb_live
-usb_live.prepare_live("${media.alpine-iso}", Path(os.environ["TMPDIR"]) / "live",
-                      "${payload}/cros_kit", "${media.alpine-repo}")
-PYCODE
+          test -s ${live}/image.iso
+          test -s ${live}/kernel-params
+          test "$(blkid -p -s TYPE -o value ${live}/image.iso)" = iso9660
+          test "$(blkid -p -s LABEL -o value ${live}/image.iso)" = CROSKIT_LIVE
+          bsdtar -tf ${live}/image.iso > files
+          grep -Fx boot/vmlinuz files
+          grep -Fx boot/initrd files
+          grep -Fx nix-store.squashfs files
+          ${live.config.system.path}/bin/cros-kit --help > /dev/null
+          test -x ${live.config.system.path}/bin/poweroff
+          test -x ${live.config.system.path}/bin/reboot
+          test -f ${live.config.system.path}/share/dbus-1/system-services/org.freedesktop.login1.service
           touch "$out"
         '';
       };
