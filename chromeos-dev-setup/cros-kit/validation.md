@@ -77,6 +77,7 @@ Current NixOS validation (2026-11-12):
 | Outer UEFI/GRUB to NixOS, no network | **PASS: autologin and offline installer** |
 | Install and reapply on preinstalled NVMe fixture | **PASS: all four stock EFI files unchanged** |
 | Installer Enter-to-poweroff | **PASS: exit 0, no failed units or unmount errors** |
+| Current NixOS USB write/readback | **PASS: complete image, both GPTs and exact live ISO** |
 | Exact installed Debug EFI to Flex setup GUI | **PASS: SATA VM** |
 | New EFI mode flags, overlay and Configured startup | **UNPROVEN in this run; older runtime baseline below** |
 
@@ -86,8 +87,13 @@ Logs: `cros-kit-nixos-root-tests.log`, `cros-kit-nixos-update.log`,
 The final live filesystem is 1,315,217,408 bytes; the combined USB image is
 10,840,178,688 bytes. Both GPTs and the exact embedded ISO bytes were verified.
 The fixture supplies an existing Flex installation and a stock firmware entry;
-this does not establish a fresh-laptop OS installation. New physical USB write,
-laptop boot and actual A/B updates remain untested.
+this does not establish a fresh-laptop OS installation. Physical laptop boot
+and actual A/B updates remain untested.
+
+The SanDisk USB (serial `00015028051925093504`) was rewritten with this NixOS
+image on 2026-11-12. Complete byte comparison after flushing writes and dropping
+block caches passed, along with both GPTs and the embedded live ISO SHA256
+(`cros-kit-nixos-release-flash.log`, `cros-kit-nixos-release-usb-proof.json`).
 
 The installed Debug EFI verified the signed kernel and reached Flex graphical
 setup (`efi-mode-runtime-proof.json`). This probe used SATA: the OVMF fixture
@@ -162,8 +168,8 @@ from the validated combined image, replacing all ten installer files and
 regenerating GRUB (`combined-guard-final-payload.json`). This is not a clean full
 builder run: an earlier rebuild hit the host disk quota.
 
-The SanDisk USB (serial `00015028051925093504`) contains the previous Alpine-based CrOS Kit
-image, flashed on 2026-11-12. Full byte comparison, both GPTs, all twelve installer
+An earlier Alpine-based CrOS Kit image was flashed to the same SanDisk USB
+on 2026-11-12. Full byte comparison, both GPTs, all twelve installer
 files, the signed index and 64 APKs passed physical readback. The copied offline
 Python package also ran from an unrelated working directory
 (`cros-kit-clean-architecture-flash.log`, `cros-kit-clean-architecture-readback.json`).
