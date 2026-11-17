@@ -672,27 +672,32 @@ in
     '';
 
     # ~/.agents/AGENTS.md is the single user-owned global guidance shared by
-    # Codex and Claude Code. Only the links are managed here: the content stays
-    # out of this public repository and out of the read-only Nix store so
-    # agents can keep editing it. Existing files or foreign links are left in
-    # place with a warning instead of being replaced.
+    # Codex, Claude Code, and OpenCode. Only the links are managed here: the
+    # content stays out of this public repository and out of the read-only Nix
+    # store so agents can keep editing it. Existing files or foreign links are
+    # left in place with a warning instead of being replaced.
     linkSharedAgentGuidance = lib.hm.dag.entryAfter ["writeBoundary"] ''
       sharedGuidance="$HOME/.agents/AGENTS.md"
-      linkTarget="../.agents/AGENTS.md"
       if [ ! -f "$sharedGuidance" ]; then
         echo "warning: $sharedGuidance is missing; not linking agent guidance." >&2
       else
-        for guidanceLink in "$HOME/.codex/AGENTS.md" "$HOME/.claude/CLAUDE.md"; do
+        link_shared_guidance() {
+          local guidanceLink="$1" linkTarget="$2"
           if [ -L "$guidanceLink" ] && [ "$(readlink -- "$guidanceLink")" = "$linkTarget" ]; then
-            continue
+            return 0
           fi
           if [ -e "$guidanceLink" ] || [ -L "$guidanceLink" ]; then
             echo "warning: $guidanceLink exists and is not a link to $sharedGuidance; leaving it unchanged." >&2
-            continue
+            return 0
           fi
           run mkdir -p -- "$(dirname -- "$guidanceLink")"
           run ln -s -- "$linkTarget" "$guidanceLink"
-        done
+        }
+        link_shared_guidance "$HOME/.codex/AGENTS.md" "../.agents/AGENTS.md"
+        link_shared_guidance "$HOME/.claude/CLAUDE.md" "../.agents/AGENTS.md"
+        # OpenCode V2 reads only AGENTS.md (no CLAUDE.md fallback).
+        # ~/.config/opencode is two levels below $HOME.
+        link_shared_guidance "$HOME/.config/opencode/AGENTS.md" "../../.agents/AGENTS.md"
       fi
     '';
 
