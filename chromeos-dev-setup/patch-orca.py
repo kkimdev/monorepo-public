@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Keep Crostini native copies and desktop identity on the upstream Orca package.
 
-Fingerprints cover the renderer behavior reviewed for Orca 1.4.255. A future
+Fingerprints cover the renderer behavior reviewed for Orca 1.4.259. A future
 release with changed assets must be reviewed before it can replace an installed
 package. Unchanged assets do not require a hard-coded application version.
 Remove the clipboard workaround after stablyai/orca#29377 is released.
@@ -15,8 +15,8 @@ import sys
 
 
 ORIGINAL_HELPER = (
-    "async function Av({terminal:e,writeClipboardText:t,clearSelectionOnSuccess:n=!1})"
-    "{let r=Wp(e);return r?(await t(r),n&&e.clearSelection(),!0):!1}"
+    "async function Jv({terminal:e,writeClipboardText:t,clearSelectionOnSuccess:n=!1})"
+    "{let r=Zp(e);return r?(await t(r),n&&e.clearSelection(),!0):!1}"
 )
 # Native IPC has no delivery acknowledgment. Keep clear-on-success copies on
 # their awaited writer so selection cannot disappear before Electron reads it.
@@ -30,15 +30,15 @@ PATCHED_HELPER = ORIGINAL_HELPER.replace(
 PATCHES = (
     (
         "terminal-right-click-paste-gesture-",
-        "01836e5a811fff8c9dd92599aeb6357e81fe382caed4af7352d4b74cfe06874d",
+        "d7cebe191961994143a7c5db46d8dbb072603f2c0862e3070254e9bf138e28a2",
         ((ORIGINAL_HELPER, PATCHED_HELPER),),
     ),
     (
         "open-standalone-terminal-",
-        "784e4ba79dc5bac3671f3f16735ede1cb4da3b34f3a8a6dc2a67ad2ee9905822",
+        "eb4121c560094253f5981de7fe4f076800ec12008228ae2618added9f7283937",
         ((
-            "window.api.ui.writeTerminalClipboardText(t).catch(()=>void 0)",
-            "j({terminal:n,writeClipboardText:window.api.ui.writeTerminalClipboardText}).catch(()=>void 0)",
+            "window.api.ui.writeTerminalClipboardText(i).catch(()=>void 0)",
+            "E({terminal:t,writeClipboardText:window.api.ui.writeTerminalClipboardText}).catch(()=>void 0)",
         ),),
     ),
 )

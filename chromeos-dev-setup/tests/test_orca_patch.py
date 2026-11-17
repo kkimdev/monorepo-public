@@ -209,7 +209,7 @@ function fixture({platform='linux', displayServer='wayland', focused=true,
     platform: {get: () => ({platform, displayServer})},
     ui: {performNativeSelectionAction(action) { calls.native.push(action); return native?.(action); }}
   }};
-  const copy = vm.runInNewContext(`(${patch.helper})`, {window, Wp: e => e.selection});
+  const copy = vm.runInNewContext(`(${patch.helper})`, {window, Zp: e => e.selection});
   return {terminal, calls, copy, writeClipboardText};
 }
 
@@ -263,9 +263,9 @@ function fixture({platform='linux', displayServer='wayland', focused=true,
   const terminal = {};
   const writer = () => {};
   await vm.runInNewContext(patch.standalone, {
-    n:terminal,
+    t:terminal,
     window:{api:{ui:{writeTerminalClipboardText:writer}}},
-    j(options) { routed = options; return Promise.reject(new Error('handled by route')); }
+    E(options) { routed = options; return Promise.reject(new Error('handled by route')); }
   });
   assert.equal(routed.terminal, terminal);
   assert.equal(routed.writeClipboardText, writer);

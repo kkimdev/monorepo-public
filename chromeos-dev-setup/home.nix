@@ -640,9 +640,12 @@ in
       mkdir -p "$tempDir/home" "$workDir"
       (
         cd "$workDir"
+        # Activation PATH contains only Home Manager's own tools, so expose Git
+        # explicitly; OpenSpec 2.x refuses to scaffold skills without it.
         env \
           CI=1 \
           HOME="$tempDir/home" \
+          PATH="${pkgs.git}/bin:$PATH" \
           "${openspecCli}/bin/openspec" init --tools codex --profile core --no-animation .
       )
 
@@ -652,7 +655,14 @@ in
         fi
       done
 
-      for generatedSkill in "$workDir/.agents/skills"/openspec-*; do
+      # OpenSpec 2.x installs user-scoped skills under $HOME/.agents/skills;
+      # older releases wrote them into the project's .agents/skills.
+      generatedSkillsDir="$tempDir/home/.agents/skills"
+      if [ ! -d "$generatedSkillsDir" ]; then
+        generatedSkillsDir="$workDir/.agents/skills"
+      fi
+
+      for generatedSkill in "$generatedSkillsDir"/openspec-*; do
         [ -d "$generatedSkill" ] || continue
         skillName="$(basename "$generatedSkill")"
         cp -a -- "$generatedSkill" "$openspecSkillsDir/$skillName"
