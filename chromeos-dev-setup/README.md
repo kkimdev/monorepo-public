@@ -113,8 +113,7 @@ cat ~/.ssh/id_ed25519.pub
 
 ## Keyboard Backlight Timeout Config
 
-Use Brunch Framework or boot experimental
-[CrOS Kit’s Flex Debug mode](cros-kit/README.md) (VM-tested; physical testing pending).
+Requires a writable root filesystem, for example Brunch Framework.
 
 Open Crosh (`Ctrl+Alt+T`), run `shell --isolated`, then:
 
@@ -137,7 +136,7 @@ Reference: https://www.reddit.com/r/chromeos/comments/1u0niv3/crostini_linux_on_
 
 ### Internal Microphone Not Working in Chrome
 
-Use Brunch Framework or boot [CrOS Kit’s Flex Debug mode](cros-kit/README.md).
+Requires a writable root filesystem, for example Brunch Framework.
 
 **Known to affect:** ThinkBook 16 G6 IRL
 
@@ -208,7 +207,7 @@ UCM files; recheck the active profile if the issue returns after an update.
 
 ### HDMI Audio Output Not Working
 
-Use Brunch Framework or boot [CrOS Kit’s Flex Debug mode](cros-kit/README.md).
+Requires a writable root filesystem, for example Brunch Framework.
 
 **Known to affect:** ThinkBook 16 G6 IRL
 
