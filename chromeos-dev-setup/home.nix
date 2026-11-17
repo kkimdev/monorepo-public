@@ -149,14 +149,13 @@ in
       # claude-code
       # claude-desktop
       # codex
-      # opencode
 
       # Keep all available replacements on the same upstream package set.
       llmAgentsPkgs.antigravity-cli
       llmAgentsPkgs.claude-code
       claudeDesktopWithOpener
       llmAgentsPkgs.codex
-      llmAgentsPkgs.opencode
+      # OpenCode V2 supersedes the V1 `opencode` CLI.
       llmAgentsPkgs.opencode2
       orcaWithDesktopIdentity
 
