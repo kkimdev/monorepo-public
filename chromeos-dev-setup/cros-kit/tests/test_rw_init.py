@@ -429,7 +429,7 @@ rw_recovery
         subprocess.run(["/bin/sh", "-n", SCRIPT], check=True)
 
 
-class SupportGuardTests(RuntimeFixture):
+class GuardFixture(RuntimeFixture):
     def setUp(self):
         super().setUp()
         upper = self.create_layer()
@@ -485,6 +485,8 @@ initctl() { printf 'stock-jobs-reloaded\\n'; }
         self.assertIn("saved OS changes will not be applied", result.stderr)
         self.assert_saved_untouched()
 
+
+class SupportGuardTests(GuardFixture):
     def test_supported_original_os_reaches_layer_preparation(self):
         result = self.shell(self.guard_harness + "rw_apply\n")
         self.assertEqual(result.returncode, 1)
@@ -587,6 +589,8 @@ class CompatibilityTests(RuntimeFixture):
         policies = self.stock / "usr/share/minijail"
         libraries.mkdir(parents=True)
         policies.mkdir(parents=True)
+        (self.stock / "etc/init").mkdir(parents=True)
+        (self.stock / "etc/init/startup.conf").write_text("exec /bin/true\n")
         (libraries / "librootdev.so.1.0").write_bytes(b"stock rootdev library")
         (libraries / "librootdev.so.1").symlink_to("librootdev.so.1.0")
         (libraries / "librootdev.so.1.0").chmod(0o755)
@@ -627,7 +631,7 @@ awk() {
 }
 stat() {
   if [ "$2" = %u ]; then printf '0\n'; return; fi
-  case "$3" in /usr|/usr/*) command stat "$1" "$2" "$FLEX_TEST_ROOT/stock$3" ;;
+  case "$3" in /usr|/usr/*|/etc|/etc/*) command stat "$1" "$2" "$FLEX_TEST_ROOT/stock$3" ;;
     *) command stat "$@" ;; esac
 }
 chcon() { printf '%s\n' "$*" >> "$FLEX_TEST_ROOT/labels"; }
@@ -660,6 +664,13 @@ rw_compat
         labels = (self.root / "labels").read_text()
         self.assertIn("--reference=/usr/lib64", labels)
         self.assertIn("--reference=/usr/lib64/librootdev.so.1.0", labels)
+        self.assertIn("--reference=/etc/init", labels)
+        health = compat / "etc/init/cros-kit-health.conf"
+        self.assertEqual(stat.S_IMODE(health.stat().st_mode), 0o644)
+        text = health.read_text()
+        self.assertIn("start on login-prompt-visible", text)
+        self.assertIn("os-healthy", text)
+        self.assertIn("--reference=/etc/init/startup.conf " + str(health), labels)
         self.assertTrue((self.upper.parent / "compat.ready").is_file())
 
     def test_completed_lower_cache_keeps_inodes_until_fingerprint_changes(self):
@@ -878,3 +889,201 @@ rw_prepare
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TrialTests(GuardFixture):
+    """Newer, unvalidated releases: one trial boot, then health decides."""
+
+    def setUp(self):
+        super().setUp()
+        self.release.write_text("CHROMEOS_RELEASE_VERSION=16840.1.0\n")
+        self.digest = "b" * 64
+        self.cmdline.write_text("cros_debug root_hexdigest=" + self.digest + "\n")
+        (self.runtime / "os-root").write_text(self.digest + "\n2049\n")
+        self.trial_harness = self.guard_harness.replace(
+            "uname() { printf '6.12.100-test\\n'; }", "uname() { printf '6.13.0-newer\\n'; }")
+        self.assertNotEqual(self.trial_harness, self.guard_harness)
+
+    def apply(self):
+        return self.shell(self.trial_harness + "rw_apply\n")
+
+    def marker(self, name):
+        path = self.store / name
+        return path.read_text() if path.exists() else None
+
+    def assert_layer_reached(self, result):
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout.splitlines(), ["stock-startup-restored", "layer-called"])
+
+    def assert_trial_rejected(self, result):
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout.splitlines(), ["stock-startup-restored"])
+
+    def test_first_boot_of_newer_release_is_a_trial(self):
+        result = self.apply()
+        self.assert_layer_reached(result)
+        self.assertIn("trial boot", result.stderr)
+        self.assertEqual(self.marker("os-trial"), self.digest + "\n")
+        self.assertIsNone(self.marker("os-rejected"))
+
+    def test_unfinished_trial_is_rejected_and_stays_rejected(self):
+        self.assert_layer_reached(self.apply())
+        result = self.apply()
+        self.assert_trial_rejected(result)
+        self.assertIn("did not reach the login screen", result.stderr)
+        self.assertEqual(self.marker("os-rejected"), self.digest + "\n")
+        self.assertIsNone(self.marker("os-trial"))
+        result = self.apply()
+        self.assert_trial_rejected(result)
+        self.assertIn("rejected after a failed trial", result.stderr)
+        self.assertEqual((self.store / "root/upper/keep").read_text(),
+                         "saved settings must survive rejection\n")
+
+    def test_healthy_trial_keeps_applying(self):
+        (self.store / "os-healthy").write_text("c" * 64 + "\n" + self.digest + "\n")
+        for _ in range(2):
+            result = self.apply()
+            self.assert_layer_reached(result)
+            self.assertIn("passed its trial boot", result.stderr)
+        self.assertIsNone(self.marker("os-trial"))
+
+    def test_another_release_starts_its_own_trial(self):
+        (self.store / "os-rejected").write_text("c" * 64 + "\n")
+        (self.store / "os-healthy").write_text("d" * 64 + "\n")
+        self.assert_layer_reached(self.apply())
+        self.assertEqual(self.marker("os-trial"), self.digest + "\n")
+
+    def test_policy_file_can_disable_trials(self):
+        (self.store / "unvalidated-os").write_text("off\n")
+        result = self.apply()
+        self.assert_trial_rejected(result)
+        self.assertIn("disabled by unvalidated-os", result.stderr)
+        self.assertIsNone(self.marker("os-trial"))
+        (self.store / "unvalidated-os").write_text("trial\n")
+        self.assert_layer_reached(self.apply())
+
+    def test_symlinked_or_non_file_markers_fail_closed(self):
+        target = self.root / "elsewhere"
+        target.write_text(self.digest + "\n")
+        for name in ("os-healthy", "os-trial", "os-rejected", "unvalidated-os"):
+            with self.subTest(name=name):
+                (self.store / name).symlink_to(target)
+                self.assert_trial_rejected(self.apply())
+                (self.store / name).unlink()
+        (self.store / "os-healthy").mkdir()
+        self.assert_trial_rejected(self.apply())
+        self.assertEqual(target.read_text(), self.digest + "\n")
+
+    def test_older_release_or_changed_startup_is_never_tried(self):
+        self.release.write_text("CHROMEOS_RELEASE_VERSION=16836.31.9\n")
+        self.assert_trial_rejected(self.apply())
+        self.release.write_text("CHROMEOS_RELEASE_VERSION=16840.1.0\n")
+        self.startup.write_text("exec /bin/false\n")
+        result = self.apply()
+        self.assert_trial_rejected(result)
+        self.assertIn("compatibility contract", result.stderr)
+        self.assertFalse((self.store / "os-trial").exists())
+
+    def test_malformed_release_kernel_or_root_is_never_tried(self):
+        for release, kernel, cmdline in (
+                ("16840.1", "6.13.0-newer", "root_hexdigest=" + self.digest),
+                ("16840.1.0", "-bad", "root_hexdigest=" + self.digest),
+                ("16840.1.0", "6.13.0-newer", "root_hexdigest=" + "b" * 63)):
+            with self.subTest(release=release, kernel=kernel, cmdline=cmdline):
+                self.release.write_text("CHROMEOS_RELEASE_VERSION=" + release + "\n")
+                self.cmdline.write_text(cmdline + "\n")
+                harness = self.guard_harness.replace(
+                    "uname() { printf '6.12.100-test\\n'; }",
+                    "uname() { printf '" + kernel + "\\n'; }")
+                self.assertIn(kernel, harness)
+                result = self.shell(harness + "rw_apply\n")
+                self.assert_trial_rejected(result)
+
+    def test_prepare_wraps_startup_for_a_trial_release(self):
+        shutil.rmtree(self.runtime)
+        result = self.shell('''
+FLEX_DEBUG_INIT_SOURCE="$FLEX_TEST_ROOT/bootstrap.sh"
+uname() { printf '6.13.0-newer\\n'; }
+mountpoint() { return 0; }
+mount() { :; }
+rw_prepare
+''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--apply", (self.runtime / "init/startup.conf").read_text())
+
+
+class DeriveTests(RuntimeFixture):
+    """Line edits are recomputed from the current verified file each boot."""
+
+    def setUp(self):
+        super().setUp()
+        self.upper = self.create_layer()
+        self.lower = self.runtime / "lower"
+        (self.lower / "etc/init").mkdir(parents=True)
+        (self.lower / "etc").chmod(0o755)
+        self.flags = self.lower / "etc/ui_use_flags.txt"
+        self.flags.write_text("arc\nreven_branding\ncheets\n")
+        self.flags.chmod(0o644)
+        (self.lower / "etc/chrome_dev.conf").write_text("# stock comments\n")
+        self.rules = self.store / "edits.conf"
+
+    def derive(self):
+        return self.shell('layer="$RW_STORE/root"\nrw_derive\n')
+
+    def test_drop_and_append_follow_the_current_os_file(self):
+        self.rules.write_text("# Flex+\ndrop-line /etc/ui_use_flags.txt reven_branding\n"
+                              "append-line /etc/chrome_dev.conf --enable-features=A,B\n"
+                              "append-line /etc/chrome_dev.conf !--system-developer-mode\n")
+        result = self.derive()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.upper / "etc/ui_use_flags.txt").read_text(), "arc\ncheets\n")
+        self.assertEqual((self.upper / "etc/chrome_dev.conf").read_text(),
+                         "# stock comments\n--enable-features=A,B\n!--system-developer-mode\n")
+        self.assertEqual(stat.S_IMODE((self.upper / "etc/ui_use_flags.txt").stat().st_mode), 0o644)
+        self.assertEqual(stat.S_IMODE((self.upper / "etc").stat().st_mode), 0o755)
+        self.assertEqual((self.store / "edits.applied").read_text(),
+                         "/etc/chrome_dev.conf\n/etc/ui_use_flags.txt\n")
+        # An OS update changes the verified file; the edit follows it.
+        self.flags.write_text("arc\nreven_branding\nnew_flag\n")
+        self.assertEqual(self.derive().returncode, 0)
+        self.assertEqual((self.upper / "etc/ui_use_flags.txt").read_text(), "arc\nnew_flag\n")
+
+    def test_removed_rule_returns_the_path_to_the_os(self):
+        (self.upper / "keep").write_text("unrelated saved file\n")
+        self.rules.write_text("drop-line /etc/ui_use_flags.txt reven_branding\n")
+        self.assertEqual(self.derive().returncode, 0)
+        self.rules.write_text("# nothing\n")
+        result = self.derive()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.upper / "etc/ui_use_flags.txt").exists())
+        self.assertEqual((self.upper / "keep").read_text(), "unrelated saved file\n")
+        self.rules.unlink()
+        self.assertEqual(self.derive().returncode, 0)
+        self.assertEqual((self.store / "edits.applied").read_text(), "")
+
+    def test_missing_os_file_is_skipped_and_its_old_copy_removed(self):
+        self.rules.write_text("drop-line /etc/ui_use_flags.txt reven_branding\n")
+        self.assertEqual(self.derive().returncode, 0)
+        self.flags.unlink()
+        result = self.derive()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("edit skipped", result.stderr)
+        self.assertFalse((self.upper / "etc/ui_use_flags.txt").exists())
+
+    def test_invalid_rules_fail_closed_without_writing(self):
+        invalid = ["remove-line /etc/ui_use_flags.txt arc\n",
+                   "drop-line /usr/bin/thing arc\n",
+                   "drop-line /etc/../usr/x arc\n",
+                   "drop-line /etc/ui_use_flags.txt\n",
+                   "drop-line etc/ui_use_flags.txt arc\n",
+                   "drop-line /etc/ui*flags arc\n",
+                   "drop-line /etc/ui_use_flags.txt ar\0c\n"]
+        for text in invalid:
+            with self.subTest(text=text):
+                self.rules.write_text(text)
+                result = self.derive()
+                self.assertEqual(result.returncode, 1)
+                self.assertFalse((self.upper / "etc").exists())
+        self.rules.unlink()
+        self.rules.symlink_to(self.root / "elsewhere")
+        self.assertEqual(self.derive().returncode, 1)

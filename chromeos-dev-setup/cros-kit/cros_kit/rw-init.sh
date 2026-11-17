@@ -15,6 +15,10 @@ rw_warn() {
 
 rw_supported() {
   # Parse data, never shell code. An unknown OS must not import saved changes.
+  # RW_CONTRACT=validated: the exact validated OS. RW_CONTRACT=trial: a newer
+  # release whose original startup job is unchanged; rw_trial decides with
+  # stateful health markers whether saved changes may follow the update.
+  RW_CONTRACT=
   (
     bytes=$(wc -c < "$RW_RUNTIME/compatibility.conf") || exit 1
     # dash read silently drops NUL bytes; reject them even in comments or keys.
@@ -47,8 +51,10 @@ rw_supported() {
     done < "$RW_RUNTIME/compatibility.conf"
     [ -n "$FLEX_OS_VERSION" ] && [ -n "$FLEX_ROOT_SHA256" ] &&
       [ -n "$FLEX_KERNEL_RELEASE" ] && [ -n "$FLEX_STARTUP_SHA256" ] || exit 1
-    [ "$(sed -n 's/^CHROMEOS_RELEASE_VERSION=//p' /etc/lsb-release)" = "$FLEX_OS_VERSION" ] || exit 1
-    [ "$(uname -r)" = "$FLEX_KERNEL_RELEASE" ] || exit 1
+    os_version=$(sed -n 's/^CHROMEOS_RELEASE_VERSION=//p' /etc/lsb-release)
+    printf '%s\n' "$os_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || exit 1
+    kernel=$(uname -r)
+    case "$kernel" in ''|[!a-zA-Z0-9]*|*[!a-zA-Z0-9._+-]*) exit 1 ;; esac
     actual_root=
     set -f
     for argument in $(cat /proc/cmdline); do
@@ -57,12 +63,72 @@ rw_supported() {
         actual_root=${argument#*=} ;;
       esac
     done
-    [ "$actual_root" = "$FLEX_ROOT_SHA256" ] || exit 1
-    [ "$(sha256sum /etc/init/startup.conf | awk '{ print $1 }')" = "$FLEX_STARTUP_SHA256" ]
-  ) || {
-    rw_warn 'unsupported or invalid compatibility contract; saved OS changes will not be applied.'
+    case "$actual_root" in ''|*[!0-9a-f]*) exit 1 ;; esac
+    [ "${#actual_root}" = 64 ] || exit 1
+    # Both modes require the original startup job that rw_wrap_startup edits.
+    [ "$(sha256sum /etc/init/startup.conf | awk '{ print $1 }')" = "$FLEX_STARTUP_SHA256" ] || exit 1
+    if [ "$os_version" = "$FLEX_OS_VERSION" ]; then
+      [ "$kernel" = "$FLEX_KERNEL_RELEASE" ] && [ "$actual_root" = "$FLEX_ROOT_SHA256" ] || exit 1
+      exit 0
+    fi
+    # Only releases newer than the validated one may be tried; never downgrades.
+    awk -v current="$os_version" -v validated="$FLEX_OS_VERSION" 'BEGIN {
+      split(current, c, "."); split(validated, v, ".")
+      for (i = 1; i <= 3; i++) {
+        if (c[i] + 0 > v[i] + 0) exit 0
+        if (c[i] + 0 < v[i] + 0) exit 1
+      }
+      exit 1
+    }' || exit 1
+    exit 10
+  )
+  case "$?" in
+    0) RW_CONTRACT=validated ;;
+    10) RW_CONTRACT=trial ;;
+    *)
+      rw_warn 'unsupported or invalid compatibility contract; saved OS changes will not be applied.'
+      return 1 ;;
+  esac
+}
+
+rw_trial() {
+  # Decide whether saved changes may follow a newer, unvalidated OS. The first
+  # boot of each verified root is a trial; the health job (see rw_compat) marks
+  # it good once the login screen appears. A trial that never reached the login
+  # screen is rejected on the next boot, which then stays stock.
+  rw_directory "$RW_STORE" || return 1
+  digest=$(sed -n 1p "$RW_RUNTIME/os-root") || return 1
+  case "$digest" in ''|*[!0-9a-f]*) return 1 ;; esac
+  [ "${#digest}" = 64 ] || return 1
+  policy="$RW_STORE/unvalidated-os"
+  rejected="$RW_STORE/os-rejected"
+  healthy="$RW_STORE/os-healthy"
+  trial="$RW_STORE/os-trial"
+  for path in "$policy" "$rejected" "$healthy" "$trial"; do
+    [ ! -L "$path" ] || return 1
+    [ ! -e "$path" ] || [ -f "$path" ] || return 1
+  done
+  if [ -e "$policy" ] && [ "$(cat "$policy")" != trial ]; then
+    rw_warn 'unvalidated OS: saved OS changes disabled by unvalidated-os setting.'
     return 1
-  }
+  fi
+  if [ -f "$rejected" ] && grep -qxF "$digest" "$rejected"; then
+    rw_warn 'unvalidated OS was rejected after a failed trial; saved OS changes will not be applied.'
+    return 1
+  fi
+  if [ -f "$healthy" ] && grep -qxF "$digest" "$healthy"; then
+    rw_warn 'unvalidated OS passed its trial boot; applying saved OS changes.'
+    return 0
+  fi
+  if [ -f "$trial" ] && [ "$(cat "$trial")" = "$digest" ]; then
+    printf '%s\n' "$digest" >> "$rejected" && sync -f "$rejected" || return 1
+    rm -f "$trial"
+    rw_warn 'unvalidated OS trial did not reach the login screen; rejected, saved OS changes will not be applied.'
+    return 1
+  fi
+  printf '%s\n' "$digest" > "$trial.next" && mv -T "$trial.next" "$trial" &&
+    sync -f "$trial" || return 1
+  rw_warn 'unvalidated newer OS: trial boot with saved OS changes.'
 }
 
 rw_directory() {
@@ -157,13 +223,13 @@ rw_compat() {
   rw_directory "$compat" && rm -rf -- "$compat" || return 1
   RW_LIBRARY=$(readlink -f /usr/lib64/librootdev.so.1) || return 1
   [ "${RW_LIBRARY%/*}" = /usr/lib64 ] || return 1
-  mkdir -p "$compat/usr/lib64/flex-debug" "$compat/usr/share/minijail" || return 1
+  mkdir -p "$compat/usr/lib64/flex-debug" "$compat/usr/share/minijail" "$compat/etc/init" || return 1
   cp -aL /usr/lib64/librootdev.so.1 \
     "$compat/usr/lib64/flex-debug/librootdev-stock.so.1" || return 1
   cp -p "$RW_RUNTIME/rootdev-compat.so" "$compat$RW_LIBRARY" || return 1
   stat -c %d / > "$compat/usr/lib64/flex-debug/root-device" || return 1
   chmod 644 "$compat/usr/lib64/flex-debug/root-device" || return 1
-  for directory in / /usr /usr/lib64 /usr/share /usr/share/minijail; do
+  for directory in / /usr /usr/lib64 /usr/share /usr/share/minijail /etc /etc/init; do
     chmod "$(stat -c %a "$directory")" "$compat$directory" || return 1
     if [ -e /sys/fs/selinux/enforce ]; then
       chcon --reference="$directory" "$compat$directory" || return 1
@@ -189,7 +255,119 @@ rw_compat() {
         >> "$compat$policy" || return 1
     fi
   done
+  # Health marker for unvalidated-OS trials (rw_trial): only a trial boot that
+  # reaches the login screen records its verified root as healthy.
+  health="$compat/etc/init/cros-kit-health.conf"
+  cat > "$health" <<'EOF' || return 1
+description "CrOS Kit: mark a trial OS healthy once the login screen appears"
+start on login-prompt-visible
+task
+script
+  digest=$(sed -n 1p /tmp/flex-debug/os-root) || exit 0
+  store=/mnt/stateful_partition/flex-debug
+  [ -f "$store/os-trial" ] && [ "$(cat "$store/os-trial")" = "$digest" ] || exit 0
+  grep -qxF "$digest" "$store/os-healthy" 2>/dev/null ||
+    printf '%s\n' "$digest" >> "$store/os-healthy"
+  rm -f "$store/os-trial"
+  sync
+end script
+EOF
+  chmod 644 "$health" || return 1
+  if [ -e /sys/fs/selinux/enforce ]; then
+    chcon --reference=/etc/init/startup.conf "$health" || return 1
+  fi
   sync -f "$compat" && touch "$layer/compat.ready" && sync -f "$layer/compat.ready"
+}
+
+rw_edit_path() {
+  # Derived edits own regular files under /etc only; no traversal or oddities.
+  printf '%s\n' "$1" | grep -Eq '^/etc(/[A-Za-z0-9_][A-Za-z0-9._+-]*)+$' || return 1
+  case "$1" in */../*|*/./*|*/..|*/.) return 1 ;; esac
+}
+
+rw_derive() {
+  # Saved line edits are data, recomputed from the current verified file on
+  # every boot so they follow OS updates instead of freezing an old copy:
+  #   drop-line PATH TEXT    remove lines equal to TEXT
+  #   append-line PATH TEXT  append TEXT
+  # Results are written to the upper tree before the overlay is mounted.
+  rules="$RW_STORE/edits.conf"
+  applied="$RW_STORE/edits.applied"
+  paths="$RW_RUNTIME/edit-paths"
+  for path in "$rules" "$applied"; do
+    [ ! -L "$path" ] || return 1
+    [ ! -e "$path" ] || [ -f "$path" ] || return 1
+  done
+  : > "$paths" || return 1
+  if [ -f "$rules" ]; then
+    bytes=$(wc -c < "$rules") || return 1
+    [ "$bytes" -eq "$(LC_ALL=C tr -d '\000' < "$rules" | wc -c)" ] || return 1
+    while IFS= read -r entry || [ -n "$entry" ]; do
+      case "$entry" in ''|\#*) continue ;; esac
+      operation=${entry%% *}
+      rest=${entry#* }
+      path=${rest%% *}
+      [ "$rest" != "$entry" ] && [ "${rest#* }" != "$rest" ] || return 1
+      case "$operation" in drop-line|append-line) ;; *) return 1 ;; esac
+      rw_edit_path "$path" || return 1
+      printf '%s\n' "$path" >> "$paths" || return 1
+    done < "$rules"
+  fi
+  LC_ALL=C sort -u "$paths" > "$paths.sorted" || return 1
+  # Edits removed from the rules give their path back to the verified OS.
+  if [ -f "$applied" ]; then
+    while IFS= read -r path || [ -n "$path" ]; do
+      rw_edit_path "$path" || return 1
+      grep -qxF "$path" "$paths.sorted" || rm -f "$layer/upper$path" || return 1
+    done < "$applied"
+  fi
+  while IFS= read -r path; do
+    source="$RW_RUNTIME/lower$path"
+    target="$layer/upper$path"
+    if [ ! -f "$source" ] || [ -L "$source" ]; then
+      rw_warn "edit target $path is not a regular file in this OS; edit skipped."
+      rm -f "$target" || return 1
+      continue
+    fi
+    content="$RW_RUNTIME/edit-content"
+    command cp "$source" "$content" || return 1
+    while IFS= read -r entry || [ -n "$entry" ]; do
+      case "$entry" in ''|\#*) continue ;; esac
+      operation=${entry%% *}
+      rest=${entry#* }
+      [ "${rest%% *}" = "$path" ] || continue
+      text=${rest#* }
+      case "$operation" in
+        drop-line)
+          { grep -vxF -- "$text" "$content" || [ "$?" = 1 ]; } > "$content.next" || return 1
+          mv -f "$content.next" "$content" || return 1 ;;
+        append-line)
+          printf '%s\n' "$text" >> "$content" || return 1 ;;
+      esac
+    done < "$rules"
+    # Mirror missing parent directories with the verified modes and labels.
+    parent=
+    for component in $(printf '%s\n' "${path%/*}" | tr '/' ' '); do
+      parent="$parent/$component"
+      [ ! -L "$layer/upper$parent" ] || return 1
+      if [ ! -d "$layer/upper$parent" ]; then
+        mkdir "$layer/upper$parent" || return 1
+        chmod "$(stat -c %a "$RW_RUNTIME/lower$parent")" "$layer/upper$parent" || return 1
+        if [ -e /sys/fs/selinux/enforce ]; then
+          chcon --reference="$RW_RUNTIME/lower$parent" "$layer/upper$parent" || return 1
+        fi
+      fi
+    done
+    [ ! -L "$target" ] || return 1
+    command cp -p "$source" "$target.cros-kit" || return 1
+    cat "$content" > "$target.cros-kit" || return 1
+    if [ -e /sys/fs/selinux/enforce ]; then
+      chcon --reference="$source" "$target.cros-kit" || return 1
+    fi
+    mv -f "$target.cros-kit" "$target" || return 1
+  done < "$paths.sorted"
+  command cp "$paths.sorted" "$applied.next" && mv -f "$applied.next" "$applied" &&
+    sync -f "$applied"
 }
 
 rw_rollback() {
@@ -223,10 +401,14 @@ rw_apply() {
   umount /etc/init || return 1
   rw_supported || return 1
   mountpoint -q /mnt/stateful_partition || return 1
+  if [ "$RW_CONTRACT" = trial ]; then
+    rw_trial || return 1
+  fi
   rw_layer && rw_mount_list && rw_compat || return 1
   newroot="$RW_RUNTIME/newroot"
   mkdir "$newroot" "$RW_RUNTIME/lower" || return 1
   mount --bind / "$RW_RUNTIME/lower" || return 1
+  rw_derive || return 1
   mount -t overlay overlay -o "lowerdir=$layer/compat:$RW_RUNTIME/lower,upperdir=$layer/upper,workdir=$layer/work,index=off,metacopy=off,xino=on,redirect_dir=nofollow,nfs_export=off" "$newroot" || return 1
   # LoadPin accepts kernel modules and firmware only from the verified root.
   # These are trust boundaries, independent of any personal configuration fix.

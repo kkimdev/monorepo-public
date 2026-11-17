@@ -973,8 +973,28 @@ class InstallGuardTests(unittest.TestCase):
         installer.configure(self.disk, template=self.template, **self.options)
         self.enable_b(priority=15, a_priority=14)
         root = self.os_roots[5]
-        (root / "etc/lsb-release").write_text("CHROMEOS_RELEASE_BOARD=reven\nCHROMEOS_RELEASE_VERSION=99999.1.0\n")
+        (root / "etc/lsb-release").write_text("CHROMEOS_RELEASE_BOARD=reven\nCHROMEOS_RELEASE_VERSION=11111.1.0\n")
         self.assert_rejected_without_writes("unsupported Flex version")
+
+    def test_newer_release_with_original_startup_is_a_trial(self):
+        self.enable_b(priority=15, a_priority=14)
+        root = self.os_roots[5]
+        (root / "etc/lsb-release").write_text("CHROMEOS_RELEASE_BOARD=reven\nCHROMEOS_RELEASE_VERSION=99999.1.0\n")
+        (root / "lib/modules" / self.supported["FLEX_KERNEL_RELEASE"]).rename(root / "lib/modules/7.0.0-newer")
+        with patch("builtins.print") as printed:
+            installer.configure(self.disk, template=self.template, **self.options)
+        self.assertTrue(any("99999.1.0 is newer" in str(call) for call in printed.call_args_list))
+        self.assertTrue((self.esp / installer.OWN_DIR / "bootx64.efi").is_file())
+
+    def test_newer_release_needs_original_startup_and_some_kernel_modules(self):
+        self.enable_b(priority=15, a_priority=14)
+        root = self.os_roots[5]
+        (root / "etc/lsb-release").write_text("CHROMEOS_RELEASE_BOARD=reven\nCHROMEOS_RELEASE_VERSION=99999.1.0\n")
+        (root / "etc/init/startup.conf").write_bytes(b"changed")
+        self.assert_rejected_without_writes("startup.conf")
+        (root / "etc/init/startup.conf").write_bytes(self.startup)
+        (root / "lib/modules" / self.supported["FLEX_KERNEL_RELEASE"]).rmdir()
+        self.assert_rejected_without_writes("kernel modules")
 
     def test_old_lower_priority_a_does_not_block_supported_updated_b(self):
         self.enable_b(priority=2, a_priority=1)
@@ -987,7 +1007,7 @@ class InstallGuardTests(unittest.TestCase):
     def test_unknown_version_on_tied_highest_priority_slot_refuses(self):
         self.enable_b()
         (self.os_roots[5] / "etc/lsb-release").write_text(
-            "CHROMEOS_RELEASE_BOARD=reven\nCHROMEOS_RELEASE_VERSION=99999.1.0\n")
+            "CHROMEOS_RELEASE_BOARD=reven\nCHROMEOS_RELEASE_VERSION=1.0\n")
         self.assert_rejected_without_writes("unsupported Flex version")
 
     def test_lower_priority_slot_still_requires_valid_kernel_structure(self):

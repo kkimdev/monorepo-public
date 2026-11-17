@@ -47,9 +47,21 @@ The verified OS stays unchanged underneath one writable root overlay. Edits are
 saved on the stateful partition and shared by Debug and Configured. Existing data
 and runtime mounts stay direct; verified kernel modules and firmware stay read-only.
 
-The OS, kernel, verified root and startup script must match the validated build.
-After an unvalidated OS update, saved edits stay untouched and the overlay stays
-off until updated tools validate that build. Debug still enables host root.
+The startup script must match the validated build. The validated OS uses saved
+edits directly. A **newer** Flex release with the same startup script gets one
+trial boot with saved edits: if it reaches the login screen it is accepted and
+keeps using them, otherwise the next boot rejects it and stays stock. Older or
+otherwise different builds stay stock until updated tools validate them. Debug
+still enables host root.
+
+| File in `/mnt/stateful_partition/flex-debug` | Effect |
+| --- | --- |
+| `unvalidated-os` containing `off` | Never try unvalidated releases |
+| `os-rejected` | Delete it to retry a rejected release |
+| `edits.conf` | Line edits recomputed from the current OS on every boot: `drop-line /etc/FILE TEXT`, `append-line /etc/FILE TEXT` |
+
+Prefer `edits.conf` over copying whole files: copied files hide later OS changes
+to the same file, while line edits follow updates.
 
 On a validated OS, saved edits are imported into a fresh layer when needed.
 Edited files and deletions override the OS; untouched files follow it. The previous

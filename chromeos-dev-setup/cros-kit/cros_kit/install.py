@@ -213,6 +213,13 @@ def require_supported_version(version, directory=None):
     return supported
 
 
+def newer_release(version, validated):
+    """True only for a well-formed release strictly newer than the validated one."""
+    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) is None:
+        return False
+    return tuple(map(int, version.split("."))) > tuple(map(int, validated.split(".")))
+
+
 def flex_release(text):
     fields = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
     board = fields.get("CHROMEOS_RELEASE_BOARD", "").strip('"')
@@ -288,17 +295,30 @@ def validate_installation(disk, parts, sector_size):
     priority = max((parts[number - 1]["attributes"] >> 48) & 15 for number in numbers)
     numbers = [number for number in numbers
                if ((parts[number - 1]["attributes"] >> 48) & 15) == priority]
+    trials = []
     for number, partition in root_partitions(disk, numbers, parts, sector_size):
         with root_files(partition) as directory:
             version = flex_release((directory / "etc/lsb-release").read_text())
-            if version != supported["FLEX_OS_VERSION"]:
+            trial = version != supported["FLEX_OS_VERSION"]
+            # A newer release with the unchanged original startup job runs saved
+            # changes as a health-checked trial (rw-init.sh rw_trial).
+            if trial and not newer_release(version, supported["FLEX_OS_VERSION"]):
                 fail(f"ROOT-{chr(65 + (number - 3) // 2)} has unsupported Flex version {version}; "
-                     f"this build supports {supported['FLEX_OS_VERSION']}. Use stock Flex")
+                     f"this build supports {supported['FLEX_OS_VERSION']} and newer releases "
+                     "with the same startup job. Use stock Flex")
             startup = directory / "etc/init/startup.conf"
             if hashlib.sha256(startup.read_bytes()).hexdigest() != supported["FLEX_STARTUP_SHA256"]:
                 fail(f"Flex partition {number} startup.conf differs from the supported OS")
-            if not (directory / "lib/modules" / supported["FLEX_KERNEL_RELEASE"]).is_dir():
+            modules = directory / "lib/modules"
+            if not trial and not (modules / supported["FLEX_KERNEL_RELEASE"]).is_dir():
                 fail(f"Flex partition {number} is missing the supported kernel modules")
+            if trial and not (modules.is_dir() and any(path.is_dir() for path in modules.iterdir())):
+                fail(f"Flex partition {number} is missing kernel modules")
+            if trial:
+                trials.append(version)
+    for version in trials:
+        print(f"Note: Flex {version} is newer than the validated {supported['FLEX_OS_VERSION']}; "
+              "saved OS changes will use a health-checked trial boot.")
     return supported
 
 

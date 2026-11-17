@@ -28,6 +28,39 @@ saved upper/previous generation untouched and continues on the stock root/startu
 The selected mode remains unchanged: Debug still enables host root. Use the
 original firmware entry for the original boot policy.
 
+Newer releases (OS updates) are trials rather than rejections when the original
+startup job hash is unchanged, the release is strictly newer than the validated
+one, and kernel release/root digest are well formed (`rw_supported` →
+`RW_CONTRACT=trial`). `rw_trial` keys stateful markers by the verified-root digest:
+
+- first boot of a digest writes `os-trial` and applies saved changes;
+- `cros-kit-health.conf` (generated into the compatibility lower) moves the digest
+  to `os-healthy` on `login-prompt-visible`;
+- a boot that finds its own digest still in `os-trial` appends it to `os-rejected`
+  and continues stock; rejected digests stay stock until the file is edited;
+- `unvalidated-os` other than `trial` disables trials; symlinked or non-regular
+  markers fail closed. Older releases and changed startup jobs are never tried.
+
+The installer accepts such a newer highest-priority slot (same startup hash, some
+kernel modules) and prints a note; older or different slots are still refused.
+
+`edits.conf` line edits (`rw_derive`) are recomputed from the verified lower on
+every boot and written into the upper before the overlay mounts. Paths are limited
+to regular files under `/etc`; a missing OS file skips its edit and removes the old
+derived copy, and a path dropped from the rules is returned to the OS
+(`edits.applied`). Invalid rules fail closed (stock boot).
+
+VM evidence (2026-11-17, QEMU Flex 16836.32.0, Debug, private lab notes):
+
+| Check | Result |
+| --- | --- |
+| Validated OS + `edits.conf` (`drop-line` UI USE flag, `append-line` Chrome flags) | **PASS**: derived files from the current lower, flags reach Chrome |
+| Simulated newer OS (ESP contract set to an older validated version/root/kernel) | **PASS**: trial applied, login reached, digest moved to `os-healthy` |
+| Trial digest left in `os-trial` (boot never reached login) | **PASS**: next boot rejects, root stays stock ext2, saved upper untouched |
+| Unit suite (Nix `checks.unit`) | **PASS: 207 tests, 3 environment skips** |
+
+A real A/B update on physical hardware remains untested.
+
 Overlay compatibility is handled separately:
 
 - `xino=on` gives root directories and policy files consistent device identities,
