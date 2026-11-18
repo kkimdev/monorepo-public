@@ -82,6 +82,30 @@ fi
 TMP_QUOTA_GIB=""
 TMP_MOUNT_PENDING=0
 
+# Android 기기를 USB(adb)로 쓰려면 udev 가 노드를 사용자에게 열어 줘야 한다. ChromeOS 의
+# 기본 규칙에는 Google(18d1)만 있어서 Motorola(22b8) 같은 기기가 `no permissions` 로 남는다.
+# 규칙 파일이 다를 때만 다시 쓰고, 바뀌었을 때만 udev 를 다시 읽힌다(멱등).
+ANDROID_ADB_UDEV_RULES_FILE=/etc/udev/rules.d/51-android.rules
+
+configure_android_adb_udev() {
+  local desired
+  desired=$(
+    cat <<'EOF'
+# adb 로 붙는 안드로이드 기기. Crostini 의 기본 노드는 root:root 0644 라 사용자가 열 수 없다.
+SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", MODE="0666"
+SUBSYSTEM=="usb", ATTR{idVendor}=="22b8", MODE="0666"
+EOF
+  )
+  if [ "$(cat "$ANDROID_ADB_UDEV_RULES_FILE" 2>/dev/null || true)" = "$desired" ]; then
+    echo "Android adb udev rules already current."
+    return 0
+  fi
+  printf '%s\n' "$desired" | sudo tee "$ANDROID_ADB_UDEV_RULES_FILE" >/dev/null
+  sudo udevadm control --reload-rules
+  sudo udevadm trigger --subsystem-match=usb
+  echo "Wrote $ANDROID_ADB_UDEV_RULES_FILE (Android adb access)."
+}
+
 configure_disk_backed_tmp() {
   local tmp_subvolume_path=/var/lib/tmp
   local tmp_mount_override_dir=/etc/systemd/system/tmp.mount.d
@@ -160,6 +184,7 @@ EOF
 
 if [ "$BUILD_ONLY" -eq 0 ]; then
   configure_disk_backed_tmp
+  configure_android_adb_udev
   # Required for GPU acceleration access in Crostini.
   sudo usermod -aG render "$USER"
 fi
