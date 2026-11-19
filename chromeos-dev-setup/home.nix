@@ -6,6 +6,8 @@ let
   nixProfileShareDir  = "${config.home.homeDirectory}/.nix-profile/share";
   llmAgentsPkgs       = inputs.llm-agents.packages.${pkgs.stdenv.hostPlatform.system};
   openspecCli         = inputs.openspec.packages.${pkgs.stdenv.hostPlatform.system}.default;
+  # Claude Code plugin whose skills directory is the shared ~/.agents/skills.
+  sharedSkillsPluginDir = ".claude/local-plugins/agents";
   # Claude resets PATH to system directories before opening login links.
   # Provide xdg-open inside its FHS environment, where /usr/bin is visible.
   claudeDesktopWithOpener = llmAgentsPkgs.claude-desktop.override (old: {
@@ -623,6 +625,20 @@ in
       source = "${llmAgentsPkgs.codex}/bin/codex";
     };
 
+    # ~/.agents/skills is the single home of user-scoped skills: Codex and
+    # OpenCode read it directly, and OpenSpec and Orca install there. Claude
+    # Code reads only top-level ~/.claude/skills/<name> entries, so expose the
+    # whole directory as this plugin's skills instead of linking each skill;
+    # added or removed skills follow without rerunning this setup. Claude
+    # lists them as agents:<name>. registerSharedSkillsPlugin loads the plugin.
+    "${sharedSkillsPluginDir}/.claude-plugin/plugin.json".text = builtins.toJSON {
+      name = "agents";
+      description = "User-scoped skills shared with Codex and OpenCode from ~/.agents/skills";
+    };
+    "${sharedSkillsPluginDir}/skills" = {
+      source = config.lib.file.mkOutOfStoreSymlink "${config.home.homeDirectory}/.agents/skills";
+    };
+
     # TODO
     # https://www.reddit.com/r/Nix/comments/zh1803/guide_how_to_have_nix_installed_applications/
   };
@@ -701,38 +717,35 @@ in
       fi
     '';
 
-    # ~/.agents/skills is the single home of user-scoped skills (Codex reads it
-    # directly; OpenSpec and Orca install there). Claude Code reads only
-    # ~/.claude/skills, which it also uses for its own synced skills, so each
-    # shared skill is linked in individually rather than replacing the whole
-    # directory. Links whose shared skill is gone are removed; any other entry
-    # with the same name is left in place with a warning.
-    linkSharedAgentSkills = lib.hm.dag.entryAfter ["installOpenSpecCodexSkills"] ''
-      sharedSkills="$HOME/.agents/skills"
-      claudeSkills="$HOME/.claude/skills"
-      if [ -d "$sharedSkills" ]; then
-        run mkdir -p -- "$claudeSkills"
-        for skillLink in "$claudeSkills"/*; do
-          [ -L "$skillLink" ] && [ ! -e "$skillLink" ] || continue
-          skillName="$(basename -- "$skillLink")"
-          if [ "$(readlink -- "$skillLink")" = "../../.agents/skills/$skillName" ]; then
-            run rm -f -- "$skillLink"
-          fi
-        done
-        for sharedSkill in "$sharedSkills"/*/SKILL.md; do
-          [ -f "$sharedSkill" ] || continue
-          skillName="$(basename -- "$(dirname -- "$sharedSkill")")"
-          skillLink="$claudeSkills/$skillName"
-          linkTarget="../../.agents/skills/$skillName"
-          if [ -L "$skillLink" ] && [ "$(readlink -- "$skillLink")" = "$linkTarget" ]; then
-            continue
-          fi
-          if [ -e "$skillLink" ] || [ -L "$skillLink" ]; then
-            echo "warning: $skillLink exists and is not a link to $sharedSkills/$skillName; leaving it unchanged." >&2
-            continue
-          fi
-          run ln -s -- "$linkTarget" "$skillLink"
-        done
+    # Claude Code loads plugin directories named in CLAUDE_CODE_PLUGIN_DIRS
+    # in place, so the env entry in its user settings is the only change made
+    # to ~/.claude/settings.json; every other setting stays as the user left
+    # it. A different existing value is left in place with a warning.
+    registerSharedSkillsPlugin = lib.hm.dag.entryAfter ["writeBoundary"] ''
+      claudeSettings="$HOME/.claude/settings.json"
+      pluginDir="$HOME/${sharedSkillsPluginDir}"
+      current=""
+      if [ -e "$claudeSettings" ]; then
+        if ! current="$(${pkgs.jq}/bin/jq -r '.env.CLAUDE_CODE_PLUGIN_DIRS // ""' "$claudeSettings")"; then
+          echo "warning: $claudeSettings is not valid JSON; not registering the shared skills plugin." >&2
+          current="invalid"
+        fi
+      fi
+      if [ "$current" = "$pluginDir" ] || [ "$current" = "invalid" ]; then
+        :
+      elif [ -n "$current" ]; then
+        echo "warning: $claudeSettings already sets CLAUDE_CODE_PLUGIN_DIRS=$current; leaving it unchanged." >&2
+      else
+        run mkdir -p -- "$(dirname -- "$claudeSettings")"
+        settingsTemp="$(mktemp "$claudeSettings.XXXXXX")"
+        if [ -e "$claudeSettings" ]; then
+          ${pkgs.jq}/bin/jq --arg dir "$pluginDir" '.env.CLAUDE_CODE_PLUGIN_DIRS = $dir' "$claudeSettings" > "$settingsTemp"
+          chmod --reference="$claudeSettings" -- "$settingsTemp"
+        else
+          ${pkgs.jq}/bin/jq -n --arg dir "$pluginDir" '{env: {CLAUDE_CODE_PLUGIN_DIRS: $dir}}' > "$settingsTemp"
+          chmod 600 -- "$settingsTemp"
+        fi
+        run mv -- "$settingsTemp" "$claudeSettings"
       fi
     '';
 

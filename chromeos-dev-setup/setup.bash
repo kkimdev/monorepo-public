@@ -677,16 +677,19 @@ if [ "$OPENSPEC_SKILL_COUNT" -eq 0 ]; then
   echo "Fix: inspect the Home Manager activation output and rerun cros-setup." >&2
   exit 1
 fi
-for shared_skill_file in "$HOME/.agents/skills"/*/SKILL.md; do
-  [ -f "$shared_skill_file" ] || continue
-  shared_skill_name="$(basename "$(dirname "$shared_skill_file")")"
-  if [ ! -f "$HOME/.claude/skills/$shared_skill_name/SKILL.md" ]; then
-    echo "ERROR: Claude Code cannot see the shared skill $shared_skill_name." >&2
-    echo "Why: Claude Code discovers user-scoped skills only under $HOME/.claude/skills." >&2
-    echo "Fix: inspect the Home Manager activation output and rerun cros-setup." >&2
-    exit 1
-  fi
-done
+SHARED_SKILLS_PLUGIN_DIR="$HOME/.claude/local-plugins/agents"
+if [ ! -f "$SHARED_SKILLS_PLUGIN_DIR/.claude-plugin/plugin.json" ] ||
+   [ "$(readlink -f "$SHARED_SKILLS_PLUGIN_DIR/skills")" != "$(readlink -f "$HOME/.agents/skills")" ]; then
+  echo "ERROR: the Claude Code shared skills plugin does not expose $HOME/.agents/skills." >&2
+  echo "Why: Claude Code reads the shared user-scoped skills only through $SHARED_SKILLS_PLUGIN_DIR." >&2
+  echo "Fix: inspect the Home Manager activation output and rerun cros-setup." >&2
+  exit 1
+fi
+CLAUDE_PLUGIN_DIRS_SETTING="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("env", {}).get("CLAUDE_CODE_PLUGIN_DIRS", ""))' "$HOME/.claude/settings.json" 2>/dev/null || true)"
+if [ "$CLAUDE_PLUGIN_DIRS_SETTING" != "$SHARED_SKILLS_PLUGIN_DIR" ]; then
+  echo "WARNING: Claude Code does not load $SHARED_SKILLS_PLUGIN_DIR (CLAUDE_CODE_PLUGIN_DIRS=${CLAUDE_PLUGIN_DIRS_SETTING:-unset})." >&2
+  echo "Why: ~/.claude/settings.json is user-owned; the activation leaves a different value in place." >&2
+fi
 
 # Verify installation without changing the state of running desktop services.
 if [ ! -x "$HOME/.nix-profile/bin/sommelier-rs" ]; then
