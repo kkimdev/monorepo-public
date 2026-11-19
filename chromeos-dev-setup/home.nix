@@ -628,10 +628,12 @@ in
   };
 
   home.activation = {
-    # Generate and sync every OpenSpec skill into Codex's user scope. The
-    # openspec-* namespace is owned by this activation; other user skills stay
-    # untouched while added or removed OpenSpec workflows follow the package.
-    installOpenSpecCodexSkills = lib.hm.dag.entryAfter ["installPackages"] ''
+    # Generate and sync every OpenSpec skill into Codex's user scope, then
+    # expose the same copies to Claude Code through relative links in its user
+    # skill directory. The openspec-* namespace is owned by this activation;
+    # other user skills stay untouched while added or removed OpenSpec
+    # workflows follow the package.
+    installOpenSpecSkills =lib.hm.dag.entryAfter ["installPackages"] ''
       openspecSkillsDir="$HOME/.agents/skills"
       tempDir="$(mktemp -d)"
       mkdir -p "$openspecSkillsDir"
@@ -669,6 +671,27 @@ in
       done
 
       rm -rf -- "$tempDir"
+
+      # Claude Code reads user skills only from ~/.claude/skills. Replace only
+      # links in the openspec-* namespace; a real directory there is the
+      # user's and is left in place with a warning.
+      claudeSkillsDir="$HOME/.claude/skills"
+      mkdir -p "$claudeSkillsDir"
+      for claudeSkill in "$claudeSkillsDir"/openspec-*; do
+        if [ -L "$claudeSkill" ]; then
+          rm -f -- "$claudeSkill"
+        fi
+      done
+      for installedSkill in "$openspecSkillsDir"/openspec-*; do
+        [ -d "$installedSkill" ] || continue
+        skillName="$(basename "$installedSkill")"
+        claudeSkill="$claudeSkillsDir/$skillName"
+        if [ -e "$claudeSkill" ]; then
+          echo "warning: $claudeSkill exists and is not a link; leaving it unchanged." >&2
+          continue
+        fi
+        ln -s -- "../../.agents/skills/$skillName" "$claudeSkill"
+      done
     '';
 
     # ~/.agents/AGENTS.md is the single user-owned global guidance shared by
