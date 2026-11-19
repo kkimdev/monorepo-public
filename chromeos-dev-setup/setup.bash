@@ -677,10 +677,11 @@ if [ "$OPENSPEC_SKILL_COUNT" -eq 0 ]; then
   echo "Fix: inspect the Home Manager activation output and rerun cros-setup." >&2
   exit 1
 fi
-for openspec_skill_dir in "$HOME/.agents/skills"/openspec-*/; do
-  openspec_skill_name="$(basename "$openspec_skill_dir")"
-  if [ ! -f "$HOME/.claude/skills/$openspec_skill_name/SKILL.md" ]; then
-    echo "ERROR: Claude Code cannot see the OpenSpec skill $openspec_skill_name." >&2
+for shared_skill_file in "$HOME/.agents/skills"/*/SKILL.md; do
+  [ -f "$shared_skill_file" ] || continue
+  shared_skill_name="$(basename "$(dirname "$shared_skill_file")")"
+  if [ ! -f "$HOME/.claude/skills/$shared_skill_name/SKILL.md" ]; then
+    echo "ERROR: Claude Code cannot see the shared skill $shared_skill_name." >&2
     echo "Why: Claude Code discovers user-scoped skills only under $HOME/.claude/skills." >&2
     echo "Fix: inspect the Home Manager activation output and rerun cros-setup." >&2
     exit 1
