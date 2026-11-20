@@ -161,11 +161,11 @@
       },
       "locked": {
         "dir": "nixpkgs/kakaotalk",
-        "lastModified": 1794877220,
-        "narHash": "sha256-d6edNzZMUxlqeaUUZ/GRNgEQENEqYbFpKsbZe4XfZBA=",
+        "lastModified": 1795210783,
+        "narHash": "sha256-cwFXRFhR2FpvKPDRxBVq446E45F12ADFP7Ah13f6pTA=",
         "owner": "kkimdev",
         "repo": "monorepo-public",
-        "rev": "6d7cf4ca8fe315c7f5f15cfab90d919bb3a3a3ac",
+        "rev": "83f300d9e16f7676e02c29a21ea4e0e23b55b35b",
         "type": "github"
       },
       "original": {
@@ -288,11 +288,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1795128591,
-        "narHash": "sha256-yYF3hY5oYwpxFbvMgD3/jDALK7GVK8KuG7rh5DSi4xk=",
+        "lastModified": 1795211301,
+        "narHash": "sha256-Sr95uBXeLs3KIcIr55Dw+BP3aevfaHlOdprdVpC59+U=",
         "owner": "kkimdev",
         "repo": "sommelier-rs",
-        "rev": "43962c52564801d4d11b148d04eab0f49d50dcf9",
+        "rev": "49c73d8fa50e442cc7e296038b3793add0f3d5e5",
         "type": "github"
       },
       "original": {
