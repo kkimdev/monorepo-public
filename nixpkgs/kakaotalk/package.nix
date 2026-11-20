@@ -8,6 +8,7 @@
 , nanum
 , bash
 , curl
+, librsvg
 }:
 
 let
@@ -32,17 +33,22 @@ stdenv.mkDerivation rec {
 
   dontUnpack = true;
 
-  nativeBuildInputs = [ copyDesktopItems ];
+  nativeBuildInputs = [ copyDesktopItems librsvg ];
 
   desktopItems = [
     (makeDesktopItem {
-      name = "kakaotalk";
+      # ChromeOS matches a native Wayland window to a launcher by comparing the
+      # window's app_id with the desktop file ID, not StartupWMClass. Wine's
+      # Wayland driver derives the app_id from the executable name, so the
+      # desktop file must be kakaotalk.exe.desktop (ID "kakaotalk.exe").
+      name = "kakaotalk.exe";
       exec = "kakaotalk %U";
       icon = "kakaotalk";
       desktopName = "KakaoTalk";
       genericName = "Messenger";
       comment = "Where people and the world come to get connected";
       categories = [ "Network" "InstantMessaging" ];
+      # Used by X11/Xwayland window matching.
       startupWMClass = "kakaotalk.exe";
     })
   ];
@@ -58,6 +64,16 @@ stdenv.mkDerivation rec {
     # Install the high-quality SVG icon
     mkdir -p $out/share/icons/hicolor/scalable/apps
     cp ${iconSrc} $out/share/icons/hicolor/scalable/apps/kakaotalk.svg
+
+    # Crostini's garcon prefers PNG icons over the scalable fallback, and the
+    # ChromeOS launcher and shelf look best with raster sizes available. Render
+    # the same fetched SVG at build time instead of committing binaries.
+    for size in 48 64 128 256; do
+      mkdir -p $out/share/icons/hicolor/''${size}x''${size}/apps
+      rsvg-convert --width "$size" --height "$size" \
+        --output "$out/share/icons/hicolor/''${size}x''${size}/apps/kakaotalk.png" \
+        ${iconSrc}
+    done
 
     runHook postInstall
   '';

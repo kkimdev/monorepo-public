@@ -81,13 +81,24 @@ On ChromeOS (Crostini), the system launcher daemon (`garcon`) only indexes stand
    nix-env -f default.nix -iA kakaotalk
    ```
 
-2. **Symlink the desktop entry and icon** to your user's local share directory:
+2. **Symlink the desktop entry and install the icons** into your user's local share directories:
    ```bash
-   mkdir -p ~/.local/share/applications ~/.local/share/icons/hicolor/scalable/apps
-   ln -sf ~/.nix-profile/share/applications/kakaotalk.desktop ~/.local/share/applications/
-   ln -sf ~/.nix-profile/share/icons/hicolor/scalable/apps/kakaotalk.svg ~/.local/share/icons/hicolor/scalable/apps/
+   mkdir -p ~/.local/share/applications ~/.local/share/icons/hicolor
+   ln -sf ~/.nix-profile/share/applications/kakaotalk.exe.desktop ~/.local/share/applications/
+   cp -rL ~/.nix-profile/share/icons/hicolor/. ~/.local/share/icons/hicolor/
    ```
    *Within a few seconds, the KakaoTalk icon will automatically appear in your ChromeOS search launcher.*
+
+The desktop file is deliberately named `kakaotalk.exe.desktop`. ChromeOS matches a
+native Wayland window to a launcher by comparing the window's `app_id` with the
+desktop file ID; `StartupWMClass` is only used for X11/Xwayland windows. Wine's
+Wayland driver derives the `app_id` from the executable name, so KakaoTalk
+reports `kakaotalk.exe`. The matching desktop file ID is therefore
+`kakaotalk.exe`, and `StartupWMClass=kakaotalk.exe` keeps X11 matching intact.
+
+The package also renders its fetched SVG logo into PNG icons
+(`48x48`–`256x256`). Garcon, which exports apps and icons to ChromeOS, prefers
+PNG over the scalable SVG fallback.
 
 ---
 
