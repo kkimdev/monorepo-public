@@ -161,11 +161,11 @@
       },
       "locked": {
         "dir": "nixpkgs/kakaotalk",
-        "lastModified": 1795210783,
-        "narHash": "sha256-cwFXRFhR2FpvKPDRxBVq446E45F12ADFP7Ah13f6pTA=",
+        "lastModified": 1795216256,
+        "narHash": "sha256-m2lECOxJ+iQJLiIl2D8ixA5jpjRtUUQ7hO8FsTC1cJM=",
         "owner": "kkimdev",
         "repo": "monorepo-public",
-        "rev": "83f300d9e16f7676e02c29a21ea4e0e23b55b35b",
+        "rev": "5dc4fb51218313692d7c398dddde58829e917c76",
         "type": "github"
       },
       "original": {
