@@ -50,6 +50,27 @@ wine KakaoTalk_Setup.exe /S
 ```
 This performs a full, quiet installation of KakaoTalk into the prefix without requiring any user intervention, making the launch process feel native.
 
+### 6. Wine System Tray Window
+Wine's `explorer.exe` implements the Windows notification area as its own
+top-level window (class `Shell_TrayWnd`) whenever an application registers a
+tray icon. On ChromeOS there is no Win32/XEmbed tray host, so that window is
+exported to the Wayland compositor like any other window. It has no title, is
+about 166x52 pixels, and belongs to `explorer.exe`, whose `app_id` has no
+matching desktop entry, so it appears as a stray window with a generic icon.
+
+The launcher sets `HKCU\Software\Wine\Explorer\ShowSystray` (`REG_DWORD 0`), so
+Wine keeps the tray icon registrations but does not display the standalone tray
+window. Because `explorer.exe` reads the value only at startup, the launcher
+also restarts `explorer.exe` once when the persisted value is missing, which
+covers existing prefixes and the explorer that Wine may spawn while the
+registry write is still in flight.
+
+Trade-off: there is no visible tray icon. Closing the main window with its X
+button quits KakaoTalk, and closing it to the tray (if enabled in KakaoTalk's
+settings) leaves it running but hidden. In both cases launching `kakaotalk`
+again restores the main window: a new instance is started, or the single
+running instance shows its hidden window again.
+
 ---
 
 ## Local Usage
