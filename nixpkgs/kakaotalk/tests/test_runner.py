@@ -39,7 +39,7 @@ elif name == "wine":
             exe.parent.mkdir(parents=True)
             exe.touch()
         sys.exit(status)
-    elif args[0] != "reg" and not Path(args[0]).is_file():
+    elif args[0] not in ("reg", "taskkill") and not Path(args[0]).is_file():
         raise SystemExit("Attempted to launch absent KakaoTalk")
 elif name == "pgrep":
     sys.exit(1)
@@ -131,6 +131,35 @@ class KakaoTalkRunnerTests(unittest.TestCase):
         self.assertFalse(any(call[0] in ("curl", "wineboot", "regedit") for call in calls))
         self.assertEqual(self.exe.read_text(), "existing installation")
         self.assertEqual(self.launches(calls), [["wine", str(self.exe)]])
+
+    def test_hides_wine_standalone_system_tray_window(self):
+        self.exe.parent.mkdir(parents=True)
+        self.exe.write_text("existing installation")
+        result, calls = self.run_launcher()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tray_settings = [
+            call for call in calls
+            if call[:4] == ["wine", "reg", "add", "HKCU\\Software\\Wine\\Explorer"]
+        ]
+        self.assertEqual(len(tray_settings), 1)
+        call = tray_settings[0]
+        self.assertEqual(call[call.index("/v") + 1], "ShowSystray")
+        self.assertEqual(call[call.index("/t") + 1], "REG_DWORD")
+        self.assertEqual(call[call.index("/d") + 1], "0")
+
+    def test_persisted_tray_setting_does_not_restart_explorer(self):
+        self.exe.parent.mkdir(parents=True)
+        self.exe.write_text("existing installation")
+        prefix = self.data / "kakaotalk"
+        prefix.mkdir(parents=True, exist_ok=True)
+        (prefix / "user.reg").write_text(
+            '[Software\\\\Wine\\\\Explorer] 0\n'
+            '"ShowSystray"=dword:00000000\n'
+        )
+        result, calls = self.run_launcher()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(any(call[:3] == ["wine", "reg", "add"] for call in calls))
+        self.assertFalse(any(call[:2] == ["wine", "taskkill"] for call in calls))
 
     def test_download_failure_preserves_uninitialized_prefix(self):
         result, calls = self.run_launcher(KAKAO_TEST_DOWNLOAD_EXIT="22")

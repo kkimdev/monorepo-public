@@ -125,6 +125,25 @@ else
     "$WINE" reg delete "HKCU\\Software\\Wine\\Drivers" /v Graphics /f >/dev/null 2>&1 || true
 fi
 
+# Wine's explorer implements the system tray as a small standalone top-level
+# window (class Shell_TrayWnd) whenever a Windows application registers a tray
+# icon. On ChromeOS there is no Win32/XEmbed tray host, so that window shows up
+# as a stray ~166x52 window in the shelf with a generic icon: it is owned by
+# explorer.exe, whose app_id has no matching desktop entry. Hide it. The tray
+# icon itself still exists inside Wine, and relaunching kakaotalk restores a
+# main window that was closed to the tray.
+#
+# ShowSystray is a REG_DWORD read by explorer at startup. A shell that was
+# started before this setting existed (an existing prefix, or the explorer Wine
+# spawns while the registry write below is still in flight) keeps showing the
+# window, so restart it once when the persisted value is not there yet.
+user_reg="$WINEPREFIX/user.reg"
+if [[ ! -f $user_reg || "$(<"$user_reg")" != *'"ShowSystray"=dword:00000000'* ]]; then
+    "$WINE" reg add "HKCU\\Software\\Wine\\Explorer" /v ShowSystray /t REG_DWORD /d 0 /f >/dev/null 2>&1 || true
+    # The next Wine process starts a fresh explorer that reads the new value.
+    "$WINE" taskkill /f /im explorer.exe >/dev/null 2>&1 || true
+fi
+
 # Start KakaoTalk
 echo "Starting KakaoTalk..."
 exec "$WINE" "$WINE_EXE" "$@"
