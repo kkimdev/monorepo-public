@@ -18,8 +18,9 @@ let
   # Temporary package fix while https://github.com/stablyai/orca/pull/29172
   # (https://github.com/stablyai/orca/issues/29171) awaits an upstream release.
   # Match Electron's native Wayland app ID and X11 class to orca-ide.desktop.
-  # Keep keyboard and Copy on Select copies on Orca's focused Wayland connection in Crostini.
-  # Remove the native-copy patch after https://github.com/stablyai/orca/pull/29377 ships.
+  # Keep keyboard, Copy on Select and copy-button copies on Orca's focused Wayland
+  # connection in Crostini. Remove the terminal native-copy routes after
+  # https://github.com/stablyai/orca/pull/29377 ships; it does not cover copy buttons.
   orcaWithDesktopIdentity = llmAgentsPkgs.orca.overrideAttrs (old: {
     postFixup = (old.postFixup or "") + ''
       ${pkgs.python3}/bin/python3 ${./patch-orca.py} \

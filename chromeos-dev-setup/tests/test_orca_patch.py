@@ -1,4 +1,4 @@
-"""Check ASAR integrity and execute the patched clipboard helper in Node.
+"""Check ASAR integrity and execute the patched clipboard routes in Node.
 
 These fixtures require neither a downloaded Orca package nor a running GUI.
 """
@@ -93,7 +93,7 @@ class AsarPatchTests(unittest.TestCase):
             parent["files"][parts[-1]] = entry
         self.archive.write_bytes(encode_archive(header, content))
         self.patches = ((
-            "TestCopy-", hashlib.sha256(self.original_asset).hexdigest(),
+            "out/renderer/assets/TestCopy-", hashlib.sha256(self.original_asset).hexdigest(),
             (("copyOriginal(selection)", "await nativeCopySelection(selection)"),),
         ),)
         return header, bytes(content)
@@ -152,13 +152,15 @@ class AsarPatchTests(unittest.TestCase):
 
     def test_unknown_second_asset_fails_before_any_packed_or_unpacked_write(self):
         for unpacked in (False, True):
-            with self.subTest(unpacked=unpacked):
-                self.fixture(unpacked)
-                before = self.snapshot()
-                unknown = ("UnknownCopy-", "0" * 64, (("old", "new"),))
-                with self.assertRaisesRegex(AssertionError, "Re-evaluate Orca 1.4.255"):
-                    ORCA_PATCH.patch(self.archive, self.desktop, self.patches + (unknown,))
-                self.assertEqual(self.snapshot(), before)
+            # Cover both an unknown name and a directory absent from the archive.
+            for prefix in ("out/renderer/assets/UnknownCopy-", "out/preload/index"):
+                with self.subTest(unpacked=unpacked, prefix=prefix):
+                    self.fixture(unpacked)
+                    before = self.snapshot()
+                    unknown = (prefix, "0" * 64, (("old", "new"),))
+                    with self.assertRaisesRegex(AssertionError, "Re-evaluate Orca 1.4.255"):
+                        ORCA_PATCH.patch(self.archive, self.desktop, self.patches + (unknown,))
+                    self.assertEqual(self.snapshot(), before)
 
     def test_invalid_desktop_fails_after_asset_preflight_without_writing(self):
         self.fixture(unpacked=True)
@@ -273,6 +275,106 @@ function fixture({platform='linux', displayServer='wayland', focused=true,
 """
 
 
+NODE_WRITER = r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const writer = process.argv[1];
+
+function fixture({platform='linux', displayServer='wayland', invoke}={}) {
+  const calls = {invoke: [], send: []};
+  const listeners = [];
+  const timers = new Map();
+  let nextTimer = 0;
+  const document = {
+    addEventListener(type, listener, capture) {
+      assert.deepEqual([type, capture], ['copy', true]);
+      listeners.push(listener);
+    },
+    removeEventListener(type, listener, capture) {
+      assert.deepEqual([type, capture], ['copy', true]);
+      const index = listeners.indexOf(listener);
+      if (index >= 0) listeners.splice(index, 1);
+    },
+  };
+  // Mimic one trusted copy event reaching the document capture listeners.
+  function dispatchCopy() {
+    const result = {data: {}, prevented: false, stopped: false};
+    const event = {
+      clipboardData: {setData(type, value) { result.data[type] = value; }},
+      preventDefault() { result.prevented = true; },
+      stopImmediatePropagation() { result.stopped = true; },
+    };
+    for (const listener of [...listeners]) {
+      listener(event);
+      if (result.stopped) break;
+    }
+    return result;
+  }
+  const electron = {ipcRenderer: {
+    invoke(...args) { calls.invoke.push(args); return invoke ? invoke(...args) : Promise.resolve(); },
+    send(...args) { calls.send.push(args); },
+  }};
+  const api = vm.runInNewContext(`({${writer}})`, {
+    electron, document,
+    platformApi: {get: () => ({platform, displayServer})},
+    setTimeout(callback, delay, ...args) { timers.set(++nextTimer, () => callback(...args)); return nextTimer; },
+    clearTimeout(id) { timers.delete(id); },
+  });
+  const expire = () => { for (const [id, callback] of [...timers]) { timers.delete(id); callback(); } };
+  return {api, calls, listeners, timers, dispatchCopy, expire};
+}
+
+(async () => {
+  const text = 'line one\n\tline two\u2603';
+
+  // Wayland copies answer the native copy command and leave the writer unused.
+  const native = fixture();
+  const copied = native.api.writeClipboardText(text);
+  assert.deepEqual(native.calls, {invoke: [], send: [['ui:performNativeSelectionAction', 'copy']]});
+  assert.deepEqual(native.dispatchCopy(), {data: {'text/plain': text}, prevented: true, stopped: true});
+  assert.equal(await copied, undefined);
+  assert.equal(native.listeners.length, 0);
+  assert.equal(native.timers.size, 0);
+  assert.deepEqual(native.dispatchCopy(), {data: {}, prevented: false, stopped: false});
+
+  // Overlapping writes each consume exactly one copy event, in order.
+  const overlap = fixture();
+  const first = overlap.api.writeClipboardText('first');
+  const second = overlap.api.writeClipboardText('second');
+  assert.deepEqual(overlap.dispatchCopy().data, {'text/plain': 'first'});
+  assert.deepEqual(overlap.dispatchCopy().data, {'text/plain': 'second'});
+  await Promise.all([first, second]);
+  assert.equal(overlap.calls.invoke.length, 0);
+
+  // Without a copy event the original writer runs, and its result propagates.
+  for (const outcome of ['resolve', 'reject']) {
+    const failure = new Error('writer failed');
+    const missed = fixture({invoke: () => outcome === 'resolve' ? Promise.resolve('written') : Promise.reject(failure)});
+    const pending = missed.api.writeClipboardText(text);
+    assert.equal(missed.calls.invoke.length, 0);
+    missed.expire();
+    assert.deepEqual(missed.calls.invoke, [['clipboard:writeText', text]]);
+    assert.equal(missed.listeners.length, 0);
+    if (outcome === 'resolve') assert.equal(await pending, 'written');
+    else await assert.rejects(pending, error => error === failure);
+    assert.deepEqual(missed.dispatchCopy().data, {});
+  }
+
+  // Other platforms and invalid input keep the original writer and its result.
+  for (const [options, value] of [
+    [{platform: 'darwin', displayServer: null}, text], [{platform: 'win32', displayServer: null}, text],
+    [{displayServer: 'x11'}, text], [{}, 42],
+  ]) {
+    const original = fixture({...options, invoke: () => Promise.resolve('original')});
+    assert.equal(await original.api.writeClipboardText(value), 'original');
+    assert.deepEqual(original.calls, {invoke: [['clipboard:writeText', value]], send: []});
+    assert.equal(original.listeners.length, 0);
+    assert.equal(original.timers.size, 0);
+  }
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+
+
 @unittest.skipUnless(shutil.which("node"), "Node is required to execute Orca clipboard helper")
 class ClipboardBehaviorTests(unittest.TestCase):
     def test_actual_patched_helper_native_fallback_async_and_selection_behavior(self):
@@ -283,6 +385,16 @@ class ClipboardBehaviorTests(unittest.TestCase):
                 "helper": ORCA_PATCH.PATCHED_HELPER,
                 "standalone": ORCA_PATCH.PATCHES[1][2][0][1],
             })],
+            capture_output=True, text=True, timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_actual_patched_writer_native_copy_fallback_and_platform_behavior(self):
+        writer_route = ORCA_PATCH.PATCHES[2]
+        self.assertEqual(writer_route[0], "out/preload/index")
+        self.assertEqual(writer_route[2], ((ORCA_PATCH.ORIGINAL_WRITER, ORCA_PATCH.PATCHED_WRITER),))
+        result = subprocess.run(
+            ["node", "-e", NODE_WRITER, ORCA_PATCH.PATCHED_WRITER],
             capture_output=True, text=True, timeout=15,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

@@ -4,7 +4,14 @@
 Fingerprints cover the renderer behavior reviewed for Orca 1.4.259. A future
 release with changed assets must be reviewed before it can replace an installed
 package. Unchanged assets do not require a hard-coded application version.
-Remove the clipboard workaround after stablyai/orca#29377 is released.
+Remove the terminal routes after stablyai/orca#29377 is released.
+
+Copy buttons (chat code blocks and messages, Markdown code blocks, paths) call
+the preload's writeClipboardText. On Wayland Orca publishes that text from a
+helper process, which does not reach the ChromeOS clipboard. The patched writer
+answers Electron's native copy command with the text instead, and keeps the
+original writer when no copy event arrives. stablyai/orca#29377 does not cover
+these programmatic writes.
 """
 
 import hashlib
@@ -27,19 +34,51 @@ PATCHED_HELPER = ORIGINAL_HELPER.replace(
     "e.textarea.ownerDocument.activeElement===e.textarea?"
     "window.api.ui.performNativeSelectionAction(`copy`):t(r))",
 )
+ORIGINAL_WRITER = (
+    'writeClipboardText: (text) => electron.ipcRenderer.invoke("clipboard:writeText", text)'
+)
+# A native copy command dispatches a trusted copy event even without a DOM
+# selection. Supplying the text there leaves focus and selection untouched.
+PATCHED_WRITER = """writeClipboardText: (text) => {
+		const write = () => electron.ipcRenderer.invoke("clipboard:writeText", text);
+		const { platform, displayServer } = platformApi.get();
+		if (typeof text !== "string" || platform !== "linux" || displayServer !== "wayland") return write();
+		return new Promise((resolve, reject) => {
+			const copy = (event) => {
+				event.clipboardData.setData("text/plain", text);
+				event.preventDefault();
+				event.stopImmediatePropagation();
+				finish(true);
+			};
+			const finish = (copied) => {
+				clearTimeout(timer);
+				document.removeEventListener("copy", copy, true);
+				copied ? resolve() : write().then(resolve, reject);
+			};
+			const timer = setTimeout(finish, 1000, false);
+			document.addEventListener("copy", copy, true);
+			electron.ipcRenderer.send("ui:performNativeSelectionAction", "copy");
+		});
+	}"""
+# Each prefix is an archive path whose final component omits the build hash.
 PATCHES = (
     (
-        "terminal-right-click-paste-gesture-",
+        "out/renderer/assets/terminal-right-click-paste-gesture-",
         "d7cebe191961994143a7c5db46d8dbb072603f2c0862e3070254e9bf138e28a2",
         ((ORIGINAL_HELPER, PATCHED_HELPER),),
     ),
     (
-        "open-standalone-terminal-",
+        "out/renderer/assets/open-standalone-terminal-",
         "eb4121c560094253f5981de7fe4f076800ec12008228ae2618added9f7283937",
         ((
             "window.api.ui.writeTerminalClipboardText(i).catch(()=>void 0)",
             "E({terminal:t,writeClipboardText:window.api.ui.writeTerminalClipboardText}).catch(()=>void 0)",
         ),),
+    ),
+    (
+        "out/preload/index",
+        "87121ed9d94ccc089ec307b5df612cd39d76a8c7dfd11dcb338815705a599856",
+        ((ORIGINAL_WRITER, PATCHED_WRITER),),
     ),
 )
 
@@ -97,18 +136,21 @@ def patch(archive, desktop, patches=PATCHES):
         replacement = (json.dumps(metadata, separators=(",", ":")) + "\n").encode()
         replace_entry(package_entry, "package.json", replacement)
 
-    assets = header["files"]["out"]["files"]["renderer"]["files"]["assets"]["files"]
-    for prefix, expected_hash, routes in patches:
+    for path_prefix, expected_hash, routes in patches:
+        directory, _, prefix = path_prefix.rpartition("/")
+        files = header
+        for part in directory.split("/"):
+            files = files["files"].get(part, {"files": {}})
         matches = [
-            (name, entry) for name, entry in assets.items()
+            (name, entry) for name, entry in files["files"].items()
             if name.startswith(prefix) and name.endswith(".js")
             and entry.get("integrity", {}).get("hash") == expected_hash
         ]
         assert len(matches) == 1, (
-            f"Re-evaluate Orca {metadata['version']} clipboard compatibility: {prefix}"
+            f"Re-evaluate Orca {metadata['version']} clipboard compatibility: {path_prefix}"
         )
         name, entry = matches[0]
-        relative = Path("out/renderer/assets") / name
+        relative = Path(directory) / name
         original = read_entry(entry, relative)
         assert hashlib.sha256(original).hexdigest() == expected_hash, f"Unexpected asset: {name}"
         text = original.decode()
@@ -137,7 +179,7 @@ def patch(archive, desktop, patches=PATCHES):
     archive.write_bytes(struct.pack("<II", 4, len(header_pickle)) + header_pickle + content + appended)
     desktop.chmod(desktop.stat().st_mode | 0o200)
     desktop.write_text("".join(lines))
-    print(f"Patched Orca {metadata['version']}: desktop identity and focused native clipboard")
+    print(f"Patched Orca {metadata['version']}: desktop identity and native clipboard copies")
 
 
 if __name__ == "__main__":
