@@ -11,6 +11,7 @@ import unittest
 RUNNER = Path(__file__).resolve().parents[1] / "kakaotalk-runner"
 BASH = shutil.which("bash")
 INSTALLER_URL = "https://example.invalid/KakaoTalk_Setup.exe"
+CA_BUNDLE = "/test/ca bundle.crt"
 
 STUB = r'''#!/usr/bin/python3
 import json
@@ -27,6 +28,19 @@ if name == "curl":
     target = Path(args[args.index("--output") + 1])
     target.write_bytes(b"test installer")
     sys.exit(int(os.environ.get("KAKAO_TEST_DOWNLOAD_EXIT", "0")))
+if name == "osslsigncode":
+    if not Path(args[args.index("-in") + 1]).is_file():
+        raise SystemExit("Installer was not downloaded before verification")
+    # Mirrors osslsigncode 2.x: the primary signer precedes its CA chain.
+    print("Signature Index: 0  (Primary Signature)")
+    print("Signer's certificate:")
+    print("\t------------------")
+    print("\tSigner #0:")
+    print("\t\tSubject: " + os.environ.get("KAKAO_TEST_SIGNER", "CN=Kakao Corp.,O=Kakao Corp.,L=Jeju-si,ST=Jeju-do,C=KR"))
+    print("\t\tIssuer : CN=Test Code Signing CA,O=Test CA,C=US")
+    print("Timestamp verified using:")
+    print("\t\tSubject: CN=Test Root,O=Kakao Corp.,C=KR")
+    sys.exit(int(os.environ.get("KAKAO_TEST_VERIFY_EXIT", "0")))
 if name == "wineboot":
     (prefix / "drive_c/users/test").mkdir(parents=True)
 elif name == "wine":
@@ -59,7 +73,7 @@ class KakaoTalkRunnerTests(unittest.TestCase):
         driver = self.bin / "test-driver"
         driver.write_text(STUB)
         driver.chmod(0o755)
-        for command in ("wine", "wineboot", "regedit", "curl", "pgrep", "sleep"):
+        for command in ("wine", "wineboot", "regedit", "curl", "osslsigncode", "pgrep", "sleep"):
             (self.bin / command).symlink_to(driver)
         self.tmp = self.root / "temporary downloads"
         self.tmp.mkdir()
@@ -76,6 +90,8 @@ class KakaoTalkRunnerTests(unittest.TestCase):
             "bash": str(Path(BASH).parent.parent),
             "wine": str(self.bin.parent),
             "curl": str(self.bin.parent),
+            "osslsigncode": str(self.bin.parent),
+            "caBundle": CA_BUNDLE,
             "nanum": str(fonts.parent.parent),
             "installerUrl": INSTALLER_URL,
         }.items():
@@ -128,7 +144,7 @@ class KakaoTalkRunnerTests(unittest.TestCase):
         self.exe.write_text("existing installation")
         result, calls = self.run_launcher()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(any(call[0] in ("curl", "wineboot", "regedit") for call in calls))
+        self.assertFalse(any(call[0] in ("curl", "osslsigncode", "wineboot", "regedit") for call in calls))
         self.assertEqual(self.exe.read_text(), "existing installation")
         self.assertEqual(self.launches(calls), [["wine", str(self.exe)]])
 
@@ -166,6 +182,44 @@ class KakaoTalkRunnerTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual([call[0] for call in calls], ["curl"])
         self.assertFalse((self.data / "kakaotalk").exists())
+
+    def test_installer_signature_is_verified_after_download_before_prefix_initialization(self):
+        result, calls = self.run_launcher()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        commands = [call[0] for call in calls]
+        self.assertLess(commands.index("curl"), commands.index("osslsigncode"))
+        self.assertLess(commands.index("osslsigncode"), commands.index("wineboot"))
+        download = calls[commands.index("curl")]
+        verify = calls[commands.index("osslsigncode")]
+        self.assertEqual(verify[1], "verify")
+        self.assertEqual(verify[verify.index("-CAfile") + 1], CA_BUNDLE)
+        self.assertEqual(verify[verify.index("-TSA-CAfile") + 1], CA_BUNDLE)
+        self.assertEqual(verify[verify.index("-in") + 1], download[download.index("--output") + 1])
+        self.assertNotIn("-ignore-crl", verify)
+
+    def assert_rejected_before_prefix(self, result, calls):
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual([call[0] for call in calls], ["curl", "osslsigncode"])
+        self.assertFalse((self.data / "kakaotalk").exists())
+        self.assertIn("nothing was installed", result.stderr)
+
+    def test_invalid_signature_is_not_installed(self):
+        result, calls = self.run_launcher(KAKAO_TEST_VERIFY_EXIT="1")
+        self.assert_rejected_before_prefix(result, calls)
+        self.assertIn("did not verify", result.stderr)
+
+    def test_valid_signature_from_another_signer_is_not_installed(self):
+        for subject in (
+            "CN=Kakao Corp.,O=Other Corp.,C=KR",
+            "CN=Example,O=Kakao Corp. Imitation,C=KR",
+            "CN=Kakao Corp.,O=Kakao Corp.,C=US",
+            "",
+        ):
+            with self.subTest(subject=subject):
+                self.log.unlink(missing_ok=True)
+                result, calls = self.run_launcher(KAKAO_TEST_SIGNER=subject)
+                self.assert_rejected_before_prefix(result, calls)
+                self.assertIn("not Kakao Corp.", result.stderr)
 
     def test_failed_installer_is_not_launched(self):
         result, calls = self.run_launcher(KAKAO_TEST_INSTALL_EXIT="7")

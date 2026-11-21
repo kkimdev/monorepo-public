@@ -6,6 +6,13 @@ The first launch downloads the latest installer from Kakao over HTTPS; internet
 access is required. Installed prefixes skip the download. The package version
 tracks the launcher, not the downloaded application.
 
+Kakao replaces the installer at the same URL on every release, so it is not
+pinned by hash. Instead, the launcher runs it only after `osslsigncode` verifies
+its Authenticode signature against the `cacert` trust store, including
+revocation, and the signer is `O=Kakao Corp., C=KR`. KakaoTalk then updates
+itself inside the prefix, so the installed application is user state, like a
+browser profile: it is not rolled back with Nix generations.
+
 ## Technical Details
 
 ### 1. Isolated Wine Environment

@@ -8,6 +8,8 @@
 , nanum
 , bash
 , curl
+, osslsigncode
+, cacert
 , librsvg
 }:
 
@@ -21,7 +23,9 @@ let
   wine = wineWow64Packages.stable;
 
   runner = replaceVars ./kakaotalk-runner {
-    inherit wine nanum bash curl;
+    inherit wine nanum bash curl osslsigncode;
+    # Trust anchors for the installer's Authenticode and timestamp chains.
+    caBundle = "${cacert}/etc/ssl/certs/ca-bundle.crt";
     # Kakao overwrites this URL on release. Fetch only on first launch so a
     # vendor update cannot break an otherwise locked Home Manager build.
     installerUrl = "https://lk.kakaocdn.net/talkpc/talk/win32/x64/KakaoTalk_Setup.exe";

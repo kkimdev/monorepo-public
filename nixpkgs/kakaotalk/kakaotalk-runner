@@ -56,6 +56,24 @@ if [[ ! -f "$WINE_EXE" ]]; then
     "@curl@/bin/curl" --fail --location --proto '=https' --proto-redir '=https' \
         --retry 2 --connect-timeout 30 --output "$installer" "@installerUrl@"
 
+    # HTTPS only proves which server sent the bytes. Before Wine executes the
+    # installer, require a valid Authenticode signature that chains to a public
+    # CA (with revocation checked) and names Kakao Corp. as its signer.
+    echo "Verifying the installer's Kakao Corp. code signature..."
+    if ! verification=$("@osslsigncode@/bin/osslsigncode" verify \
+            -CAfile "@caBundle@" -TSA-CAfile "@caBundle@" -in "$installer" 2>&1); then
+        printf '%s\n' "$verification" >&2
+        echo "ERROR: the KakaoTalk installer signature did not verify; nothing was installed." >&2
+        exit 1
+    fi
+    signer=$(printf '%s\n' "$verification" | awk '
+        /^Signer.s certificate:/ { found = 1 }
+        found && /Subject:/ { sub(/^[[:space:]]*Subject: /, ""); print; exit }')
+    if [[ ",$signer," != *",O=Kakao Corp.,"* || ",$signer," != *",C=KR,"* ]]; then
+        echo "ERROR: the KakaoTalk installer is signed by '${signer:-nobody}', not Kakao Corp.; nothing was installed." >&2
+        exit 1
+    fi
+
     echo "Initializing isolated Wine prefix in $WINEPREFIX..."
     "$WINEBOOT" --init
 
