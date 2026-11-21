@@ -18,9 +18,8 @@ let
   # Temporary package fix while https://github.com/stablyai/orca/pull/29172
   # (https://github.com/stablyai/orca/issues/29171) awaits an upstream release.
   # Match Electron's native Wayland app ID and X11 class to orca-ide.desktop.
-  # Keep keyboard, Copy on Select and copy-button copies on Orca's focused Wayland
-  # connection in Crostini. Remove the terminal native-copy routes after
-  # https://github.com/stablyai/orca/pull/29377 ships; it does not cover copy buttons.
+  # Copies need no patch: sommelier-rs offers ext-data-control-v1 (0.4.1+),
+  # which Orca's clipboard helper uses to reach the ChromeOS clipboard.
   orcaWithDesktopIdentity = llmAgentsPkgs.orca.overrideAttrs (old: {
     postFixup = (old.postFixup or "") + ''
       ${pkgs.python3}/bin/python3 ${./patch-orca.py} \

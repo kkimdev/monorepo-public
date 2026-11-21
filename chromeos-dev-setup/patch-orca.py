@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
-"""Keep Crostini native copies and desktop identity on the upstream Orca package.
+"""Keep the desktop identity of the upstream Orca package on Crostini.
 
-Fingerprints cover the renderer behavior reviewed for Orca 1.4.259. A future
-release with changed assets must be reviewed before it can replace an installed
-package. Unchanged assets do not require a hard-coded application version.
-Remove the terminal routes after stablyai/orca#29377 is released.
+Electron's native Wayland app ID and X11 class must match orca-ide.desktop.
+Remove this after stablyai/orca#29172 is released.
 
-Copy buttons (chat code blocks and messages, Markdown code blocks, paths) call
-the preload's writeClipboardText. On Wayland Orca publishes that text from a
-helper process, which does not reach the ChromeOS clipboard. The patched writer
-answers Electron's native copy command with the text instead, and keeps the
-original writer when no copy event arrives. stablyai/orca#29377 does not cover
-these programmatic writes.
+Copies need no patch: Orca publishes every programmatic copy (copy buttons,
+terminal copies, OSC 52) through its orca-wayland-clipboard helper, which
+reaches the ChromeOS clipboard through sommelier-rs's ext-data-control-v1.
+
+PATCHES lists reviewed asset rewrites, each pinned to its asset's
+fingerprint, so a future release with changed assets must be reviewed
+before it replaces an installed package; there are none now.
 """
 
 import hashlib
@@ -21,66 +20,9 @@ import struct
 import sys
 
 
-ORIGINAL_HELPER = (
-    "async function Jv({terminal:e,writeClipboardText:t,clearSelectionOnSuccess:n=!1})"
-    "{let r=Zp(e);return r?(await t(r),n&&e.clearSelection(),!0):!1}"
-)
-# Native IPC has no delivery acknowledgment. Keep clear-on-success copies on
-# their awaited writer so selection cannot disappear before Electron reads it.
-PATCHED_HELPER = ORIGINAL_HELPER.replace(
-    "await t(r)",
-    "await(!n&&window.api.platform.get().platform===`linux`&&"
-    "window.api.platform.get().displayServer===`wayland`&&e.textarea&&"
-    "e.textarea.ownerDocument.activeElement===e.textarea?"
-    "window.api.ui.performNativeSelectionAction(`copy`):t(r))",
-)
-ORIGINAL_WRITER = (
-    'writeClipboardText: (text) => electron.ipcRenderer.invoke("clipboard:writeText", text)'
-)
-# A native copy command dispatches a trusted copy event even without a DOM
-# selection. Supplying the text there leaves focus and selection untouched.
-PATCHED_WRITER = """writeClipboardText: (text) => {
-		const write = () => electron.ipcRenderer.invoke("clipboard:writeText", text);
-		const { platform, displayServer } = platformApi.get();
-		if (typeof text !== "string" || platform !== "linux" || displayServer !== "wayland") return write();
-		return new Promise((resolve, reject) => {
-			const copy = (event) => {
-				event.clipboardData.setData("text/plain", text);
-				event.preventDefault();
-				event.stopImmediatePropagation();
-				finish(true);
-			};
-			const finish = (copied) => {
-				clearTimeout(timer);
-				document.removeEventListener("copy", copy, true);
-				copied ? resolve() : write().then(resolve, reject);
-			};
-			const timer = setTimeout(finish, 1000, false);
-			document.addEventListener("copy", copy, true);
-			electron.ipcRenderer.send("ui:performNativeSelectionAction", "copy");
-		});
-	}"""
-# Each prefix is an archive path whose final component omits the build hash.
-PATCHES = (
-    (
-        "out/renderer/assets/terminal-right-click-paste-gesture-",
-        "d7cebe191961994143a7c5db46d8dbb072603f2c0862e3070254e9bf138e28a2",
-        ((ORIGINAL_HELPER, PATCHED_HELPER),),
-    ),
-    (
-        "out/renderer/assets/open-standalone-terminal-",
-        "eb4121c560094253f5981de7fe4f076800ec12008228ae2618added9f7283937",
-        ((
-            "window.api.ui.writeTerminalClipboardText(i).catch(()=>void 0)",
-            "E({terminal:t,writeClipboardText:window.api.ui.writeTerminalClipboardText}).catch(()=>void 0)",
-        ),),
-    ),
-    (
-        "out/preload/index",
-        "87121ed9d94ccc089ec307b5df612cd39d76a8c7dfd11dcb338815705a599856",
-        ((ORIGINAL_WRITER, PATCHED_WRITER),),
-    ),
-)
+# Each entry is an archive path prefix whose final component omits the build
+# hash, the asset's SHA-256, and its (old, new) replacements.
+PATCHES = ()
 
 
 def patch(archive, desktop, patches=PATCHES):
@@ -147,7 +89,7 @@ def patch(archive, desktop, patches=PATCHES):
             and entry.get("integrity", {}).get("hash") == expected_hash
         ]
         assert len(matches) == 1, (
-            f"Re-evaluate Orca {metadata['version']} clipboard compatibility: {path_prefix}"
+            f"Re-evaluate Orca {metadata['version']} asset compatibility: {path_prefix}"
         )
         name, entry = matches[0]
         relative = Path(directory) / name
@@ -155,7 +97,7 @@ def patch(archive, desktop, patches=PATCHES):
         assert hashlib.sha256(original).hexdigest() == expected_hash, f"Unexpected asset: {name}"
         text = original.decode()
         for old, new in routes:
-            assert text.count(old) == 1, f"Expected one native-copy route: {name}"
+            assert text.count(old) == 1, f"Expected one replacement route: {name}"
             text = text.replace(old, new)
         replace_entry(entry, relative, text.encode())
 
@@ -179,7 +121,7 @@ def patch(archive, desktop, patches=PATCHES):
     archive.write_bytes(struct.pack("<II", 4, len(header_pickle)) + header_pickle + content + appended)
     desktop.chmod(desktop.stat().st_mode | 0o200)
     desktop.write_text("".join(lines))
-    print(f"Patched Orca {metadata['version']}: desktop identity and native clipboard copies")
+    print(f"Patched Orca {metadata['version']}: desktop identity")
 
 
 if __name__ == "__main__":

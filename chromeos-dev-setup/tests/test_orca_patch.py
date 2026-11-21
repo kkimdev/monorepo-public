@@ -1,4 +1,4 @@
-"""Check ASAR integrity and execute the patched clipboard routes in Node.
+"""Check the ASAR rewrite: integrity, offsets, desktop identity and preflight.
 
 These fixtures require neither a downloaded Orca package nor a running GUI.
 """
@@ -7,10 +7,8 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
-import shutil
 import stat
 import struct
-import subprocess
 import tempfile
 import unittest
 
@@ -184,220 +182,19 @@ class AsarPatchTests(unittest.TestCase):
         prefix, expected_hash, _ = self.patches[0]
         bad_route = ((prefix, expected_hash, (("routeWhichDoesNotExist()", "newRoute()"),)),)
         before = self.snapshot()
-        with self.assertRaisesRegex(AssertionError, "Expected one native-copy route"):
+        with self.assertRaisesRegex(AssertionError, "Expected one replacement route"):
             ORCA_PATCH.patch(self.archive, self.desktop, bad_route)
         self.assertEqual(self.snapshot(), before)
 
-
-NODE_BEHAVIOR = r"""
-const assert = require('node:assert/strict');
-const vm = require('node:vm');
-const patch = JSON.parse(process.argv[1]);
-
-function fixture({platform='linux', displayServer='wayland', focused=true,
-                  textarea=true, selection='selected text', writer, native}={}) {
-  const calls = {writes: [], native: [], clears: 0};
-  const terminal = {
-    selection,
-    clearSelection() { calls.clears++; this.selection = ''; },
-    focus() { throw new Error('The clipboard helper must not steal focus'); }
-  };
-  if (textarea) {
-    terminal.textarea = {ownerDocument: {}};
-    terminal.textarea.ownerDocument.activeElement = focused ? terminal.textarea : {};
-  }
-  const writeClipboardText = text => { calls.writes.push(text); return writer?.(text); };
-  const window = {api: {
-    platform: {get: () => ({platform, displayServer})},
-    ui: {performNativeSelectionAction(action) { calls.native.push(action); return native?.(action); }}
-  }};
-  const copy = vm.runInNewContext(`(${patch.helper})`, {window, Zp: e => e.selection});
-  return {terminal, calls, copy, writeClipboardText};
-}
-
-(async () => {
-  const selected = fixture();
-  assert.equal(await selected.copy(selected), true);
-  assert.deepEqual(selected.calls, {writes: [], native: ['copy'], clears: 0});
-  assert.equal(selected.terminal.selection, 'selected text');
-
-  for (const options of [
-    {platform:'darwin'}, {platform:'win32'}, {displayServer:'x11'},
-    {focused:false}, {textarea:false}
-  ]) {
-    const fallback = fixture(options);
-    assert.equal(await fallback.copy(fallback), true);
-    assert.deepEqual(fallback.calls, {writes:['selected text'], native:[], clears:0});
-  }
-
-  for (const clearSelectionOnSuccess of [false, true]) {
-    const empty = fixture({selection:''});
-    assert.equal(await empty.copy({...empty, clearSelectionOnSuccess}), false);
-    assert.deepEqual(empty.calls, {writes:[], native:[], clears:0});
-  }
-
-  let finish;
-  const pending = fixture({writer: () => new Promise(resolve => { finish = resolve; })});
-  const completion = pending.copy({...pending, clearSelectionOnSuccess:true});
-  assert.deepEqual(pending.calls, {writes:['selected text'], native:[], clears:0});
-  assert.equal(pending.terminal.selection, 'selected text');
-  finish();
-  assert.equal(await completion, true);
-  assert.equal(pending.calls.clears, 1);
-  assert.equal(pending.terminal.selection, '');
-
-  for (const options of [{focused:false}, {clearSelectionOnSuccess:true}]) {
-    const failure = new Error('clipboard write failed');
-    const rejected = fixture({...options, writer: () => Promise.reject(failure)});
-    await assert.rejects(rejected.copy({...rejected, ...options}), error => error === failure);
-    assert.deepEqual(rejected.calls, {writes:['selected text'], native:[], clears:0});
-    assert.equal(rejected.terminal.selection, 'selected text');
-  }
-
-  const nativeFailure = new Error('native IPC failed');
-  const rejectedNative = fixture({native: () => Promise.reject(nativeFailure)});
-  await assert.rejects(rejectedNative.copy(rejectedNative), error => error === nativeFailure);
-  assert.deepEqual(rejectedNative.calls, {writes:[], native:['copy'], clears:0});
-
-  // The standalone handler must pass the original terminal and writer to the
-  // shared helper, while retaining its existing rejected-promise handling.
-  let routed;
-  const terminal = {};
-  const writer = () => {};
-  await vm.runInNewContext(patch.standalone, {
-    t:terminal,
-    window:{api:{ui:{writeTerminalClipboardText:writer}}},
-    E(options) { routed = options; return Promise.reject(new Error('handled by route')); }
-  });
-  assert.equal(routed.terminal, terminal);
-  assert.equal(routed.writeClipboardText, writer);
-})().catch(error => { console.error(error); process.exitCode = 1; });
-"""
-
-
-NODE_WRITER = r"""
-const assert = require('node:assert/strict');
-const vm = require('node:vm');
-const writer = process.argv[1];
-
-function fixture({platform='linux', displayServer='wayland', invoke}={}) {
-  const calls = {invoke: [], send: []};
-  const listeners = [];
-  const timers = new Map();
-  let nextTimer = 0;
-  const document = {
-    addEventListener(type, listener, capture) {
-      assert.deepEqual([type, capture], ['copy', true]);
-      listeners.push(listener);
-    },
-    removeEventListener(type, listener, capture) {
-      assert.deepEqual([type, capture], ['copy', true]);
-      const index = listeners.indexOf(listener);
-      if (index >= 0) listeners.splice(index, 1);
-    },
-  };
-  // Mimic one trusted copy event reaching the document capture listeners.
-  function dispatchCopy() {
-    const result = {data: {}, prevented: false, stopped: false};
-    const event = {
-      clipboardData: {setData(type, value) { result.data[type] = value; }},
-      preventDefault() { result.prevented = true; },
-      stopImmediatePropagation() { result.stopped = true; },
-    };
-    for (const listener of [...listeners]) {
-      listener(event);
-      if (result.stopped) break;
-    }
-    return result;
-  }
-  const electron = {ipcRenderer: {
-    invoke(...args) { calls.invoke.push(args); return invoke ? invoke(...args) : Promise.resolve(); },
-    send(...args) { calls.send.push(args); },
-  }};
-  const api = vm.runInNewContext(`({${writer}})`, {
-    electron, document,
-    platformApi: {get: () => ({platform, displayServer})},
-    setTimeout(callback, delay, ...args) { timers.set(++nextTimer, () => callback(...args)); return nextTimer; },
-    clearTimeout(id) { timers.delete(id); },
-  });
-  const expire = () => { for (const [id, callback] of [...timers]) { timers.delete(id); callback(); } };
-  return {api, calls, listeners, timers, dispatchCopy, expire};
-}
-
-(async () => {
-  const text = 'line one\n\tline two\u2603';
-
-  // Wayland copies answer the native copy command and leave the writer unused.
-  const native = fixture();
-  const copied = native.api.writeClipboardText(text);
-  assert.deepEqual(native.calls, {invoke: [], send: [['ui:performNativeSelectionAction', 'copy']]});
-  assert.deepEqual(native.dispatchCopy(), {data: {'text/plain': text}, prevented: true, stopped: true});
-  assert.equal(await copied, undefined);
-  assert.equal(native.listeners.length, 0);
-  assert.equal(native.timers.size, 0);
-  assert.deepEqual(native.dispatchCopy(), {data: {}, prevented: false, stopped: false});
-
-  // Overlapping writes each consume exactly one copy event, in order.
-  const overlap = fixture();
-  const first = overlap.api.writeClipboardText('first');
-  const second = overlap.api.writeClipboardText('second');
-  assert.deepEqual(overlap.dispatchCopy().data, {'text/plain': 'first'});
-  assert.deepEqual(overlap.dispatchCopy().data, {'text/plain': 'second'});
-  await Promise.all([first, second]);
-  assert.equal(overlap.calls.invoke.length, 0);
-
-  // Without a copy event the original writer runs, and its result propagates.
-  for (const outcome of ['resolve', 'reject']) {
-    const failure = new Error('writer failed');
-    const missed = fixture({invoke: () => outcome === 'resolve' ? Promise.resolve('written') : Promise.reject(failure)});
-    const pending = missed.api.writeClipboardText(text);
-    assert.equal(missed.calls.invoke.length, 0);
-    missed.expire();
-    assert.deepEqual(missed.calls.invoke, [['clipboard:writeText', text]]);
-    assert.equal(missed.listeners.length, 0);
-    if (outcome === 'resolve') assert.equal(await pending, 'written');
-    else await assert.rejects(pending, error => error === failure);
-    assert.deepEqual(missed.dispatchCopy().data, {});
-  }
-
-  // Other platforms and invalid input keep the original writer and its result.
-  for (const [options, value] of [
-    [{platform: 'darwin', displayServer: null}, text], [{platform: 'win32', displayServer: null}, text],
-    [{displayServer: 'x11'}, text], [{}, 42],
-  ]) {
-    const original = fixture({...options, invoke: () => Promise.resolve('original')});
-    assert.equal(await original.api.writeClipboardText(value), 'original');
-    assert.deepEqual(original.calls, {invoke: [['clipboard:writeText', value]], send: []});
-    assert.equal(original.listeners.length, 0);
-    assert.equal(original.timers.size, 0);
-  }
-})().catch(error => { console.error(error); process.exitCode = 1; });
-"""
-
-
-@unittest.skipUnless(shutil.which("node"), "Node is required to execute Orca clipboard helper")
-class ClipboardBehaviorTests(unittest.TestCase):
-    def test_actual_patched_helper_native_fallback_async_and_selection_behavior(self):
-        helper_route = ORCA_PATCH.PATCHES[0][2][0]
-        self.assertEqual(helper_route, (ORCA_PATCH.ORIGINAL_HELPER, ORCA_PATCH.PATCHED_HELPER))
-        result = subprocess.run(
-            ["node", "-e", NODE_BEHAVIOR, json.dumps({
-                "helper": ORCA_PATCH.PATCHED_HELPER,
-                "standalone": ORCA_PATCH.PATCHES[1][2][0][1],
-            })],
-            capture_output=True, text=True, timeout=15,
-        )
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-
-    def test_actual_patched_writer_native_copy_fallback_and_platform_behavior(self):
-        writer_route = ORCA_PATCH.PATCHES[2]
-        self.assertEqual(writer_route[0], "out/preload/index")
-        self.assertEqual(writer_route[2], ((ORCA_PATCH.ORIGINAL_WRITER, ORCA_PATCH.PATCHED_WRITER),))
-        result = subprocess.run(
-            ["node", "-e", NODE_WRITER, ORCA_PATCH.PATCHED_WRITER],
-            capture_output=True, text=True, timeout=15,
-        )
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+    def test_the_shipped_patch_only_sets_the_desktop_identity(self):
+        before, original_content = self.fixture()
+        ORCA_PATCH.patch(self.archive, self.desktop)
+        after, content = decode_archive(self.archive)
+        self.assertTrue(content.startswith(original_content))
+        self.assertEqual(lookup(after, self.asset_path), lookup(before, self.asset_path))
+        package = self.entry_payload(after, content, "package.json")
+        self.assertEqual(json.loads(package)["desktopName"], self.desktop.name)
+        self.assertIn("StartupWMClass=orca-ide\n", self.desktop.read_text())
 
 
 if __name__ == "__main__":
