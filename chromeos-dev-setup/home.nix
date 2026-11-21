@@ -192,7 +192,9 @@ in
       # wayland-0: Crostini default high-density Sommelier, wayland-1: low-density Sommelier, wayland-2: custom sommelier-rs
       WAYLAND_DISPLAY = "wayland-2";
       DISPLAY = ":1";
-      CODEX_LINUX_RENDERING_MODE = "wayland-gpu";
+      # Codex Desktop's launcher defaults to X11, where the wayland-first
+      # GTK_IM_MODULE above crashes it on the first text input focus.
+      CODEX_OZONE_PLATFORM = "wayland";
       CODEX_LINUX_DISABLE_EXTERNAL_OPEN_PATCH = "1";
       # Web search provider selection. Required for non-opencode providers (model-gateway).
       # See ../scratch-monorepo/model_gateway/WEB_SEARCH.md.
@@ -568,7 +570,7 @@ in
       Environment="GTK_IM_MODULE_FILE=${host.gtk3Cache}"
       Environment="GTK_PATH=${host.gtk4Path}"
       Environment="QT_IM_MODULE=cros"
-      Environment="CODEX_LINUX_RENDERING_MODE=wayland-gpu"
+      Environment="CODEX_OZONE_PLATFORM=wayland"
       Environment="CODEX_LINUX_DISABLE_EXTERNAL_OPEN_PATCH=1"
       # GLib-GIO-ERROR: Settings schema 'org.gtk.Settings.FileChooser' is not installed
       # codex-desktop crashes (exit 5) when opening a file dialog if these are missing.
