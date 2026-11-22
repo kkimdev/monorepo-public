@@ -9,6 +9,8 @@ readonly REMINDER_DAYS=14
 readonly KEEP_GENERATIONS_DAYS=14
 # GTK lives in the x86_64 multiarch directory; i386 GTK may exist beside it.
 readonly MULTIARCH_LIB=/usr/lib/x86_64-linux-gnu
+# Home Manager's non-NixOS GPU setup links /run/opengl-driver through this file.
+readonly GPU_DRIVERS_CONF="${CROS_GPU_DRIVERS_CONF:-/etc/tmpfiles.d/non-nixos-gpu.conf}"
 readonly HM_PROFILE="$HOME/.local/state/nix/profiles/home-manager"
 readonly NIX_FLAGS=(--accept-flake-config)
 # Desktop session units; `cros reset --hard` restarts these, earlyoom keeps running.
@@ -189,6 +191,26 @@ build_home() {
     "$(flake_dir "$root")#homeConfigurations.\"$USER\".activationPackage"
 }
 
+# Nix programs find GPU drivers through /run/opengl-driver. Home Manager ships
+# a setup script per generation but cannot run it, since it needs root; prints
+# the generation's script when the installed link is not that generation's.
+stale_gpu_setup() {
+  local setup
+  setup="$(readlink -f "$1/home-path/bin/non-nixos-gpu-setup" 2>/dev/null || true)"
+  [[ -x "$setup" ]] || return 0
+  [[ "$(readlink -f "$GPU_DRIVERS_CONF" 2>/dev/null || true)" != \
+    "$(dirname -- "$(dirname -- "$setup")")/lib/tmpfiles.d/non-nixos-gpu.conf" ]] || return 0
+  printf '%s\n' "$setup"
+}
+
+sync_gpu_drivers() {
+  local setup
+  setup="$(stale_gpu_setup "$1")"
+  [[ -n "$setup" ]] || return 0
+  log "linking this generation's GPU drivers at /run/opengl-driver"
+  sudo "$setup"
+}
+
 # ---------------------------------------------------------------- reminders
 
 print_reminders() {
@@ -273,6 +295,7 @@ cmd_apply() {
   HOME_MANAGER_BACKUP_EXT=backup "$activation/activate" ||
     die "Home Manager activation failed; inspect its output, or run the previous generation's activate"
   APPLY_DONE=1
+  sync_gpu_drivers "$activation"
   start_desktop_services
   log "applied $root"
   log "running services pick up changes at next login or after 'cros reset --hard'"
@@ -290,6 +313,7 @@ cmd_check() {
   active="$(readlink -f "$HM_PROFILE" 2>/dev/null || true)"
   system_package_is_installed "$deb" || stale+=", system package"
   [[ "$active" == "$activation" ]] || stale+=", Home Manager"
+  [[ -z "$(stale_gpu_setup "$activation")" ]] || stale+=", GPU drivers"
   if [[ -z "$stale" ]]; then
     log "this machine runs this build"
   else

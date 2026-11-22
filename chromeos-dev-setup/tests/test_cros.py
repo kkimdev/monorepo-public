@@ -305,6 +305,8 @@ class CrosTestCase(unittest.TestCase):
             "CROS_TEST_REAL_GIT": REAL_GIT,
             "CROS_TEST_REAL_FIND": shutil.which("find"),
             "CROS_TEST_REAL_RM": shutil.which("rm"),
+            # The installed GPU driver link; tests never read the real one.
+            "CROS_GPU_DRIVERS_CONF": str(self.audit / "etc-non-nixos-gpu.conf"),
             # `cros reset --hard` deletes Wayland sockets here, never the real ones.
             "XDG_RUNTIME_DIR": str(self.audit / "run"),
         })
@@ -686,6 +688,39 @@ class Apply(CrosTestCase):
         self.assertNotIn("restored", result.stderr)
         host = json.loads((self.host_dir / "host.json").read_text())
         self.assertEqual(host["checkout"], str(worktree))
+
+    def add_gpu_setup(self):
+        """Give the activation package Home Manager's GPU setup, as a store path."""
+        package = self.audit / "non-nixos-gpu"
+        (package / "bin").mkdir(parents=True)
+        (package / "lib" / "tmpfiles.d").mkdir(parents=True)
+        (package / "lib" / "tmpfiles.d" / "non-nixos-gpu.conf").write_text("L+ /run/opengl-driver\n")
+        setup = package / "bin" / "non-nixos-gpu-setup"
+        setup.write_text(
+            "#!/usr/bin/env bash\n"
+            "printf '{\"argv\": [\"non-nixos-gpu-setup\"]}\\n' >> \"$CROS_TEST_AUDIT/calls.jsonl\"\n"
+        )
+        setup.chmod(0o755)
+        home_path = self.audit / "activation" / "home-path" / "bin"
+        home_path.mkdir(parents=True)
+        (home_path / "non-nixos-gpu-setup").symlink_to(setup)
+        return package / "lib" / "tmpfiles.d" / "non-nixos-gpu.conf"
+
+    def test_stale_gpu_driver_link_is_updated_after_activation(self):
+        self.add_gpu_setup()
+        result = self.apply("--checkout", str(self.repo))
+        self.assertEqual(result.returncode, 0, self.output(result))
+        activate = self.index(lambda a: a[0] == "activate")
+        setup = self.index(lambda a: a[0] == "non-nixos-gpu-setup")
+        self.assertLess(activate, setup)
+        self.assertIn(["sudo", str(self.audit / "non-nixos-gpu" / "bin" / "non-nixos-gpu-setup")], self.argvs())
+
+    def test_current_gpu_driver_link_is_left_alone(self):
+        conf = self.add_gpu_setup()
+        (self.audit / "etc-non-nixos-gpu.conf").symlink_to(conf)
+        result = self.apply("--checkout", str(self.repo))
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertEqual(self.matching(lambda a: a[0] == "non-nixos-gpu-setup"), [])
 
     def test_units_that_are_not_loaded_are_skipped(self):
         environment = dict(self.environment)
@@ -1193,6 +1228,21 @@ class CheckAndClean(CrosTestCase):
                 result = self.check_with(installed, profile)
                 self.assertEqual(result.returncode, 0, self.output(result))
                 self.assertIn(f"does not run this build {parts}; run 'cros apply'", result.stderr)
+
+    def test_check_reports_stale_gpu_drivers(self):
+        package = self.audit / "non-nixos-gpu"
+        (package / "bin").mkdir(parents=True)
+        (package / "lib" / "tmpfiles.d").mkdir(parents=True)
+        (package / "lib" / "tmpfiles.d" / "non-nixos-gpu.conf").write_text("L+\n")
+        (package / "bin" / "non-nixos-gpu-setup").write_text("#!/bin/sh\n")
+        (package / "bin" / "non-nixos-gpu-setup").chmod(0o755)
+        (self.audit / "activation" / "home-path" / "bin").mkdir(parents=True)
+        (self.audit / "activation" / "home-path" / "bin" / "non-nixos-gpu-setup").symlink_to(
+            package / "bin" / "non-nixos-gpu-setup")
+        result = self.check_with("1.0.0", self.audit / "activation")
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertIn("does not run this build (GPU drivers); run 'cros apply'", result.stderr)
+        self.assertEqual(self.matching(lambda a: a[0] == "sudo"), [])
 
     def test_clean_keeps_recent_generations_and_optimises(self):
         result = self.run_cros("clean")
