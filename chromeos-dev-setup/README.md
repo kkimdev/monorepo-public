@@ -96,9 +96,13 @@ update reminders. Then, periodically:
 ```bash
 cros bump            # Pull main, update every flake input, apply, commit flake.lock (no push)
 cros bump llm-agents # Or selected inputs only (llm-agents also moves nixpkgs)
+cros bump --no-cooldown llm-agents  # Urgent fix: take the newest commit now
 cros publish         # Push the tested commits to main for everyone
 ```
 
+Third-party inputs move only to commits at least 7 days old (a cooldown that
+gives a compromised release time to be found and pulled first); inputs in this
+repository and the owner's own repositories update immediately.
 `cros bump` prints changed inputs, package versions, and the status of the
 workarounds listed in `workarounds.json`. See [DESIGN.md](DESIGN.md) for how
 the setup is structured.

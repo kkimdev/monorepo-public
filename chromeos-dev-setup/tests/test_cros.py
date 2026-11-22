@@ -7,6 +7,7 @@ so no build, root command, network access, or host configuration is involved.
 Run with: python3 -m unittest discover -s chromeos-dev-setup/tests -v
 """
 
+import datetime
 import json
 import os
 from pathlib import Path
@@ -148,13 +149,23 @@ if name == "nix":
         sys.exit(0)
     if subcommand == "run":
         sys.exit(int(variable("CROS_TEST_RUN_EXIT", "0")))
-    if subcommand == "flake" and "update" in args:
+    if subcommand == "flake" and args[1:2] in (["update"], ["lock"]):
         flake = args[args.index("--flake") + 1]
         lock = Path(flake) / "flake.lock"
-        if variable("CROS_TEST_UPDATE_CHANGE", "1") == "1":
-            data = json.loads(lock.read_text())
+        data = json.loads(lock.read_text())
+        # --override-input NAME github:OWNER/REPO/REV pins NAME to REV.
+        pinned = set()
+        for position, arg in enumerate(args):
+            if arg == "--override-input":
+                name, url = args[position + 1], args[position + 2]
+                pinned.add(name)
+                data["nodes"][name]["locked"]["rev"] = url.rsplit("/", 1)[1]
+                data["nodes"][name]["locked"]["lastModified"] = int(variable("CROS_TEST_COMMIT_EPOCH", "1609459200"))
+        # A named (not pinned) GitHub input moves to its newest commit.
+        if (args[1] == "update" and "nixpkgs" in args and "nixpkgs" not in pinned
+                and variable("CROS_TEST_UPDATE_CHANGE", "1") == "1"):
             data["nodes"]["nixpkgs"]["locked"]["rev"] = variable("CROS_TEST_UPDATE_REV", "f" * 40)
-            lock.write_text(json.dumps(data, indent=2) + "\n")
+        lock.write_text(json.dumps(data, indent=2) + "\n")
         sys.exit(int(variable("CROS_TEST_UPDATE_EXIT", "0")))
     if subcommand == "store" and args[1:2] == ["diff-closures"]:
         print("test-package: 1.0 -> 2.0")
@@ -162,6 +173,18 @@ if name == "nix":
     if subcommand == "store" and args[1:2] == ["optimise"]:
         sys.exit(0)
     sys.exit("unexpected nix call: " + repr(args))
+
+if name == "curl":
+    # The GitHub commits API: the newest commit before the cooldown cutoff.
+    if variable("CROS_TEST_CURL_FAIL"):
+        sys.exit(22)
+    epoch = int(variable("CROS_TEST_COMMIT_EPOCH",
+                         "1609459200" if variable("CROS_TEST_UPDATE_CHANGE", "1") == "1" else "1546300800"))
+    import datetime
+    date = datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    print(json.dumps([{"sha": variable("CROS_TEST_COMMIT_SHA", "c" * 40),
+                       "commit": {"committer": {"date": date}}}]))
+    sys.exit(0)
 
 if name == "nix-collect-garbage":
     sys.exit(0)
@@ -187,8 +210,9 @@ raise SystemExit("unexpected stub command: " + name)
 
 DEFAULT_LOCK = {
     "nodes": {
-        "root": {"inputs": {}},
+        "root": {"inputs": {"nixpkgs": "nixpkgs", "kakaotalk": "kakaotalk", "host": "host"}},
         "nixpkgs": {
+            "original": {"type": "github", "owner": "NixOS", "repo": "nixpkgs", "ref": "nixpkgs-unstable"},
             "locked": {
                 "lastModified": 1577836800,
                 "narHash": "sha256-test",
@@ -198,8 +222,10 @@ DEFAULT_LOCK = {
                 "type": "github",
             }
         },
-        "kakaotalk": {"locked": {"path": "../nixpkgs/kakaotalk", "type": "path"}},
-        "host": {"locked": {"path": "./host-example", "type": "path"}},
+        "kakaotalk": {"original": {"type": "path", "path": "../nixpkgs/kakaotalk"},
+                      "locked": {"path": "../nixpkgs/kakaotalk", "type": "path"}},
+        "host": {"original": {"type": "path", "path": "./host-example"},
+                 "locked": {"path": "./host-example", "type": "path"}},
     },
     "root": "root",
     "version": 7,
@@ -245,7 +271,7 @@ class CrosTestCase(unittest.TestCase):
         driver.write_text(STUB)
         driver.chmod(0o755)
         for name in (
-            "sudo", "apt-get", "dpkg-deb", "dpkg-query", "systemctl",
+            "sudo", "apt-get", "dpkg-deb", "dpkg-query", "systemctl", "curl",
             "determinate-nixd", "gh", "nix", "nix-collect-garbage",
             "find", "rm", "git",
         ):
@@ -838,9 +864,12 @@ class Bump(CrosTestCase):
         self.assertIn("flake inputs are already current", result.stderr)
         self.assertEqual(self.git("-C", str(self.repo), "rev-parse", "HEAD").stdout, head)
         self.assertEqual(self.matching(lambda a: a[:2] == ["nix", "run"]), [])
+        # nixpkgs keeps its commit (the cooldown candidate is older); the
+        # path inputs are updated without a cooldown.
+        self.assertIn("cooldown: nixpkgs keeps its locked commit", result.stderr)
         self.assertIn(
-            ["nix", "flake", "update", "--accept-flake-config", "--flake",
-             str(self.repo / "chromeos-dev-setup")],
+            ["nix", "flake", "update", "--accept-flake-config", "kakaotalk", "host",
+             "--flake", str(self.repo / "chromeos-dev-setup")],
             self.argvs(),
         )
 
@@ -863,9 +892,10 @@ class Bump(CrosTestCase):
         self.assertIn("Inputs:", message)
         # Only nixpkgs changed; path inputs and unchanged nodes are not listed.
         self.assertIn(
-            "Inputs:\n- nixpkgs: aaaaaaaaaaaa (2020-01-01) -> ffffffffffff (2020-01-01)\n",
+            "Inputs:\n- nixpkgs: aaaaaaaaaaaa (2020-01-01) -> cccccccccccc (2021-01-01)\n",
             message + "\n",
         )
+        self.assertIn("Cooldown: third-party inputs at their newest commit before", message)
         self.assertIn("- nixpkgs:", result.stdout)
         self.assertEqual(
             self.git("-C", str(self.repo), "show", "--name-only", "--format=").stdout.strip(),
@@ -911,19 +941,77 @@ class Bump(CrosTestCase):
         )
 
     def test_selected_inputs_are_passed_to_flake_update(self):
-        environment = dict(self.environment)
-        environment["CROS_TEST_UPDATE_CHANGE"] = "0"
-        result = self.run_cros("bump", "nixpkgs", "home-manager", environment=environment)
+        result = self.run_cros("bump", "nixpkgs", "kakaotalk")
         self.assertEqual(result.returncode, 0, self.output(result))
-        update = next(
-            argv for argv in self.argvs()
-            if argv[:2] == ["nix", "flake"] and "update" in argv
-        )
+        update = next(argv for argv in self.argvs() if argv[:3] == ["nix", "flake", "update"])
         self.assertEqual(
             update,
-            ["nix", "flake", "update", "--accept-flake-config", "nixpkgs",
-             "home-manager", "--flake", str(self.repo / "chromeos-dev-setup")],
+            ["nix", "flake", "update", "--accept-flake-config", "kakaotalk",
+             "--override-input", "nixpkgs", "github:NixOS/nixpkgs/" + "c" * 40,
+             "--flake", str(self.repo / "chromeos-dev-setup")],
         )
+        self.assertNotIn(["host"], [argv[4:5] for argv in self.argvs() if argv[:3] == ["nix", "flake", "update"]])
+
+    def test_cooldown_asks_github_for_the_newest_commit_before_the_cutoff(self):
+        result = self.run_cros("bump", "nixpkgs")
+        self.assertEqual(result.returncode, 0, self.output(result))
+        [curl] = [argv for argv in self.argvs() if argv[0] == "curl"]
+        url = curl[-1]
+        self.assertTrue(url.startswith("https://api.github.com/repos/NixOS/nixpkgs/commits?until="), url)
+        self.assertIn("&per_page=1&sha=nixpkgs-unstable", url)
+        cutoff = datetime.datetime.strptime(url.split("until=")[1].split("&")[0], "%Y-%m-%dT%H:%M:%SZ")
+        age = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) - cutoff
+        self.assertAlmostEqual(age.total_seconds() / 86400, 7, delta=0.01)
+        # Only the pinned input: `nix flake lock`, never an update of everything.
+        [lock] = [argv for argv in self.argvs() if argv[:2] == ["nix", "flake"]]
+        self.assertEqual(lock[:3], ["nix", "flake", "lock"])
+        self.assertIn("cooldown: nixpkgs at " + "c" * 40, result.stderr)
+
+    def test_no_cooldown_updates_every_input_without_github(self):
+        result = self.run_cros("bump", "--no-cooldown")
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertEqual(self.matching(lambda a: a[0] == "curl"), [])
+        self.assertIn(
+            ["nix", "flake", "update", "--accept-flake-config", "nixpkgs", "kakaotalk",
+             "host", "--flake", str(self.repo / "chromeos-dev-setup")],
+            self.argvs(),
+        )
+        message = self.git("-C", str(self.repo), "log", "-1", "--format=%B").stdout
+        self.assertNotIn("Cooldown:", message)
+
+    def test_inputs_of_the_repository_owner_skip_the_cooldown(self):
+        # origin's configured URL names the owner; insteadOf keeps it fetchable.
+        url = "https://github.com/NixOS/monorepo-public.git"
+        self.git("-C", str(self.repo), "remote", "set-url", "origin", url)
+        self.git("-C", str(self.repo), "config", f"url.{self.remote}.insteadOf", url)
+        result = self.run_cros("bump", "nixpkgs")
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertEqual(self.matching(lambda a: a[0] == "curl"), [])
+        self.assertIn(
+            ["nix", "flake", "update", "--accept-flake-config", "nixpkgs",
+             "--flake", str(self.repo / "chromeos-dev-setup")],
+            self.argvs(),
+        )
+
+    def test_github_failure_changes_nothing(self):
+        head = self.git("-C", str(self.repo), "rev-parse", "HEAD").stdout
+        original = self.lock.read_bytes()
+        environment = dict(self.environment)
+        environment["CROS_TEST_CURL_FAIL"] = "1"
+        result = self.run_cros("bump", environment=environment)
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("could not look up NixOS/nixpkgs's commits", result.stderr)
+        self.assertEqual(self.matching(lambda a: a[:2] == ["nix", "flake"]), [])
+        self.assertEqual(self.lock.read_bytes(), original)
+        self.assertEqual(self.git("-C", str(self.repo), "rev-parse", "HEAD").stdout, head)
+
+    def test_unknown_input_and_option_are_refused(self):
+        for arguments, message in ((["home-manager"], "no input named home-manager"),
+                                   (["--frobnicate"], "unknown bump option: --frobnicate")):
+            with self.subTest(arguments=arguments):
+                result = self.run_cros("bump", *arguments)
+                self.assertEqual(result.returncode, 1, self.output(result))
+                self.assertIn(message, result.stderr)
 
     def push_from_another_clone(self, name, path, content):
         other = self.root / name

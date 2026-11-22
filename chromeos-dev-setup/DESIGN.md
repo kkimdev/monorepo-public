@@ -143,7 +143,7 @@ has read the whole script before any command can read the piped stdin.
 | `cros sync` | Requires a clean `main`; `git pull --ff-only`, `apt-get update/full-upgrade/autoremove`, `determinate-nixd upgrade`, then `apply`. |
 | `cros apply` | Add sparse paths, build the system package, refresh host data, build Home Manager, then install the system package if changed, activate Home Manager, link that generation's GPU drivers if `/run/opengl-driver` points elsewhere (Home Manager's `non-nixos-gpu-setup`, which needs sudo; Home Manager itself only warns), and start inactive desktop services (units systemd has not loaded are skipped). A failed build changes nothing on the system; if a build or activation fails (or is interrupted), the previous host data is restored, so the machine keeps following its previous checkout. |
 | `cros check` | Build the system package and the Home Manager configuration without installing or activating anything, then report whether this machine already runs that build (installed package version, active Home Manager generation, GPU driver link). |
-| `cros bump [input…]` | Maintainer: requires a clean `main` and a Git identity; `git pull --ff-only` (so the commit can be published), `nix flake update [input…]`, `apply`, print input and package-version changes and workaround status, commit only `flake.lock`. When inputs are already current but the pull brought commits, it applies them. Does not push. |
+| `cros bump [--no-cooldown] [input…]` | Maintainer: requires a clean `main` and a Git identity; `git pull --ff-only` (so the commit can be published), update the inputs with a 7-day cooldown (below), `apply`, print input and package-version changes and workaround status, commit only `flake.lock`. When inputs are already current but the pull brought commits, it applies them. Does not push. |
 | `cros publish` | Maintainer: requires a clean `main` that is ahead of and descends from `origin/main`; push. |
 | `cros clean` | Delete generations older than 14 days (recent ones stay for rollback), collect garbage, optimise the store. |
 | `cros reset [--hard]` | Start inactive desktop services; `--hard` restarts them (closes GUI apps). |
@@ -151,6 +151,16 @@ has read the whole script before any command can read the piped stdin.
 One table in `cros.bash` lists the commands; `cros --help`, dispatch, and the
 zsh completion (`cros/_cros`, via `cros __commands`) all read it. `--help`
 after any command prints help without running the command.
+
+Update cooldown: `bump` moves each third-party GitHub input only to its
+newest commit at least 7 days old, found through the GitHub commits API
+(`until=<cutoff>` on the input's branch) and locked with
+`--override-input`, which keeps the input's URL in `flake.nix`. An input whose
+locked commit is already newer stays. Path inputs (this repository) and GitHub
+inputs owned by the owner of `origin` (sommelier-rs) update immediately, and
+`--no-cooldown` skips the cooldown for urgent fixes. nixpkgs follows
+llm-agents, so it is cooled down with it. Debian packages have no cooldown:
+stable updates are conservative and security fixes should not wait.
 
 `apply` and `bump` end with reminders. When the applied checkout is not on
 `main` (for example a worktree applied with `apply --checkout` for testing),
@@ -213,6 +223,7 @@ A full Home Manager build is out of scope for hosted runners.
 | Login shell | bash execs zsh | `chsh` to the Nix zsh (terminal fails to open if the profile breaks) |
 | Desktop entries | Home Manager links | `rm -rf` + copy (deletes unrelated entries); own manifest |
 | Update flow | `bump` commits, `publish` pushes | push inside `bump` |
+| Update cooldown | `bump` pins each third-party GitHub input to its newest commit at least 7 days old (never older than the locked one) | skip inputs whose newest commit is too new (daily inputs would never update); none |
 | Debian upgrades | `setup.bash` once, then `cros sync` (manual), with security and updates suites | `unattended-upgrades` (security only, or everything) |
 | Reminders | in `cros` output only | shell start, prompt, desktop notifications |
 | CI | tests + pure eval + deb build | full build; none |

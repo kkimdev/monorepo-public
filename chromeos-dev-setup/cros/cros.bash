@@ -5,6 +5,9 @@ readonly HOST_DIR="${CROS_HOST_DIR:-$HOME/.config/cros/host}"
 readonly HOST_JSON="$HOST_DIR/host.json"
 readonly SETUP_SUBDIR="chromeos-dev-setup"
 readonly REMINDER_DAYS=14
+# `cros bump` takes third-party inputs only at commits this old, so a
+# compromised release has time to be found and pulled before it is installed.
+readonly COOLDOWN_DAYS=7
 # `cros clean` keeps generations this recent so a bad update can be rolled back.
 readonly KEEP_GENERATIONS_DAYS=14
 # GTK lives in the x86_64 multiarch directory; i386 GTK may exist beside it.
@@ -28,7 +31,7 @@ readonly COMMANDS=(
   "sync||Pull main, upgrade Debian and Nix, then apply."
   "apply|[options]|Apply the current checkout (system package + Home Manager)."
   "check||Build without installing; report whether this machine runs it."
-  "bump|[input...]|Maintainer: pull main, update inputs, apply, commit (no push)."
+  "bump|[input...]|Maintainer: pull main, update inputs (cooldown), apply, commit."
   "publish||Maintainer: push bump commits to main, releasing them to all."
   "clean||Delete generations over 14 days old, collect garbage, optimise."
   "reset|[--hard]|Start stopped desktop services; --hard restarts them."
@@ -42,6 +45,8 @@ usage() {
     printf '  %-17s %s\n' "$name${arguments:+ $arguments}" "$description"
   done
   printf '\napply options: --checkout DIR (first install or testing), --maintainer.\n'
+  printf 'bump options: --no-cooldown (take the newest commits; for urgent fixes).\n'
+  printf 'Cooldown: third-party inputs move only to commits at least %s days old.\n' "$COOLDOWN_DAYS"
 }
 
 # Prints "name:description" per command for the zsh completion.
@@ -382,8 +387,51 @@ print_workarounds() {
   done < <(jq -r '.[] | [.id, .check.type, (.check.repo // "-"), (.check.number // "-" | tostring), .removeWhen] | @tsv' "$file")
 }
 
+# Prints the bump plan for the given root inputs, one line each:
+#   update NAME           update to the newest commit (no cooldown applies)
+#   pin NAME URL DATE     pin to the input's newest commit from before CUTOFF
+#   keep NAME DATE        keep the locked commit, already newer than that
+# Cooldown applies to GitHub inputs not owned by the repository's own owner;
+# path inputs are this repository, and the owner's inputs (sommelier-rs) are
+# its maintainer's.
+plan_cooldown() {
+  local root="$1" cutoff="$2" lock owner name node type repo_owner repo ref locked reply sha date
+  shift 2
+  lock="$root/$SETUP_SUBDIR/flake.lock"
+  owner="$(git -C "$root" config --get remote.origin.url | sed -n 's#.*github\.com[:/]\([^/]*\)/.*#\1#p')"
+  for name in "$@"; do
+    node="$(jq -r --arg name "$name" '.nodes.root.inputs[$name] // empty | strings' "$lock")"
+    [[ -n "$node" ]] || die "no input named $name (an input that follows another moves with it)"
+    IFS=$'\t' read -r type repo_owner repo ref locked < <(jq -r --arg node "$node" \
+      '.nodes[$node] | [.original.type, .original.owner // "-", .original.repo // "-", .original.ref // "-", .locked.lastModified // 0] | @tsv' "$lock")
+    if [[ -z "$cutoff" || "$type" != github || "$repo_owner" == "$owner" ]]; then
+      echo "update $name"
+      continue
+    fi
+    reply="$(curl -fsSL "https://api.github.com/repos/$repo_owner/$repo/commits?until=$cutoff&per_page=1$([[ "$ref" == - ]] || echo "&sha=$ref")")" ||
+      die "could not look up $repo_owner/$repo's commits before $cutoff (GitHub API); try again later"
+    sha="$(jq -r '.[0].sha // empty' <<<"$reply")"
+    date="$(jq -r '.[0].commit.committer.date // empty' <<<"$reply")"
+    [[ -n "$sha" && -n "$date" ]] || die "$repo_owner/$repo has no commit before $cutoff"
+    if (($(date -u -d "$date" +%s) > locked)); then
+      echo "pin $name github:$repo_owner/$repo/$sha ${date%%T*}"
+    else
+      echo "keep $name $(date -u -d "@$locked" +%F)"
+    fi
+  done
+}
+
 cmd_bump() {
   local root head lock previous before after inputs packages workarounds message
+  local cutoff argument plan action name url when names=() update=() overrides=()
+  cutoff="$(date -u -d "$COOLDOWN_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ)"
+  for argument in "$@"; do
+    case "$argument" in
+      --no-cooldown) cutoff="" ;;
+      -*) die "unknown bump option: $argument" ;;
+      *) names+=("$argument") ;;
+    esac
+  done
   root="$(resolve_checkout "")"
   require_clean_main "$root"
   # The commit comes last; fail now rather than after the update and apply.
@@ -399,7 +447,26 @@ cmd_bump() {
   previous="$GUARDED_COPY"
   before="$(readlink -f "$HM_PROFILE" 2>/dev/null || true)"
 
-  nix flake update "${NIX_FLAGS[@]}" "$@" --flake "$(flake_dir "$root")"
+  # Every direct input unless some are named; followers move with their input.
+  ((${#names[@]})) ||
+    mapfile -t names < <(jq -r '.nodes.root.inputs | to_entries[] | select(.value | type == "string") | .key' "$lock")
+  plan="$(plan_cooldown "$root" "$cutoff" "${names[@]}")"
+  while read -r action name url when; do
+    case "$action" in
+      update) update+=("$name") ;;
+      pin)
+        overrides+=(--override-input "$name" "$url")
+        log "cooldown: $name at ${url##*/} ($when)"
+        ;;
+      keep) log "cooldown: $name keeps its locked commit ($url), newer than the cutoff" ;;
+    esac
+  done <<<"$plan"
+  # `nix flake update` without names would update every input.
+  if ((${#update[@]})); then
+    nix flake update "${NIX_FLAGS[@]}" "${update[@]}" "${overrides[@]}" --flake "$(flake_dir "$root")"
+  elif ((${#overrides[@]})); then
+    nix flake lock "${NIX_FLAGS[@]}" "${overrides[@]}" --flake "$(flake_dir "$root")"
+  fi
   if cmp -s -- "$previous" "$lock"; then
     log "flake inputs are already current"
     if [[ "$(git -C "$root" rev-parse HEAD)" != "$head" ]]; then
@@ -419,6 +486,9 @@ cmd_bump() {
   packages="$(print_package_changes "$before" "$after")"
   workarounds="$(print_workarounds "$root")"
   message="chore(chromeos-dev-setup): update flake inputs"$'\n\nInputs:\n'"$inputs"
+  if [[ -n "$cutoff" ]]; then
+    message+=$'\n\n'"Cooldown: third-party inputs at their newest commit before ${cutoff%%T*} ($COOLDOWN_DAYS days)."
+  fi
   if [[ -n "$packages" ]]; then
     message+=$'\n\nPackages:\n'"$packages"
   fi

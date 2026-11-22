@@ -1,6 +1,7 @@
 { symlinkJoin
 , writeShellApplication
 , coreutils
+, curl
 , diffutils
 , findutils
 , git
@@ -14,7 +15,7 @@ let
     name = "cros";
     # System tools (nix, sudo, apt-get, dpkg, systemctl, gh) come
     # from the host PATH on purpose: they must match the running system.
-    runtimeInputs = [ coreutils diffutils findutils git gnugrep gnused jq ];
+    runtimeInputs = [ coreutils curl diffutils findutils git gnugrep gnused jq ];
     text = builtins.readFile ./cros.bash;
   };
 in
