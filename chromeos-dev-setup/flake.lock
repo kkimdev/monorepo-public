@@ -161,26 +161,6 @@
         "type": "github"
       }
     },
-    "openspec": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "lastModified": 1795126520,
-        "narHash": "sha256-Gs6SxZgN0JjbwUwVU8hNEezxMjiyTO0p+yloARNtAdU=",
-        "owner": "Fission-AI",
-        "repo": "OpenSpec",
-        "rev": "0c737dc1b543249b38b0f4716816fcf493d894dd",
-        "type": "github"
-      },
-      "original": {
-        "owner": "Fission-AI",
-        "repo": "OpenSpec",
-        "type": "github"
-      }
-    },
     "root": {
       "inputs": {
         "home-manager": "home-manager",
@@ -192,7 +172,6 @@
           "llm-agents",
           "nixpkgs"
         ],
-        "openspec": "openspec",
         "sommelier-rs": "sommelier-rs"
       }
     },

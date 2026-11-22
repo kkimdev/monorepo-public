@@ -5,7 +5,9 @@ let
   host = hostData;
   system = pkgs.stdenv.hostPlatform.system;
   llmAgentsPkgs       = inputs.llm-agents.packages.${system};
-  openspecCli         = inputs.openspec.packages.${system}.default;
+  # From llm-agents like the other agent tools: its binary cache has it, so
+  # installs never build it (the upstream flake's build fetches npm packages).
+  openspecCli         = llmAgentsPkgs.openspec;
   crosCli             = inputs.self.packages.${system}.cros;
   zshPath             = "${config.home.profileDirectory}/bin/zsh";
   # Claude Code plugin whose skills directory is the shared ~/.agents/skills.

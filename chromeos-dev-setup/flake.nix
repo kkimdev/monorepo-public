@@ -15,10 +15,6 @@
     # that llm-agents pins. Its binary cache then covers the agent packages, and
     # `cros bump llm-agents` (or a full `cros bump`) advances nixpkgs too.
     nixpkgs.follows = "llm-agents/nixpkgs";
-    openspec = {
-      url = "github:Fission-AI/OpenSpec";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     home-manager = {
       url = "github:nix-community/home-manager";
       inputs.nixpkgs.follows = "nixpkgs";
