@@ -13,7 +13,10 @@
   };
 
   inputs = {
-    nixpkgs.url = "https://flakehub.com/f/DeterminateSystems/nixpkgs-weekly/0.1";
+    # One nixpkgs for everything: the official NixOS/nixpkgs nixpkgs-unstable
+    # that llm-agents pins. Its binary cache then covers the agent packages, and
+    # `cros bump llm-agents` (or a full `cros bump`) advances nixpkgs too.
+    nixpkgs.follows = "llm-agents/nixpkgs";
     openspec = {
       url = "github:Fission-AI/OpenSpec";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -26,8 +29,8 @@
     nix-index-database.url = "github:nix-community/nix-index-database";
     nix-index-database.inputs.nixpkgs.follows = "nixpkgs";
 
-    # LLM agent packages are sourced from the upstream Numtide collection.
-    # Keep its pinned nixpkgs input so the published binary cache remains usable.
+    # LLM agent packages are sourced from the upstream Numtide collection. It
+    # keeps its own nixpkgs input (see `nixpkgs` above) so its cache stays usable.
     llm-agents.url = "github:numtide/llm-agents.nix";
 
     sommelier-rs = {

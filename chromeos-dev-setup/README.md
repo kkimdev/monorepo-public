@@ -95,7 +95,7 @@ update reminders. Then, periodically:
 
 ```bash
 cros bump            # Pull main, update every flake input, apply, commit flake.lock (no push)
-cros bump nixpkgs    # Or update selected inputs only
+cros bump llm-agents # Or selected inputs only (llm-agents also moves nixpkgs)
 cros publish         # Push the tested commits to main for everyone
 ```
 

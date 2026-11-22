@@ -239,20 +239,6 @@
         "type": "github"
       }
     },
-    "nixpkgs_2": {
-      "locked": {
-        "lastModified": 1794042290,
-        "narHash": "sha256-ziZn2PvCJE5JEEpqTdxXwJpPB+L3YqoCpTAMCzyaP3U=",
-        "rev": "f4a03c008967841f2a0b3cb7c436fc6fc31671f6",
-        "revCount": 1113206,
-        "type": "tarball",
-        "url": "https://api.flakehub.com/f/pinned/DeterminateSystems/nixpkgs-weekly/0.1.1113206%2Brev-f4a03c008967841f2a0b3cb7c436fc6fc31671f6/01a1e7ff-6305-7ad2-bb1f-9855526cb446/source.tar.gz"
-      },
-      "original": {
-        "type": "tarball",
-        "url": "https://flakehub.com/f/DeterminateSystems/nixpkgs-weekly/0.1"
-      }
-    },
     "openspec": {
       "inputs": {
         "nixpkgs": [
@@ -282,7 +268,10 @@
         "kakaotalk": "kakaotalk",
         "llm-agents": "llm-agents",
         "nix-index-database": "nix-index-database",
-        "nixpkgs": "nixpkgs_2",
+        "nixpkgs": [
+          "llm-agents",
+          "nixpkgs"
+        ],
         "openspec": "openspec",
         "sommelier-rs": "sommelier-rs"
       }

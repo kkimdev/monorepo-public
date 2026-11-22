@@ -63,6 +63,10 @@ The flake is evaluated from the checkout itself:
 `git+file://<checkout>?dir=chromeos-dev-setup`. Consequences:
 
 - Evaluation is pure (`system = "x86_64-linux"`, no `--impure`, no host paths).
+- There is one nixpkgs: the official `NixOS/nixpkgs` `nixpkgs-unstable` that
+  llm-agents pins (`nixpkgs.follows = "llm-agents/nixpkgs"`), so llm-agents'
+  binary cache matches and no second package set is installed. It moves with
+  `cros bump llm-agents`; `cros bump nixpkgs` matches nothing.
 - `flake.lock` is read and updated in place; nothing is copied to a staging
   directory.
 - `nixpkgs/kakaotalk` is the input `path:../nixpkgs/kakaotalk`, so a change to
