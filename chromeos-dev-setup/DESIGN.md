@@ -171,10 +171,16 @@ last lock change older than 14 days.
 ## Home Manager changes
 
 - Desktop entries: `xdg.dataFile."applications"` links each file from the
-  profile (`recursive = true`); icons are not copied. Verified live: garcon
-  watches `~/.local/share/applications` but not the Nix profile, symlinked
-  entries appear, retargeted links update the launcher immediately, removed
-  links disappear, and icons resolve from `XDG_DATA_DIRS`.
+  profile (`recursive = true`). Verified live: garcon watches
+  `~/.local/share/applications` but not the Nix profile, symlinked entries
+  appear, retargeted links update the launcher immediately, and removed links
+  disappear.
+- Icons: garcon (`vm_tools/garcon/icon_finder.cc`) searches its
+  `XDG_DATA_DIRS` and always `~/.local/share`, under `icons/{gnome,hicolor}`
+  and `pixmaps`. Its `XDG_DATA_DIRS` drop-in takes effect only when garcon
+  restarts, which on a fresh install comes after setup, so the profile's
+  `share/icons` and `share/pixmaps` are linked into `~/.local/share` too and
+  icons show at once.
 - Login shell: Debian `bash` stays the login shell. The managed `~/.bashrc`
   execs the Nix `zsh` for interactive shells (with `SHELL` exported and login
   mode preserved); if zsh is missing or broken, the terminal still opens in bash.

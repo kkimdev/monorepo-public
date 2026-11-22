@@ -82,6 +82,16 @@ let
 
   flakeNixConfig = (import ./flake.nix).nixConfig;
 
+  # The profile's icons and pixmaps, as two directories that always exist.
+  launcherIcons = pkgs.runCommand "launcher-icons" { } ''
+    mkdir -p $out/icons $out/pixmaps
+    for dir in icons pixmaps; do
+      if [ -d ${config.home.path}/share/$dir ]; then
+        cp -rs ${config.home.path}/share/$dir/. $out/$dir/
+      fi
+    done
+  '';
+
   # One editor command for $EDITOR, $VISUAL, and Git.
   editor = "code --wait --new-window";
 
@@ -530,9 +540,22 @@ in
 
   # ChromeOS's launcher (garcon) watches ~/.local/share/applications but not
   # the Nix profile, so link each profile entry there; replaced links update
-  # the launcher immediately. Icons resolve through XDG_DATA_DIRS.
+  # the launcher immediately.
   xdg.dataFile."applications" = {
     source = "${config.home.path}/share/applications";
+    recursive = true;
+  };
+  # garcon looks up icons under its XDG_DATA_DIRS and always under
+  # ~/.local/share ({icons/hicolor,pixmaps}). Its XDG_DATA_DIRS drop-in applies
+  # only from its next start, which on a fresh install is after setup, so link
+  # the profile's icons where it finds them at once. launcherIcons always has
+  # both directories, even when no package ships pixmaps.
+  xdg.dataFile."icons" = {
+    source = "${launcherIcons}/icons";
+    recursive = true;
+  };
+  xdg.dataFile."pixmaps" = {
+    source = "${launcherIcons}/pixmaps";
     recursive = true;
   };
 
