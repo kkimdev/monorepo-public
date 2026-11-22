@@ -169,8 +169,14 @@ last lock change older than 14 days.
   execs the Nix `zsh` for interactive shells (with `SHELL` exported and login
   mode preserved); if zsh is missing or broken, the terminal still opens in bash.
   `CROS_NO_ZSH=1` skips the switch.
-- Codex Desktop runs with `CODEX_OZONE_PLATFORM=wayland`; under X11 the
-  wayland-first `GTK_IM_MODULE` crashes it on first text input.
+- Desktop apps come from maintained sources: OpenAI's official Linux ChatGPT
+  (Codex) app and the Antigravity app from llm-agents, the Antigravity IDE from
+  nixpkgs. Small `wrapApp` wrappers add what Crostini needs: `NIXOS_OZONE_WL=1`
+  so ChatGPT runs on Wayland (under X11 the wayland-first `GTK_IM_MODULE`
+  crashes it on first text input), `CHROME_BIN` pointing Antigravity's browser
+  agent at the installed Chromium, and the IDE's existing data directory
+  `~/.antigravity-ide`. Desktop entries run binaries by name, so they use the
+  wrappers.
 
 ## Workarounds
 

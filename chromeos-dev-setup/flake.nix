@@ -4,11 +4,9 @@
   nixConfig = {
     extra-substituters = [
       "https://cache.numtide.com"
-      "https://codex-desktop-linux.cachix.org"
     ];
     extra-trusted-public-keys = [
       "niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g="
-      "codex-desktop-linux.cachix.org-1:nX/xy6AdK9hQE24A8ALGjkCKj2ObFmcnemiL5Cid4nk="
     ];
   };
 
@@ -45,17 +43,6 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    codex-desktop-linux = {
-      url = "github:ilysenko/codex-desktop-linux";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-
-    # llm-agents.nix has the Antigravity CLI and hub but no IDE.
-    antigravity-nix = {
-      url = "github:jacopone/antigravity-nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-
     # Per-user data. `cros` overrides it with ~/.config/cros/host; the example
     # keeps evaluation pure and gives CI a user named "ci".
     host = {
@@ -64,7 +51,7 @@
     };
   };
 
-  outputs = { self, nixpkgs, home-manager, nix-index-database, sommelier-rs, kakaotalk, codex-desktop-linux, antigravity-nix, host, ... }@inputs:
+  outputs = { self, nixpkgs, home-manager, nix-index-database, sommelier-rs, kakaotalk, host, ... }@inputs:
     let
       system = "x86_64-linux";
       hostData = builtins.fromJSON (builtins.readFile "${host}/host.json");
@@ -78,7 +65,6 @@
         overlays = [
           sommelier-rs.overlays.default
           kakaotalk.overlays.default
-          antigravity-nix.overlays.default
         ];
       };
     in {
@@ -96,7 +82,6 @@
         modules = [
           ./home.nix
           nix-index-database.homeModules.default
-          codex-desktop-linux.homeManagerModules.default
           { programs.nix-index-database.comma.enable = true; }
         ];
       };

@@ -32,6 +32,27 @@ let
   # one, wayland-2: sommelier-rs (direct VirtWL, ChromeOS IME protocols).
   sommelierRsDisplay = "wayland-2";
 
+  # Adds makeWrapper arguments to an app's binary. Desktop entries run the
+  # binary by name, so they pick up the wrapper from the profile.
+  wrapApp = pkg: bin: arguments: pkgs.symlinkJoin {
+    name = "${pkg.pname or pkg.name}-wrapped";
+    paths = [ pkg ];
+    nativeBuildInputs = [ pkgs.makeWrapper ];
+    postBuild = "wrapProgram $out/bin/${bin} ${arguments}";
+    inherit (pkg) meta;
+  };
+  # Antigravity's browser agent looks for Chrome through CHROME_BIN; use the
+  # Chromium installed below.
+  antigravityChrome = "--set-default CHROME_BIN ${pkgs.chromium}/bin/chromium";
+  antigravityHub = wrapApp llmAgentsPkgs.antigravity-hub "antigravity" antigravityChrome;
+  # Keep the IDE's data where earlier packages put it (~/.antigravity-ide holds
+  # settings, sign-in, and extensions), instead of ~/.config/Antigravity IDE.
+  antigravityIde = wrapApp pkgs.antigravity-ide "antigravity-ide"
+    "${antigravityChrome} --add-flags --user-data-dir=\\$HOME/.antigravity-ide";
+  # The launcher picks Wayland only with NIXOS_OZONE_WL; under X11 the
+  # wayland-first GTK_IM_MODULE below crashes it on the first text input.
+  chatgptWayland = wrapApp llmAgentsPkgs.chatgpt "chatgpt" "--set NIXOS_OZONE_WL 1";
+
   # Display and input environment for login shells and for apps the ChromeOS
   # launcher starts through cros-garcon.
   desktopEnvironment = {
@@ -44,9 +65,6 @@ let
     QT_IM_MODULE = "cros";
     WAYLAND_DISPLAY = sommelierRsDisplay;
     DISPLAY = ":1";
-    # Codex Desktop's launcher defaults to X11, where the wayland-first
-    # GTK_IM_MODULE above crashes it on the first text input focus.
-    CODEX_OZONE_PLATFORM = "wayland";
   };
 
   systemdEnvironment = env:
@@ -149,15 +167,17 @@ in
       nodejs
       openspecCli
       crosCli
-      # llm-agents.nix has no Antigravity IDE; keep both apps from one source.
-      google-antigravity-no-fhs
-      google-antigravity-ide
+      # The Antigravity app comes from llm-agents, the IDE from nixpkgs.
+      antigravityHub
+      antigravityIde
 
       # Agent tools come from one upstream package set.
       llmAgentsPkgs.antigravity-cli
       llmAgentsPkgs.claude-code
       claudeDesktopWithOpener
       llmAgentsPkgs.codex
+      # OpenAI's official Linux ChatGPT (Codex) desktop app.
+      chatgptWayland
       # OpenCode V2 supersedes the V1 `opencode` CLI.
       llmAgentsPkgs.opencode2
       orcaWithDesktopIdentity
@@ -301,21 +321,6 @@ in
 
   programs = {
     home-manager.enable = true;
-
-    # Known codex-desktop issue: re-launch hangs after closing the window
-    # (Electron single-instance lock); Ctrl+Q quits. No config-side fix yet.
-    codexDesktopLinux = {
-      enable = true;
-      # Optional feature, off by choice; the module builds a single package
-      # with or without it.
-      # computerUseUi.enable = true;
-      # The package's owner=desktop marker makes Codex Desktop run remote
-      # control from its own app-server; no ~/.codex/packages link is needed.
-      remoteMobileControl.enable = true;
-      # Keep the declarative remote-control service disabled because Codex Desktop
-      # already owns the app-server control socket in this Crostini environment.
-      # remoteControl.enable = true;
-    };
 
     bash = {
       enable = true;
@@ -725,12 +730,10 @@ in
       substituters = [
         "https://cache.nixos.org"
         "https://cache.numtide.com"
-        "https://codex-desktop-linux.cachix.org"
       ];
       trusted-public-keys = [
         "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
         "niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g="
-        "codex-desktop-linux.cachix.org-1:nX/xy6AdK9hQE24A8ALGjkCKj2ObFmcnemiL5Cid4nk="
       ];
     };
   };

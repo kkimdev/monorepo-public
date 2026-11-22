@@ -14,11 +14,11 @@
     "check": { "type": "manual" }
   },
   {
-    "id": "codex-desktop-wayland",
-    "where": "home.nix CODEX_OZONE_PLATFORM (session variables and cros-garcon drop-in)",
-    "why": "Codex Desktop's launcher defaults to X11 on Crostini, where the wayland-first GTK_IM_MODULE crashes it on first text input.",
-    "removeWhen": "codex-desktop-linux selects Wayland under sommelier-rs, or its X11 backend works with GTK_IM_MODULE=wayland:cros:test-cros",
-    "check": { "type": "github-issue", "repo": "ilysenko/codex-desktop-linux", "number": 95 }
+    "id": "chatgpt-wayland",
+    "where": "home.nix chatgptWayland (NIXOS_OZONE_WL=1 in its wrapper)",
+    "why": "The ChatGPT (Codex) desktop launcher picks X11 unless NIXOS_OZONE_WL is set; under X11 the wayland-first GTK_IM_MODULE crashes it on first text input.",
+    "removeWhen": "llm-agents' chatgpt selects Wayland under sommelier-rs by default, or its X11 backend works with GTK_IM_MODULE=wayland:cros:test-cros",
+    "check": { "type": "manual" }
   },
   {
     "id": "zplug-perl",
