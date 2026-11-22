@@ -16,13 +16,24 @@ on:
 permissions:
   contents: read
 
+# The repository allows only local actions, so every step is a plain command.
 jobs:
   check:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/determinate-nix-action@v3
+      - name: Check out
+        run: |
+          git init --quiet "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          git fetch --quiet --depth=1 origin "$GITHUB_SHA"
+          git checkout --quiet --detach FETCH_HEAD
+      - name: Install Nix
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSfL https://install.determinate.systems/nix |
+            sh -s -- install --no-confirm
+          echo /nix/var/nix/profiles/default/bin >> "$GITHUB_PATH"
       - name: Unit tests
         run: |
           python3 -m unittest discover -s chromeos-dev-setup/tests -p 'test_*.py'
@@ -31,9 +42,9 @@ jobs:
       - name: Evaluate the Home Manager configuration
         run: >
           nix eval --accept-flake-config --raw
-          "git+file://$GITHUB_WORKSPACE?dir=chromeos-dev-setup#homeConfigurations.ci.activationPackage.drvPath"
+          "$GITHUB_WORKSPACE/chromeos-dev-setup#homeConfigurations.ci.activationPackage.drvPath"
       - name: Build the system package and the cros CLI
         run: >
           nix build --accept-flake-config --no-link --print-out-paths
-          "git+file://$GITHUB_WORKSPACE?dir=chromeos-dev-setup#system-deb"
-          "git+file://$GITHUB_WORKSPACE?dir=chromeos-dev-setup#cros"
+          "$GITHUB_WORKSPACE/chromeos-dev-setup#system-deb"
+          "$GITHUB_WORKSPACE/chromeos-dev-setup#cros"
