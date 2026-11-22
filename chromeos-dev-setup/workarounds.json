@@ -1,0 +1,37 @@
+[
+  {
+    "id": "orca-desktop-identity",
+    "where": "home.nix orcaWithDesktopIdentity, patch-orca.py",
+    "why": "Orca's Electron app ID and X11 class do not match orca-ide.desktop, so ChromeOS shows a generic shelf icon.",
+    "removeWhen": "stablyai/orca#29172 is released and llm-agents.nix ships that Orca",
+    "check": { "type": "github-pr", "repo": "stablyai/orca", "number": 29172 }
+  },
+  {
+    "id": "claude-desktop-xdg-open",
+    "where": "home.nix claudeDesktopWithOpener",
+    "why": "Claude Desktop's FHS environment has no xdg-open, so login links do not open.",
+    "removeWhen": "llm-agents.nix's claude-desktop FHS environment includes xdg-utils",
+    "check": { "type": "manual" }
+  },
+  {
+    "id": "codex-desktop-wayland",
+    "where": "home.nix CODEX_OZONE_PLATFORM (session variables and cros-garcon drop-in)",
+    "why": "Codex Desktop's launcher defaults to X11 on Crostini, where the wayland-first GTK_IM_MODULE crashes it on first text input.",
+    "removeWhen": "codex-desktop-linux selects Wayland under sommelier-rs, or its X11 backend works with GTK_IM_MODULE=wayland:cros:test-cros",
+    "check": { "type": "github-issue", "repo": "ilysenko/codex-desktop-linux", "number": 95 }
+  },
+  {
+    "id": "zplug-perl",
+    "where": "home.nix perl in home.packages",
+    "why": "zplug strips ANSI escapes with perl; project Nix shells may drop /usr/bin from PATH.",
+    "removeWhen": "zplug is no longer used or no longer calls perl",
+    "check": { "type": "manual" }
+  },
+  {
+    "id": "orca-npx-node",
+    "where": "home.nix nodejs in home.packages",
+    "why": "Orca's skill updater runs npx outside project development shells.",
+    "removeWhen": "Orca ships its own Node runtime for skill installs",
+    "check": { "type": "manual" }
+  }
+]

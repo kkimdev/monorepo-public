@@ -1,0 +1,12 @@
+Package: cros-dev-system
+Version: @VERSION@
+Architecture: all
+Maintainer: chromeos-dev-setup <noreply@example.invalid>
+Priority: optional
+Section: admin
+Depends: uidmap, cros-im, btrfs-progs, e2fsprogs, curl, ca-certificates, git, xz-utils, python3
+Conflicts: vim, vim-tiny, command-not-found
+Description: root-level ChromeOS Crostini configuration for chromeos-dev-setup
+ Installs the Android adb udev rule and the disk-backed /tmp policy that must
+ stay effective without Nix, and migrates the files written by the old
+ setup.bash.

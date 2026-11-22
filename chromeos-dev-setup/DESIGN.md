@@ -65,9 +65,14 @@ The flake is evaluated from the checkout itself:
 - `nixpkgs/kakaotalk` is the input `path:../nixpkgs/kakaotalk`, so a change to
   the package ships with the commit that makes it, without a lock bump.
 - New files must be tracked by Git (`git add`) to be visible to Nix.
-- Sparse checkouts must include `chromeos-dev-setup` and `nixpkgs/kakaotalk`;
-  `setup.bash` and `cros` add missing sparse paths. Shallow, sparse clones
-  evaluate correctly (verified).
+- Sparse checkouts must include every repository path the flake reads.
+  `cros apply` derives them from the relative `path` inputs in `flake.lock`, so
+  a new in-repo package needs no list update. Shallow, sparse clones evaluate
+  correctly, and `cros` itself builds before those paths exist (inputs are
+  fetched lazily) (verified).
+- Flake references are plain directories (`<checkout>/chromeos-dev-setup`),
+  which Nix resolves to `git+file://…?dir=chromeos-dev-setup`; no URL is built
+  by hand.
 
 ## System configuration: local Debian package
 
@@ -102,7 +107,7 @@ group, installing Nix, and ensuring `trusted-users` includes the user (restart
 | Command | Effect |
 | --- | --- |
 | `cros sync` | Requires a clean `main`; `git pull --ff-only`, `apt-get update/full-upgrade/autoremove`, `determinate-nixd upgrade`, then `apply`. |
-| `cros apply` | Refresh host data, add sparse paths, run migrations, install the system package if changed, build and activate Home Manager, run post-activation checks. |
+| `cros apply` | Add sparse paths, install the system package if changed, refresh host data, run migrations, build and activate Home Manager, start inactive desktop services. |
 | `cros check` | Build the system package and the Home Manager configuration without installing or activating anything. |
 | `cros bump [input…]` | Maintainer: requires a clean `main`; `nix flake update [input…]`, `apply`, print input and package-version changes and workaround status, commit only `flake.lock`. Does not push. |
 | `cros publish` | Maintainer: requires a clean `main` that is ahead of and descends from `origin/main`; push. |
@@ -134,7 +139,9 @@ how existing installs migrate.
 
 ## Migrations run by `cros apply`
 
-Each step is idempotent and reversible where data is involved.
+Each step is idempotent and reversible where data is involved. They live in
+one block of `cros/cros.bash`; delete it once every machine has run
+`cros apply`.
 
 1. Git identity: copy the old `~/.config/home-manager/host.json` identity to
    `~/.gitconfig` when `user.name`/`user.email` are unset.
@@ -142,8 +149,9 @@ Each step is idempotent and reversible where data is involved.
    `~/.config/home-manager.legacy` once.
 3. Old desktop copies: delete regular files under
    `~/.local/share/{applications,icons}` that are byte-identical to the
-   profile's (or `/usr/share/applications/garcon_host_browser.desktop`), then
-   prune empty directories, before Home Manager links its entries.
+   profile's file of the same name (or, for entries, to the same name in
+   `/usr/share/applications`), then prune empty directories, before Home
+   Manager links its entries. Anything else is left alone.
 4. Login shell: if it is the Nix zsh, `chsh` back to `/bin/bash`, after the new
    `~/.bashrc` is active.
 5. Old `/etc` files: handled by the package's `postinst` (see above).

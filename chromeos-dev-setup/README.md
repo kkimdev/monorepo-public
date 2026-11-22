@@ -46,7 +46,8 @@ await term_.prefs_.set('user-css-text', '@font-face {font-family: "JetBrainsMono
 
 Open `chrome://os-settings/crostini/details` in Chrome's address bar and set up **Linux development environment** if needed.
 
-In an **x86_64 ChromeOS Linux terminal**, fill in your Git identity and paste:
+In an **x86_64 ChromeOS Linux terminal**, fill in your Git identity (written
+once to `~/.gitconfig`) and paste:
 
 ```bash
 # TODO: fill
@@ -71,22 +72,40 @@ export GIT_USER_EMAIL="your-email@example.com"
 )
 ```
 
-Reopen the terminal after installation. Keep the checkout at this path.
+Reopen the terminal after installation. Keep the checkout at this path, or
+rerun `setup.bash` from its new location after moving it.
 
 ```bash
-cros-setup   # Reapply local settings; leave running GUI services intact
-cros-update  # Pull main's settings + patches + lock, then update Debian/Nix and apply
+cros sync          # Pull main, upgrade Debian and Nix, then apply
+cros apply         # Reapply the current checkout; running GUI services stay up
+cros check         # Build without installing or activating anything
+cros reset         # Start inactive desktop services
+cros reset --hard  # Restart desktop services (running GUI apps close)
+cros clean         # Collect Nix garbage
 ```
 
-Updates require a clean `main` branch. To contribute, create a branch in
+`cros sync` requires a clean `main` branch. To contribute, create a branch in
 `~/workspaces/monorepo-public`, edit, commit, and push a PR (fork if needed).
+New files must be added to Git (`git add`) before Nix can see them.
 
-Maintainers, from the repository root:
+Per-user files live in `~/.config/cros/host/`: `host.json` is written by
+`cros apply`; an optional `local.nix` Home Manager module adds personal
+packages or settings without touching the repository.
+
+### Maintainers
+
+Install with `bash chromeos-dev-setup/setup.bash --maintainer` (once) to enable
+update reminders. Then, periodically:
 
 ```bash
-bash chromeos-dev-setup/setup.bash --build-only  # Check the locked build
-bash chromeos-dev-setup/setup.bash --update      # Refresh dependencies and apply
+cros bump            # Update every flake input, apply, commit flake.lock (no push)
+cros bump nixpkgs    # Or update selected inputs only
+cros publish         # Push the tested commits to main for everyone
 ```
+
+`cros bump` prints changed inputs, package versions, and the status of the
+workarounds listed in `workarounds.json`. See [DESIGN.md](DESIGN.md) for how
+the setup is structured.
 
 ### Optional local services
 
@@ -133,6 +152,22 @@ Reference: https://www.reddit.com/r/chromeos/comments/1u0niv3/crostini_linux_on_
 3. Run `, glxinfo -B | grep Accelerated` and confirm `Accelerated: yes`
 
 ## Troubleshooting
+
+### GitHub API rate limit during `cros bump`
+
+Nix resolves `github:` inputs through GitHub's API, which allows 60 anonymous
+requests per hour; one full `cros bump` uses about 15. If it fails with HTTP
+403, create a token without scopes at <https://github.com/settings/tokens> and
+give it to Nix from a file only you can read:
+
+```bash
+install -m 600 /dev/null ~/.config/nix/github-token.conf
+echo "access-tokens = github.com=<token>" > ~/.config/nix/github-token.conf
+```
+
+The Home Manager-managed `~/.config/nix/nix.conf` includes that file when it
+exists. For a single run, `NIX_CONFIG="access-tokens = github.com=<token>" cros bump`
+also works.
 
 ### Internal Microphone Not Working in Chrome
 

@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Keep the wrapper's model policy separate from Codex's native config.
+defaults="${CODEX_DEFAULTS_FILE:-$HOME/.config/codex-wrapper/default-model.toml}"
+config="${CODEX_HOME:-$HOME/.codex}/config.toml"
+
+# Find the next `codex` on PATH instead of hard-coding a package/store path.
+# The wrapper itself is skipped, including when it is reached through a symlink.
+self="$(readlink -f "$0")"
+real_codex=""
+IFS=: read -r -a path_entries <<< "${PATH:-}"
+for path_entry in "${path_entries[@]}"; do
+    [[ -n "$path_entry" ]] || path_entry=.
+    candidate="$path_entry/codex"
+    [[ -x "$candidate" ]] || continue
+    [[ "$(readlink -f "$candidate")" == "$self" ]] && continue
+    real_codex="$candidate"
+    break
+done
+if [[ -z "$real_codex" ]]; then
+    printf 'codex-wrapper: real codex was not found on PATH\n' >&2
+    exit 127
+fi
+
+# Respect Codex's explicit user-config bypass option.
+for arg in "$@"; do
+    [[ "$arg" == "--" ]] && break
+    [[ "$arg" == "--ignore-user-config" ]] && exec "$real_codex" "$@"
+done
+
+valid_toml() {
+    python3 - "$1" <<'PY'
+import sys
+import tomllib
+
+try:
+    with open(sys.argv[1], "rb") as stream:
+        tomllib.load(stream)
+except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+    raise SystemExit(1)
+PY
+}
+
+read_managed_values() {
+    python3 - "$1" <<'PY'
+import json
+import sys
+import tomllib
+
+try:
+    with open(sys.argv[1], "rb") as stream:
+        config = tomllib.load(stream)
+except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+    raise SystemExit(1)
+
+for key in ("model", "model_reasoning_effort"):
+    value = config.get(key)
+    if not isinstance(value, str) or not value:
+        raise SystemExit(1)
+    print(json.dumps(value, ensure_ascii=False))
+PY
+}
+
+show_uninitialized() {
+    printf 'codex-wrapper: default model file is not initialized\n' >&2
+    printf '  real Codex: %s\n' "$real_codex" >&2
+    printf '  default file: %s\n' "$defaults" >&2
+    printf '  create it with model and model_reasoning_effort, then run codex again\n' >&2
+}
+
+# Serialize bootstrap and config replacement for concurrent launches.
+config_dir="${config%/*}"
+mkdir -p "$config_dir"
+exec 9>"${config}.default-model.lock"
+flock -x 9
+unlock() {
+    flock -u 9
+    exec 9>&-
+}
+
+if [[ -e "$defaults" && ! -f "$defaults" ]]; then
+    printf 'codex-wrapper: default path is not a regular file: %s\n' "$defaults" >&2
+    printf '  real Codex: %s\n' "$real_codex" >&2
+    unlock
+    exit 78
+fi
+
+# A missing default file is a first-run state, not an error. If the native
+# config already has both values, use it to initialize the wrapper policy.
+if [[ ! -e "$defaults" ]]; then
+    native_values=""
+    if [[ -f "$config" ]] && valid_toml "$config"; then
+        native_values="$(read_managed_values "$config" 2>/dev/null || true)"
+    fi
+    if [[ -n "$native_values" ]] && [[ "$(printf '%s\n' "$native_values" | wc -l)" -eq 2 ]]; then
+        defaults_dir="${defaults%/*}"
+        mkdir -p "$defaults_dir"
+        bootstrap_tmp="$(mktemp "${defaults}.tmp.XXXXXX")"
+        {
+            printf 'model = %s\n' "$(printf '%s\n' "$native_values" | sed -n '1p')"
+            printf 'model_reasoning_effort = %s\n' "$(printf '%s\n' "$native_values" | sed -n '2p')"
+        } >"$bootstrap_tmp"
+        chmod 600 "$bootstrap_tmp"
+        mv -n "$bootstrap_tmp" "$defaults"
+        rm -f "$bootstrap_tmp"
+        printf 'codex-wrapper: initialized defaults from %s\n' "$config" >&2
+    fi
+fi
+
+if [[ ! -f "$defaults" ]]; then
+    show_uninitialized
+    unlock
+    exec "$real_codex" "$@"
+fi
+
+# Once the wrapper file exists, it is the canonical policy and must be valid.
+if ! default_values="$(read_managed_values "$defaults" 2>/dev/null)"; then
+    printf 'codex-wrapper: invalid default file: %s\n' "$defaults" >&2
+    printf '  real Codex: %s\n' "$real_codex" >&2
+    unlock
+    exit 78
+fi
+model="$(printf '%s\n' "$default_values" | sed -n '1p')"
+reasoning="$(printf '%s\n' "$default_values" | sed -n '2p')"
+
+# Never rewrite a malformed native config. Leave it intact for repair.
+if [[ -f "$config" ]] && ! valid_toml "$config"; then
+    printf 'codex-wrapper: native config is invalid: %s\n' "$config" >&2
+    printf '  real Codex: %s\n' "$real_codex" >&2
+    unlock
+    exit 78
+fi
+
+# Rewrite the native config through a same-directory temporary file. Missing
+# managed keys are inserted before the first TOML table.
+tmp="$(mktemp "${config}.tmp.XXXXXX")"
+trap 'rm -f "$tmp"' EXIT
+input="$config"
+[[ -f "$config" ]] || input=/dev/null
+awk -v model="$model" -v reasoning="$reasoning" '
+    function add_missing() {
+        if (!seen["model"]) {
+            print "model = " model
+            seen["model"] = 1
+        }
+        if (!seen["model_reasoning_effort"]) {
+            print "model_reasoning_effort = " reasoning
+            seen["model_reasoning_effort"] = 1
+        }
+    }
+    /^[[:space:]]*\[/ {
+        if (!inserted) {
+            add_missing()
+            inserted = 1
+        }
+        in_table = 1
+    }
+    !in_table && /^[[:space:]]*model[[:space:]]*=/ {
+        print "model = " model
+        seen["model"] = 1
+        next
+    }
+    !in_table && /^[[:space:]]*model_reasoning_effort[[:space:]]*=/ {
+        print "model_reasoning_effort = " reasoning
+        seen["model_reasoning_effort"] = 1
+        next
+    }
+    { print }
+    END {
+        if (!inserted) add_missing()
+    }
+' "$input" >"$tmp"
+if [[ -e "$config" ]]; then
+    chmod --reference="$config" "$tmp"
+else
+    chmod 600 "$tmp"
+fi
+mv "$tmp" "$config"
+
+unlock
+# Preserve every original argument and replace this wrapper with Codex itself.
+exec "$real_codex" "$@"

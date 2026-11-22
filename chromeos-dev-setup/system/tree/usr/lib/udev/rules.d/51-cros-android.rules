@@ -1,0 +1,4 @@
+# Android devices attached over adb.  Crostini's default nodes are root:root
+# 0644, so the user cannot open them.
+SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", MODE="0666"
+SUBSYSTEM=="usb", ATTR{idVendor}=="22b8", MODE="0666"

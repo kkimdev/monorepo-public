@@ -1,6 +1,14 @@
-"""Exercise setup's failure boundaries with fake tools and a disposable home.
+"""Exercise the bootstrap `setup.bash` with fake system tools and a fake repo.
 
-No Nix build, root command, activation, or host configuration change is real.
+Git, Python, and the shell are real; apt, sudo, systemd, Nix, and the installer
+are a Python driver on PATH that records argv as JSON lines. Nothing is built,
+installed, or downloaded, and no host file is touched.
+
+The Crostini `/dev/wl0` check is a bash `[[ -c ]]` reserved-word test, so it
+cannot be stubbed through PATH. Where the device does not exist the tested copy
+has that single check neutralised; `Guards` still tests the real check inside a
+private mount namespace when one is available.
+
 Run with: python3 -m unittest discover -s chromeos-dev-setup/tests -v
 """
 
@@ -12,412 +20,509 @@ import stat
 import subprocess
 import tempfile
 import unittest
+from functools import lru_cache
 
 
-SETUP = Path(__file__).resolve().parents[1] / "setup.bash"
+TESTS = Path(__file__).resolve().parent
+SETUP = TESTS.parent / "setup.bash"
+DEVICE_CHECK = "[[ -c /dev/wl0 ]]"
+REAL_GIT = shutil.which("git")
+UNSHARE = shutil.which("unshare")
 
-# The only shell builtin we replace is the Crostini character-device check.
-# This lets these tests run outside ChromeOS without creating a real device.
-RUNNER = r"""
-function [ {
-  if [[ "$#" == 3 && "$1" == -c && "$2" == /dev/wl0 && "$3" == ']' ]]; then
-    return 0
-  fi
-  builtin [ "$@"
-}
-export -f '['
-exec bash "$@"
-"""
+
+@lru_cache(maxsize=1)
+def namespace_available():
+    """Unprivileged user and mount namespaces are needed to mask host paths."""
+    if not UNSHARE:
+        return False
+    probe = subprocess.run(
+        [UNSHARE, "-rm", "true"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=20,
+    )
+    return probe.returncode == 0
+
+
+def is_character_device(path):
+    try:
+        return stat.S_ISCHR(os.stat(path).st_mode)
+    except OSError:
+        return False
 
 
 STUB = r'''#!/usr/bin/env python3
 import json
 import os
 from pathlib import Path
-import shutil
 import sys
 
 name = Path(sys.argv[0]).name
 args = sys.argv[1:]
 audit = Path(os.environ["SETUP_TEST_AUDIT"])
-with (audit / "calls.jsonl").open("a") as log:
-    log.write(json.dumps([name, *args]) + "\n")
 
-if os.environ.get("SETUP_TEST_ALLOW_PROFILE_CHECKS") == "1":
-    if name in {"node", "npm", "npx", "earlyoom", "cloudflared", "systemctl"}:
+
+def variable(key, default=None):
+    return os.environ.get(key, default)
+
+
+def emit(extra=None):
+    record = {"argv": [name, *args]}
+    if extra:
+        record.update(extra)
+    with (audit / "calls.jsonl").open("a") as log:
+        log.write(json.dumps(record) + "\n")
+
+
+extra = {}
+if name == "id" and args[:1] == ["-nG"]:
+    extra["groups"] = variable("SETUP_TEST_GROUPS", "user adm")
+emit(extra)
+
+if name == "id":
+    if args[:1] == ["-u"]:
+        print(variable("SETUP_TEST_UID", "1000"))
         sys.exit(0)
-    if name == "process-compose":
-        print("simulated optional catalog diagnostic", file=sys.stderr)
+    if args[:1] == ["-nG"]:
+        print(variable("SETUP_TEST_GROUPS", "user adm"))
         sys.exit(0)
+    sys.exit("unexpected id call: " + repr(args))
+
+if name == "uname":
+    print(variable("SETUP_TEST_MACHINE", "x86_64"))
+    sys.exit(0)
 
 if name == "sudo":
-    # Never execute the command: root writes are outside this test's scope.
-    if args[:3] == ["btrfs", "subvolume", "show"]:
-        print("Subvolume ID: 256")
-    if "tee" in args:
-        sys.stdin.read()
-    sys.exit(0)
-if name in {"curl", "systemctl", "apt", "apt-get"}:
-    print("Unexpected direct external/system action: " + name, file=sys.stderr)
-    sys.exit(95)
-if name == "uname":
-    print("x86_64")
-    sys.exit(0)
-if name == "findmnt":
-    print("btrfs" if "FSTYPE" in args else "/dev/test")
-    sys.exit(0)
-if name == "btrfs":
-    sys.exit(0)
-if name == "dpkg":
-    print("/usr/lib/test/gtk-3.0/3.0.0/immodules/im-cros-gtk3.so")
-    print("/usr/lib/test/gtk-4.0/4.0.0/immodules/libim-cros-gtk4.so")
-    print("/usr/lib/test/qt5/plugins/platforminputcontexts/libcrosplatforminputcontextplugin.so")
-    sys.exit(0)
-if name == "find":
-    if any("immodules.cache" in arg for arg in args):
-        print(audit / "immodules.cache")
-    elif any("gtk-4.0" in arg for arg in args):
-        print("/usr/lib/test/gtk-4.0")
-    else:
-        print("Unexpected find: " + repr(args), file=sys.stderr)
-        sys.exit(96)
-    sys.exit(0)
+    if args[:1] == ["tee"]:
+        # Never write under /etc; record the piped text instead.
+        with (audit / "tee.log").open("a") as log:
+            log.write(sys.stdin.read())
+        sys.exit(0)
+    if args[:1] == ["env"]:
+        os.execvp("env", args)
+    os.execvp(args[0], args)
+
+if name == "git":
+    os.execv(os.environ["SETUP_TEST_REAL_GIT"], ["git", *args])
+
 if name == "nix":
-    if "flake" in args and "update" in args:
-        try:
-            flake = args[args.index("--flake") + 1]
-        except (ValueError, IndexError):
-            print("Expected an explicit staged flake for update", file=sys.stderr)
-            sys.exit(97)
-        if not flake.startswith("path:"):
-            print("Expected a staged path flake for update", file=sys.stderr)
-            sys.exit(97)
-        stage = Path(flake[5:])
-        lock = stage / "flake.lock"
-        updated = json.loads(lock.read_text())
-        updated["setupTestUpdate"] = True
-        lock.write_text(json.dumps(updated) + "\n")
-        shutil.copyfile(lock, audit / "updated-staged.lock")
-        if os.environ.get("SETUP_TEST_FAIL_UPDATE") == "1":
-            print("simulated flake update failure", file=sys.stderr)
-            sys.exit(41)
+    if args[:2] == ["config", "show"]:
+        print(variable("SETUP_TEST_TRUSTED_USERS", "root"))
         sys.exit(0)
-    if "build" in args:
-        installable = next((arg for arg in args if arg.startswith("path:") and "#" in arg), None)
-        if installable is None:
-            print("Expected a staged path flake installable", file=sys.stderr)
-            sys.exit(97)
-        stage = Path(installable[5:].split("#", 1)[0])
-        shutil.copytree(stage, audit / "staged-config")
-        if os.environ.get("SETUP_TEST_FAIL_BUILD") == "1":
-            print("simulated package build failure", file=sys.stderr)
-            sys.exit(42)
-        print(audit / "activation")
+    if args[:1] == ["run"]:
+        sys.exit(int(variable("SETUP_TEST_RUN_EXIT", "0")))
+    sys.exit("unexpected nix call: " + repr(args))
+
+if name == "curl":
+    installer = variable("SETUP_TEST_INSTALLER_SCRIPT")
+    if installer:
+        sys.stdout.write(installer)
         sys.exit(0)
-    if "eval" in args:
-        print("26.11")
-        sys.exit(0)
-    if args == ["--version"]:
-        print("nix (test stub)")
-        sys.exit(0)
-    print("Unexpected nix call: " + repr(args), file=sys.stderr)
-    sys.exit(98)
-raise SystemExit("Unknown test tool: " + name)
+    sys.exit(int(variable("SETUP_TEST_CURL_EXIT", "1")))
+
+if name == "tee":
+    sys.stdin.read()
+    sys.exit(0)
+
+if name in {"apt-get", "apt", "systemctl", "usermod", "chsh"}:
+    sys.exit(0)
+
+raise SystemExit("unexpected stub command: " + name)
 '''
 
 
-def tree_snapshot(root):
-    """Include paths, symlink targets, modes, and bytes without following links."""
-    result = {}
-    for path in sorted(root.rglob("*")):
-        info = path.lstat()
-        relative = str(path.relative_to(root))
-        if path.is_symlink():
-            value = ("link", os.readlink(path))
-        elif path.is_file():
-            value = ("file", stat.S_IMODE(info.st_mode), path.read_bytes())
-        else:
-            value = ("directory", stat.S_IMODE(info.st_mode))
-        result[relative] = value
-    return result
+def base_path_directories():
+    """Directories of the real tools the bootstrap needs, without any `nix`."""
+    directories = []
+    for name in (
+        "bash", "sh", "git", "python3", "find", "grep", "sed", "tr", "cut",
+        "cmp", "mktemp", "date", "readlink", "dirname", "env", "rm", "mv",
+        "mkdir", "cat", "chmod", "ls", "sort", "head", "tail", "wc", "tee",
+        "diff", "uniq", "stat", "touch", "ln", "unshare",
+    ):
+        found = shutil.which(name)
+        if found:
+            directory = os.path.dirname(found)
+            if directory not in directories:
+                directories.append(directory)
+    for directory in ("/usr/bin", "/bin"):
+        if directory not in directories:
+            directories.append(directory)
+    return directories
 
 
-class SetupTransactions(unittest.TestCase):
+@unittest.skipUnless(REAL_GIT, "the setup tests need git")
+class SetupTestCase(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix="cros-setup-test-")
-        self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
-        self.setup = SETUP
+        temporary = tempfile.TemporaryDirectory(prefix="cros setup test ")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
         self.home = self.root / "home"
         self.home.mkdir()
         self.audit = self.root / "audit"
         self.audit.mkdir()
-        (self.audit / "immodules.cache").write_text('"im-cros-gtk3.so"\n')
-        self.bin = self.root / "bin"
+        self.bin = self.root / "stub commands"
         self.bin.mkdir()
-        driver = self.bin / "stub"
+        driver = self.bin / "driver"
         driver.write_text(STUB)
         driver.chmod(0o755)
-        for name in ("sudo", "curl", "systemctl", "apt", "apt-get", "nix", "uname", "findmnt", "btrfs", "dpkg", "find"):
+        for name in (
+            "sudo", "apt-get", "systemctl", "usermod", "chsh", "curl", "nix",
+            "id", "uname", "git", "tee",
+        ):
             (self.bin / name).symlink_to(driver)
-        activation = self.audit / "activation"
-        activation.mkdir()
-        (activation / "activate").write_text(
-            '#!/usr/bin/env bash\n'
-            'printf activated > "$SETUP_TEST_AUDIT/activated"\n'
-            'cp "$HOME/.config/home-manager/host.json" "$SETUP_TEST_AUDIT/activation-host.json"\n'
-            'exit "${SETUP_TEST_ACTIVATION_EXIT:-0}"\n'
-        )
-        (activation / "activate").chmod(0o755)
-        (self.root / "tmp").mkdir()
+
+        self.base_directories = base_path_directories()
         self.environment = os.environ.copy()
         self.environment.update({
             "HOME": str(self.home),
             "USER": "setup-test-user",
             "LOGNAME": "setup-test-user",
-            "PATH": str(self.bin) + ":/usr/bin:/bin",
+            "PATH": os.pathsep.join([str(self.bin), *self.base_directories]),
             "TMPDIR": str(self.root / "tmp"),
             "SETUP_TEST_AUDIT": str(self.audit),
-            "GIT_USER_NAME": "New Employee",
-            "GIT_USER_EMAIL": "employee@example.test",
+            "SETUP_TEST_REAL_GIT": REAL_GIT,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": str(self.root / "gitconfig-global"),
+            "GIT_AUTHOR_NAME": "Setup Test",
+            "GIT_AUTHOR_EMAIL": "setup@example.test",
+            "GIT_COMMITTER_NAME": "Setup Test",
+            "GIT_COMMITTER_EMAIL": "setup@example.test",
+            "GIT_TERMINAL_PROMPT": "0",
         })
-        self.environment.pop("BASH_ENV", None)
-        self.environment.pop("ENV", None)
-        self.config = self.home / ".config" / "home-manager"
-        self.config.mkdir(parents=True)
-        for name in ("flake.nix", "flake.lock", "home.nix", "host.json", "codex-wrapper", "patch-orca.py", "update.bash"):
-            (self.config / name).write_text("previous installed " + name + "\n")
-        wrapper = self.home / ".local" / "bin" / "codex"
-        wrapper.parent.mkdir(parents=True)
-        wrapper.write_text("#!/bin/sh\necho previous-wrapper\n")
-        wrapper.chmod(0o755)
-        profile = self.root / "previous-profile"
-        profile.mkdir()
-        (self.home / ".nix-profile").symlink_to(profile, target_is_directory=True)
+        (self.root / "tmp").mkdir()
+        (self.root / "gitconfig-global").write_text("")
+        for name in (
+            "BASH_ENV", "ENV", "GIT_USER_NAME", "GIT_USER_EMAIL",
+            "SETUP_TEST_UID", "SETUP_TEST_MACHINE", "SETUP_TEST_GROUPS",
+            "SETUP_TEST_TRUSTED_USERS", "SETUP_TEST_INSTALLER_SCRIPT",
+            "SETUP_TEST_CURL_EXIT", "SETUP_TEST_RUN_EXIT",
+        ):
+            self.environment.pop(name, None)
 
-    def run_setup(self, *arguments, environment=None):
+        self.has_device = is_character_device("/dev/wl0")
+        self.repo = self.make_repository()
+        setup_dir = self.repo / "chromeos-dev-setup"
+        self.setup = setup_dir / "setup.bash"
+        text = SETUP.read_text()
+        if not self.has_device:
+            text = text.replace(DEVICE_CHECK, "true")
+        self.setup.write_text(text)
+        self.guarded_setup = setup_dir / "setup-guarded.bash"
+        self.guarded_setup.write_text(SETUP.read_text())
+        self.git("-C", str(self.repo), "add", "--all")
+        self.git("-C", str(self.repo), "commit", "-m", "Test checkout")
+
+    # ------------------------------------------------------------- fixtures
+
+    def make_repository(self):
+        repo = self.root / "setup checkout"
+        setup = repo / "chromeos-dev-setup"
+        setup.mkdir(parents=True)
+        (setup / "flake.nix").write_text("{ outputs = _: { }; }\n")
+        (setup / "flake.lock").write_text("{}\n")
+        (repo / "nixpkgs" / "kakaotalk").mkdir(parents=True)
+        (repo / "nixpkgs" / "kakaotalk" / "package.nix").write_text("{ }\n")
+        (repo / "README.md").write_text("test checkout\n")
+        self.git("-C", str(repo), "init", "--initial-branch=main")
+        return repo
+
+    def git(self, *arguments):
+        result = subprocess.run(
+            [REAL_GIT, *arguments],
+            env=self.environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            raise AssertionError(
+                f"git {' '.join(arguments)} failed: {result.stdout}{result.stderr}"
+            )
+        return result
+
+    # ------------------------------------------------------------- helpers
+
+    def run_setup(self, *arguments, environment=None, unshare=None, setup=None):
+        script = str(setup or self.setup)
+        command = ["bash", script, *arguments]
+        if unshare:
+            runner = self.root / f"namespace-{unshare}.bash"
+            if unshare == "hide-device":
+                runner.write_text(
+                    'mask="$(mktemp)"\n'
+                    'mount --bind "$mask" /dev/wl0 || exit 97\n'
+                    'exec bash "$@"\n'
+                )
+            else:
+                runner.write_text(
+                    "mount -t tmpfs tmpfs /nix/var/nix/profiles || exit 97\n"
+                    'exec bash "$@"\n'
+                )
+            command = ["unshare", "-rm", "bash", str(runner), script, *arguments]
         return subprocess.run(
-            ["bash", "--noprofile", "--norc", "-c", RUNNER, "setup-test", str(self.setup), *arguments],
+            command,
             cwd=self.root,
             env=environment or self.environment,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=20,
+            timeout=60,
         )
 
     def calls(self):
         path = self.audit / "calls.jsonl"
-        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines()]
 
-    def assert_no_activation(self):
-        self.assertFalse((self.audit / "activated").exists())
-        self.assertFalse(any(call[0] == "nix" and "run" in call for call in self.calls()))
+    def argvs(self):
+        return [call["argv"] for call in self.calls()]
 
-    def protected_snapshot(self):
-        return (
-            tree_snapshot(self.config),
-            tree_snapshot(self.home / ".local" / "bin"),
-            os.readlink(self.home / ".nix-profile"),
+    def matching(self, predicate):
+        return [call for call in self.calls() if predicate(call["argv"])]
+
+    def index(self, predicate):
+        for position, argv in enumerate(self.argvs()):
+            if predicate(argv):
+                return position
+        raise AssertionError(f"no call matched; recorded: {self.argvs()}")
+
+    def output(self, result):
+        return result.stdout + result.stderr
+
+    def final_nix_run(self):
+        runs = [argv for argv in self.argvs() if argv[:1] == ["nix"] and "run" in argv]
+        self.assertEqual(len(runs), 1, self.argvs())
+        return runs[0]
+
+    def assert_no_privileged_actions(self):
+        self.assertEqual(
+            self.matching(lambda a: a[0] in {"sudo", "apt-get", "curl", "nix", "usermod"}),
+            [],
         )
 
-    def use_disposable_checkout(self):
-        checkout = self.root / "checkout"
-        checkout.mkdir()
-        for filename in ("setup.bash", "flake.nix", "flake.lock", "home.nix", "patch-orca.py", "update.bash"):
-            shutil.copyfile(SETUP.parent / filename, checkout / filename)
-        self.setup = checkout / "setup.bash"
-        return checkout
 
-    def assert_update_precedes_build(self):
-        nix_calls = [call for call in self.calls() if call[0] == "nix"]
-        self.assertEqual(len(nix_calls), 2, nix_calls)
-        update, build = nix_calls
-        self.assertIn("flake", update)
-        self.assertIn("update", update)
-        self.assertIn("--accept-flake-config", update)
-        self.assertIn("build", build)
-        self.assertIn("--no-update-lock-file", build)
-        updated_flake = update[update.index("--flake") + 1]
-        installable = next(arg for arg in build if arg.startswith("path:") and "#" in arg)
-        self.assertEqual(updated_flake, installable.split("#", 1)[0])
+class Arguments(SetupTestCase):
+    def test_unknown_argument_prints_usage_and_exits_two(self):
+        result = self.run_setup("--frobnicate")
+        self.assertEqual(result.returncode, 2, self.output(result))
+        self.assertIn("Usage: bash", result.stderr)
+        self.assertIn("setup.bash", result.stderr)
+        self.assert_no_privileged_actions()
 
-    def allow_post_activation_cli_checks(self):
-        profile_bin = self.home / ".nix-profile" / "bin"
-        profile_bin.mkdir()
-        for command in ("node", "npm", "npx", "earlyoom", "cloudflared", "process-compose"):
-            (profile_bin / command).symlink_to(self.bin / "stub")
-        self.environment["SETUP_TEST_ALLOW_PROFILE_CHECKS"] = "1"
+    def test_maintainer_is_forwarded_to_apply(self):
+        result = self.run_setup("--maintainer")
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertEqual(self.final_nix_run(), [
+            "nix", "run", "--accept-flake-config",
+            f"{self.repo}/chromeos-dev-setup#cros",
+            "--", "apply", "--checkout", str(self.repo), "--maintainer",
+        ])
 
-    def test_missing_git_identity_stops_before_privileged_actions_or_writes(self):
-        for key, value in (("GIT_USER_NAME", None), ("GIT_USER_EMAIL", "")):
-            with self.subTest(key=key):
-                environment = self.environment.copy()
-                if value is None:
-                    environment.pop(key, None)
-                else:
-                    environment[key] = value
-                before = tree_snapshot(self.home)
-                result = self.run_setup(environment=environment)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(key, result.stdout + result.stderr)
-                self.assertEqual(tree_snapshot(self.home), before)
-                self.assertFalse(any(call[0] in {"sudo", "nix", "curl", "apt", "apt-get", "systemctl"} for call in self.calls()))
-                self.assert_no_activation()
 
-    def test_failed_build_preserves_config_wrapper_and_profile(self):
-        before = self.protected_snapshot()
-        self.environment["SETUP_TEST_FAIL_BUILD"] = "1"
+class Guards(SetupTestCase):
+    def test_setup_still_guards_the_crostini_device(self):
+        self.assertIn(DEVICE_CHECK, SETUP.read_text())
+
+    def test_refuses_to_run_as_root(self):
+        environment = dict(self.environment)
+        environment["SETUP_TEST_UID"] = "0"
+        result = self.run_setup(environment=environment)
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("run as your normal user, not root", result.stderr)
+        self.assert_no_privileged_actions()
+
+    def test_refuses_a_non_x86_64_machine(self):
+        environment = dict(self.environment)
+        environment["SETUP_TEST_MACHINE"] = "aarch64"
+        result = self.run_setup(environment=environment)
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("x86_64 Crostini only", result.stderr)
+        self.assert_no_privileged_actions()
+
+    def test_refuses_a_missing_virtwl_device(self):
+        if self.has_device:
+            if not namespace_available():
+                self.skipTest("needs unprivileged mount namespaces to mask /dev/wl0")
+            result = self.run_setup(unshare="hide-device", setup=self.guarded_setup)
+            if result.returncode == 97:
+                self.skipTest("cannot create a private mount namespace")
+        else:
+            result = self.run_setup(setup=self.guarded_setup)
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("/dev/wl0", result.stderr)
+        self.assert_no_privileged_actions()
+
+    def test_refuses_a_directory_outside_a_git_checkout(self):
+        outside = self.root / "outside a checkout"
+        outside.mkdir()
+        copy = outside / "setup.bash"
+        text = SETUP.read_text()
+        if not self.has_device:
+            text = text.replace(DEVICE_CHECK, "true")
+        copy.write_text(text)
+        result = self.run_setup(setup=copy)
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("is not inside a Git checkout", result.stderr)
+        self.assert_no_privileged_actions()
+
+
+class Bootstrap(SetupTestCase):
+    def test_installs_prerequisites_and_hands_off_to_cros_apply(self):
+        environment = dict(self.environment)
+        environment["GIT_USER_NAME"] = "New Employee"
+        environment["GIT_USER_EMAIL"] = "employee@example.test"
+        result = self.run_setup(environment=environment)
+        self.assertEqual(result.returncode, 0, self.output(result))
+
+        self.assertIn(["sudo", "apt-get", "update"], self.argvs())
+        self.assertIn(
+            ["sudo", "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install",
+             "-y", "git", "curl", "ca-certificates", "xz-utils"],
+            self.argvs(),
+        )
+        # Nix is already on PATH, so the Determinate installer must not run.
+        self.assertEqual(self.matching(lambda a: a[0] == "curl"), [])
+
+        expected = [
+            "nix", "run", "--accept-flake-config",
+            f"{self.repo}/chromeos-dev-setup#cros",
+            "--", "apply", "--checkout", str(self.repo),
+        ]
+        self.assertEqual(self.final_nix_run(), expected)
+        # The checkout path has spaces and must remain a single argv element.
+        self.assertEqual(self.final_nix_run().count(expected[3]), 1)
+        # `cros apply` owns sparse checkouts now.
+        self.assertEqual(self.matching(lambda a: "sparse-checkout" in a), [])
+
+        self.assertEqual(
+            (self.home / ".gitconfig").read_text(),
+            "[user]\n\tname = New Employee\n\temail = employee@example.test\n",
+        )
+
+    def test_trusted_users_added_and_daemon_restarted_only_when_missing(self):
         result = self.run_setup()
-        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("simulated package build failure", result.stderr)
-        self.assertTrue((self.audit / "staged-config" / "flake.lock").is_file())
-        self.assertEqual(self.protected_snapshot(), before)
-        self.assert_no_activation()
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertEqual(
+            (self.audit / "tee.log").read_text(), "extra-trusted-users = setup-test-user\n"
+        )
+        self.assertIn(
+            ["sudo", "tee", "-a", "/etc/nix/nix.custom.conf"], self.argvs()
+        )
+        self.assertIn(
+            ["sudo", "systemctl", "restart", "nix-daemon.service"], self.argvs()
+        )
+        tee = self.index(lambda a: a[:2] == ["sudo", "tee"])
+        restart = self.index(lambda a: a[:3] == ["sudo", "systemctl", "restart"])
+        self.assertLess(tee, restart)
 
-    def test_failed_update_preserves_source_live_config_wrapper_and_profile(self):
-        checkout = self.use_disposable_checkout()
-        source_lock = (checkout / "flake.lock").read_bytes()
-        before = self.protected_snapshot()
-        self.environment["SETUP_TEST_FAIL_UPDATE"] = "1"
-        result = self.run_setup("--update")
-        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("simulated flake update failure", result.stderr)
-        self.assertTrue((self.audit / "updated-staged.lock").exists())
-        self.assertEqual((checkout / "flake.lock").read_bytes(), source_lock)
-        self.assertEqual(self.protected_snapshot(), before)
-        nix_calls = [call for call in self.calls() if call[0] == "nix"]
-        self.assertEqual(len(nix_calls), 1, nix_calls)
-        self.assertIn("update", nix_calls[0])
-        self.assertFalse(any("build" in call for call in nix_calls))
-        self.assertEqual(list((self.root / "tmp").iterdir()), [])
-        self.assert_no_activation()
+    def test_trusted_users_left_alone_when_the_user_is_already_listed(self):
+        environment = dict(self.environment)
+        environment["SETUP_TEST_TRUSTED_USERS"] = "root setup-test-user"
+        result = self.run_setup(environment=environment)
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertEqual(self.matching(lambda a: a[:2] == ["sudo", "tee"]), [])
+        self.assertEqual(
+            self.matching(lambda a: a[:3] == ["sudo", "systemctl", "restart"]), []
+        )
+        self.assertFalse((self.audit / "tee.log").exists())
 
-    def assert_update_build_only_preserves_source_and_home(self, *arguments):
-        checkout = self.use_disposable_checkout()
-        source_lock = (checkout / "flake.lock").read_bytes()
-        before = tree_snapshot(self.home)
-        result = self.run_setup(*arguments)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assert_update_precedes_build()
-        staged_lock = json.loads((self.audit / "staged-config" / "flake.lock").read_text())
-        self.assertIs(staged_lock["setupTestUpdate"], True)
-        self.assertEqual((checkout / "flake.lock").read_bytes(), source_lock)
-        self.assertEqual(tree_snapshot(self.home), before)
-        self.assertFalse(any(call[0] in {"sudo", "curl", "apt", "apt-get", "systemctl"} for call in self.calls()))
-        self.assertEqual(list((self.root / "tmp").iterdir()), [])
-        self.assert_no_activation()
-
-    def test_update_build_only_validates_updated_lock_without_installing(self):
-        self.assert_update_build_only_preserves_source_and_home("--update", "--build-only")
-
-    def test_build_only_update_accepts_combined_flags_in_reverse_order(self):
-        self.assert_update_build_only_preserves_source_and_home("--build-only", "--update")
-
-    def test_build_failure_after_update_preserves_source_live_config_wrapper_and_profile(self):
-        checkout = self.use_disposable_checkout()
-        source_lock = (checkout / "flake.lock").read_bytes()
-        before = self.protected_snapshot()
-        self.environment["SETUP_TEST_FAIL_BUILD"] = "1"
-        result = self.run_setup("--update")
-        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("simulated package build failure", result.stderr)
-        self.assert_update_precedes_build()
-        staged_lock = json.loads((self.audit / "staged-config" / "flake.lock").read_text())
-        self.assertIs(staged_lock["setupTestUpdate"], True)
-        self.assertEqual((checkout / "flake.lock").read_bytes(), source_lock)
-        self.assertEqual(self.protected_snapshot(), before)
-        self.assertEqual(list((self.root / "tmp").iterdir()), [])
-        self.assert_no_activation()
-
-    def test_failed_activation_after_update_preserves_source_and_restores_live_config(self):
-        checkout = self.use_disposable_checkout()
-        source_lock = (checkout / "flake.lock").read_bytes()
-        before = self.protected_snapshot()
-        self.environment["SETUP_TEST_ACTIVATION_EXIT"] = "43"
-        result = self.run_setup("--update")
-        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("activation failed", result.stderr)
-        self.assertTrue((self.audit / "activated").exists())
-        self.assert_update_precedes_build()
-        self.assertEqual((checkout / "flake.lock").read_bytes(), source_lock)
-        self.assertEqual(self.protected_snapshot(), before)
-        self.assertEqual(list((self.root / "tmp").iterdir()), [])
-
-    def test_failed_activation_restores_generated_files_and_unmanaged_wrapper(self):
-        # An old generated file may itself be a symlink; rollback must preserve it.
-        old_home = self.root / "previous-home.nix"
-        old_home.write_text("previous linked Home Manager config\n")
-        (self.config / "home.nix").unlink()
-        (self.config / "home.nix").symlink_to(old_home)
-        before = self.protected_snapshot()
-        self.environment["SETUP_TEST_ACTIVATION_EXIT"] = "43"
+    def test_render_group_added_only_when_missing(self):
         result = self.run_setup()
-        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("activation failed", result.stderr)
-        self.assertTrue((self.audit / "activated").exists())
-        activated_host = json.loads((self.audit / "activation-host.json").read_text())
-        self.assertEqual(activated_host["gitName"], self.environment["GIT_USER_NAME"])
-        self.assertEqual(self.protected_snapshot(), before)
-        self.assertEqual(len(list(self.config.parent.glob("home-manager.previous.*"))), 1)
-        self.assertEqual(list((self.root / "tmp").iterdir()), [])
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertIn(
+            ["sudo", "usermod", "-aG", "render", "setup-test-user"], self.argvs()
+        )
+        self.assertIn("render group", result.stderr)
 
-    def test_build_only_does_not_install_or_activate(self):
-        before = tree_snapshot(self.home)
-        result = self.run_setup("--build-only")
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(tree_snapshot(self.home), before)
-        self.assertFalse(any(call[0] in {"sudo", "curl", "apt", "apt-get", "systemctl"} for call in self.calls()))
-        builds = [call for call in self.calls() if call[0] == "nix" and "build" in call]
-        self.assertEqual(len(builds), 1)
-        for flag in ("--no-update-lock-file", "--no-link", "--print-out-paths", "--impure"):
-            self.assertIn(flag, builds[0])
-        self.assert_no_activation()
+        (self.audit / "calls.jsonl").unlink(missing_ok=True)
+        environment = dict(self.environment)
+        environment["SETUP_TEST_GROUPS"] = "user render adm"
+        result = self.run_setup(environment=environment)
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertEqual(self.matching(lambda a: a[0] == "usermod"), [])
 
-    def test_absent_local_service_catalog_skips_optional_checks_and_continues(self):
-        self.allow_post_activation_cli_checks()
-        self.assertFalse((self.home / ".config/local-services/process-compose.yaml").exists())
+    def test_git_identity_written_only_when_unset(self):
         result = self.run_setup()
-        # This fixture intentionally never installs a managed wrapper. Reaching
-        # that later guard proves optional-service handling did not stop setup.
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("did not install a managed executable", result.stderr)
-        self.assertTrue((self.audit / "activated").exists())
-        self.assertFalse(any(call[0] == "process-compose" for call in self.calls()))
-        self.assertFalse(any(call[0] == "systemctl" and "local-services.service" in call for call in self.calls()))
-        self.assertNotIn("simulated optional catalog diagnostic", result.stderr)
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertFalse((self.home / ".gitconfig").exists())
 
-    def test_present_local_service_catalog_keeps_validation_and_enablement(self):
-        self.allow_post_activation_cli_checks()
-        catalog = self.home / ".config/local-services/process-compose.yaml"
-        catalog.parent.mkdir()
-        catalog.write_text('version: "0.5"\nprocesses: {}\n')
-        result = self.run_setup()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("did not install a managed executable", result.stderr)
-        self.assertIn(["systemctl", "--user", "enable", "local-services.service"], self.calls())
-        self.assertIn(["process-compose", "version"], self.calls())
-        self.assertIn([
-            "process-compose", "-f", str(catalog), "up", "--dry-run", "--tui=false", "--disable-dotenv",
-        ], self.calls())
+        environment = dict(self.environment)
+        environment["GIT_USER_NAME"] = "New Employee"
+        environment["GIT_USER_EMAIL"] = "employee@example.test"
+        result = self.run_setup(environment=environment)
+        self.assertEqual(result.returncode, 0, self.output(result))
+        gitconfig = self.home / ".gitconfig"
+        self.assertEqual(
+            self.git("config", "--file", str(gitconfig), "user.name").stdout.strip(),
+            "New Employee",
+        )
+        self.assertEqual(
+            self.git("config", "--file", str(gitconfig), "user.email").stdout.strip(),
+            "employee@example.test",
+        )
 
-    def test_git_identity_is_data_even_with_quotes_newlines_and_nix_syntax(self):
-        name = 'Employee "Quoted" \\\n${builtins.abort "must remain data"} $(touch SHOULD_NOT_EXIST)'
-        email = 'employee+"quoted"\\address@example.test'
-        self.environment.update(GIT_USER_NAME=name, GIT_USER_EMAIL=email)
-        result = self.run_setup("--build-only")
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        stage = self.audit / "staged-config"
-        host = json.loads((stage / "host.json").read_text())
-        self.assertEqual(host["gitName"], name)
-        self.assertEqual(host["gitEmail"], email)
-        self.assertEqual(host["username"], self.environment["USER"])
-        self.assertEqual(host["homeDirectory"], str(self.home))
-        for filename in ("home.nix", "flake.nix"):
-            self.assertNotIn(name, (stage / filename).read_text())
-        self.assertFalse((self.home / "SHOULD_NOT_EXIST").exists())
-        self.assertFalse((self.root / "SHOULD_NOT_EXIST").exists())
-        self.assert_no_activation()
+    def test_existing_git_identity_is_not_overwritten(self):
+        self.git("config", "--file", str(self.home / ".gitconfig"), "user.name", "Existing")
+        environment = dict(self.environment)
+        environment["GIT_USER_NAME"] = "New Employee"
+        environment["GIT_USER_EMAIL"] = "employee@example.test"
+        result = self.run_setup(environment=environment)
+        self.assertEqual(result.returncode, 0, self.output(result))
+        gitconfig = self.home / ".gitconfig"
+        self.assertEqual(
+            self.git("config", "--file", str(gitconfig), "user.name").stdout.strip(),
+            "Existing",
+        )
+        self.assertEqual(
+            self.git("config", "--file", str(gitconfig), "user.email").stdout.strip(),
+            "employee@example.test",
+        )
+
+
+class NixInstall(SetupTestCase):
+    def test_installer_runs_only_when_nix_is_missing(self):
+        if not namespace_available():
+            self.skipTest("needs unprivileged mount namespaces to hide the Nix profile")
+        if not Path("/nix/var/nix/profiles").is_dir():
+            self.skipTest("needs /nix/var/nix/profiles to hide the real Nix")
+        for directory in self.base_directories:
+            if Path(directory, "nix").exists():
+                self.skipTest(f"{directory}/nix would make Nix look installed")
+
+        nixbin = self.root / "nix bin"
+        nixbin.mkdir()
+        (nixbin / "nix").symlink_to(self.bin / "driver")
+        installer = (
+            'printf \'%s\\n\' "$@" > "$SETUP_TEST_AUDIT/installer-args"\n'
+            "mkdir -p /nix/var/nix/profiles/default/etc/profile.d\n"
+            f"printf 'export PATH=\"{nixbin}:$PATH\"\\n' "
+            "> /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh\n"
+        )
+        (self.bin / "nix").unlink()
+        environment = dict(self.environment)
+        environment["SETUP_TEST_INSTALLER_SCRIPT"] = installer
+        result = self.run_setup(environment=environment, unshare="hide-nix")
+        if result.returncode == 97:
+            self.skipTest("cannot create a private mount namespace")
+        self.assertEqual(result.returncode, 0, self.output(result))
+
+        self.assertEqual(
+            (self.audit / "installer-args").read_text().splitlines(),
+            ["install", "--no-confirm", "--extra-conf", "trusted-users = root setup-test-user"],
+        )
+        self.assertIn(
+            ["curl", "--proto", "=https", "--tlsv1.2", "-sSfL",
+             "https://install.determinate.systems/nix"],
+            self.argvs(),
+        )
+        self.assertEqual(self.final_nix_run(), [
+            "nix", "run", "--accept-flake-config",
+            f"{self.repo}/chromeos-dev-setup#cros",
+            "--", "apply", "--checkout", str(self.repo),
+        ])
 
 
 if __name__ == "__main__":

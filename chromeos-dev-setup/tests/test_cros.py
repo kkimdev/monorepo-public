@@ -1,0 +1,1090 @@
+"""Exercise the `cros` CLI with disposable repositories and stub system tools.
+
+Git, jq, and Python are real. Nix, apt, sudo, systemd, and the desktop session
+are replaced by a Python driver on PATH that records every argv as JSON lines,
+so no build, root command, network access, or host configuration is involved.
+
+Run with: python3 -m unittest discover -s chromeos-dev-setup/tests -v
+"""
+
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+
+TESTS = Path(__file__).resolve().parent
+CROS = TESTS.parent / "cros" / "cros.bash"
+REAL_GIT = shutil.which("git")
+
+SESSION_UNITS = [
+    "atuin-daemon.service",
+    "sommelier@0.service",
+    "sommelier@1.service",
+    "sommelier-x@0.service",
+    "sommelier-x@1.service",
+    "sommelier-rs.service",
+    "cros-garcon.service",
+]
+
+
+def find_jq():
+    """The packaged `cros` has jq from Nix; a test machine may not."""
+    found = shutil.which("jq")
+    if found:
+        return found
+    for candidate in sorted(Path("/nix/store").glob("*-jq-*/bin/jq")):
+        if os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
+JQ = find_jq()
+
+# The driver is symlinked under every stubbed command name. It records the
+# argv first, then either emulates the command or execs the real binary.
+STUB = r'''#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import sys
+
+name = Path(sys.argv[0]).name
+args = sys.argv[1:]
+audit = Path(os.environ["CROS_TEST_AUDIT"])
+
+
+def variable(key, default=None):
+    return os.environ.get(key, default)
+
+
+def host_json_path():
+    return Path(os.environ["CROS_HOST_DIR"]) / "host.json"
+
+
+def emit(extra=None):
+    record = {"argv": [name, *args]}
+    if extra:
+        record.update(extra)
+    with (audit / "calls.jsonl").open("a") as log:
+        log.write(json.dumps(record) + "\n")
+
+
+extra = {}
+if name == "apt-get":
+    extra["host_json_exists"] = host_json_path().exists()
+if name == "nix" and args[:1] == ["build"]:
+    installable = next((arg for arg in args if "#" in arg), "")
+    if installable.endswith("#system-deb"):
+        extra["installable"] = "system-deb"
+        extra["host_json_exists"] = host_json_path().exists()
+    elif "#homeConfigurations" in installable:
+        extra["installable"] = "home"
+        host = host_json_path()
+        extra["host_json"] = json.loads(host.read_text()) if host.exists() else None
+emit(extra)
+
+if name == "sudo":
+    if args[:1] == ["tee"]:
+        # Never write under /etc; record the piped text instead.
+        with (audit / "tee.log").open("a") as log:
+            log.write(sys.stdin.read())
+        sys.exit(0)
+    if args[:1] == ["env"]:
+        os.execvp("env", args)
+    os.execvp(args[0], args)
+
+if name == "git":
+    os.execv(variable("CROS_TEST_REAL_GIT"), ["git", *args])
+
+if name == "find" and args[:1] == ["/usr/lib"]:
+    # write_host_data searches /usr/lib; point it at the fixtures instead.
+    if any("immodules.cache" in arg for arg in args):
+        if variable("CROS_TEST_GTK3"):
+            print(variable("CROS_TEST_GTK3"))
+    elif any("gtk-4.0" in arg for arg in args):
+        if variable("CROS_TEST_GTK4"):
+            print(variable("CROS_TEST_GTK4"))
+    sys.exit(0)
+
+if name == "find":
+    os.execv(variable("CROS_TEST_REAL_FIND"), ["find", *args])
+
+if name == "rm":
+    # `cros reset --hard` removes Wayland sockets; never touch the real ones.
+    if any(arg.startswith("/run/user/") for arg in args):
+        sys.exit(0)
+    os.execv(variable("CROS_TEST_REAL_RM"), ["rm", *args])
+
+if name == "getent":
+    shell = variable("CROS_TEST_LOGIN_SHELL", "/bin/bash")
+    print(f"{os.environ['USER']}:x:1000:1000:Test User:{os.environ['HOME']}:{shell}")
+    sys.exit(0)
+
+if name == "dpkg-deb":
+    print(variable("CROS_TEST_DEB_VERSION", "1.0.0"))
+    sys.exit(0)
+
+if name == "dpkg-query":
+    installed = variable("CROS_TEST_INSTALLED_VERSION")
+    if not installed:
+        sys.exit(1)
+    print(installed)
+    sys.exit(0)
+
+if name == "nix":
+    subcommand = args[0] if args else ""
+    if subcommand == "build":
+        installable = next((arg for arg in args if "#" in arg), "")
+        if installable.endswith("#system-deb"):
+            print(audit / "system-deb-out")
+        elif "#homeConfigurations" in installable:
+            print(audit / "activation")
+        else:
+            sys.exit("unexpected build installable: " + installable)
+        sys.exit(0)
+    if subcommand == "run":
+        sys.exit(int(variable("CROS_TEST_RUN_EXIT", "0")))
+    if subcommand == "flake" and "update" in args:
+        flake = args[args.index("--flake") + 1]
+        lock = Path(flake) / "flake.lock"
+        if variable("CROS_TEST_UPDATE_CHANGE", "1") == "1":
+            data = json.loads(lock.read_text())
+            data["nodes"]["nixpkgs"]["locked"]["rev"] = variable("CROS_TEST_UPDATE_REV", "f" * 40)
+            lock.write_text(json.dumps(data, indent=2) + "\n")
+        sys.exit(int(variable("CROS_TEST_UPDATE_EXIT", "0")))
+    if subcommand == "store" and args[1:2] == ["diff-closures"]:
+        print("test-package: 1.0 -> 2.0")
+        sys.exit(0)
+    if subcommand == "store" and args[1:2] == ["optimise"]:
+        sys.exit(0)
+    sys.exit("unexpected nix call: " + repr(args))
+
+if name == "nix-collect-garbage":
+    sys.exit(0)
+
+if name == "determinate-nixd":
+    sys.exit(int(variable("CROS_TEST_NIXD_EXIT", "0")))
+
+if name == "gh":
+    print("OPEN")
+    sys.exit(0)
+
+if name in {"systemctl", "chsh", "apt-get"}:
+    sys.exit(0)
+
+raise SystemExit("unexpected stub command: " + name)
+'''
+
+DEFAULT_LOCK = {
+    "nodes": {
+        "root": {"inputs": {}},
+        "nixpkgs": {
+            "locked": {
+                "lastModified": 1577836800,
+                "narHash": "sha256-test",
+                "owner": "NixOS",
+                "repo": "nixpkgs",
+                "rev": "a" * 40,
+                "type": "github",
+            }
+        },
+        "kakaotalk": {"locked": {"path": "../nixpkgs/kakaotalk", "type": "path"}},
+        "host": {"locked": {"path": "./host-example", "type": "path"}},
+    },
+    "root": "root",
+    "version": 7,
+}
+
+
+def base_path_directories():
+    """Directories of the real tools the scripts need, without any `nix`."""
+    directories = []
+    for name in (
+        "bash", "sh", "git", "python3", "find", "grep", "sed", "tr", "cut",
+        "cmp", "mktemp", "date", "readlink", "realpath", "dirname", "env",
+        "rm", "mv", "mkdir", "cat", "chmod", "ls", "sort", "head", "tail",
+        "wc", "tee", "diff", "uniq", "stat", "touch", "ln",
+    ):
+        found = shutil.which(name)
+        if found:
+            directory = os.path.dirname(found)
+            if directory not in directories:
+                directories.append(directory)
+    for directory in ("/usr/bin", "/bin"):
+        if directory not in directories:
+            directories.append(directory)
+    return directories
+
+
+@unittest.skipUnless(JQ and REAL_GIT, "the cros tests need jq and git")
+class CrosTestCase(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="cros cli test ")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.home = self.root / "home"
+        self.home.mkdir()
+        self.audit = self.root / "audit"
+        self.audit.mkdir()
+        self.host_dir = self.home / ".config" / "cros" / "host"
+        self.host_dir.mkdir(parents=True)
+
+        self.bin = self.root / "stub commands"
+        self.bin.mkdir()
+        driver = self.bin / "driver"
+        driver.write_text(STUB)
+        driver.chmod(0o755)
+        for name in (
+            "sudo", "apt-get", "dpkg-deb", "dpkg-query", "systemctl", "getent",
+            "chsh", "determinate-nixd", "gh", "nix", "nix-collect-garbage",
+            "find", "rm", "git",
+        ):
+            (self.bin / name).symlink_to(driver)
+
+        self.gtk3 = self.audit / "immodules.cache"
+        self.gtk3.write_text('"im-cros-gtk3.so"\n')
+        self.gtk4 = self.audit / "gtk-4.0"
+        self.gtk4.mkdir()
+
+        system_deb = self.audit / "system-deb-out"
+        system_deb.mkdir()
+        (system_deb / "cros-dev-system.deb").write_text("test deb\n")
+        activation = self.audit / "activation"
+        activation.mkdir()
+        activate = activation / "activate"
+        activate.write_text(
+            "#!/usr/bin/env bash\n"
+            "printf '{\"argv\": [\"activate\"], \"backup\": \"%s\"}\\n' "
+            "\"${HOME_MANAGER_BACKUP_EXT:-}\" >> \"$CROS_TEST_AUDIT/calls.jsonl\"\n"
+        )
+        activate.chmod(0o755)
+
+        self.cros = self.root / "cros"
+        self.cros.write_text(
+            "#!/usr/bin/env bash\nset -o errexit -o nounset -o pipefail\n"
+            + CROS.read_text()
+        )
+        self.cros.chmod(0o755)
+
+        git_global = self.root / "gitconfig-global"
+        git_global.write_text("")
+        self.git_environment = {
+            "PATH": os.pathsep.join([str(self.bin), os.path.dirname(JQ)] + base_path_directories()),
+            "HOME": str(self.home),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": str(git_global),
+            "GIT_AUTHOR_NAME": "Cros Test",
+            "GIT_AUTHOR_EMAIL": "cros@example.test",
+            "GIT_COMMITTER_NAME": "Cros Test",
+            "GIT_COMMITTER_EMAIL": "cros@example.test",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+
+        self.environment = os.environ.copy()
+        self.environment.update(self.git_environment)
+        self.environment.update({
+            "USER": "cros-test-user",
+            "LOGNAME": "cros-test-user",
+            "CROS_HOST_DIR": str(self.host_dir),
+            "TMPDIR": str(self.root / "tmp"),
+            "CROS_TEST_AUDIT": str(self.audit),
+            "CROS_TEST_GTK3": str(self.gtk3),
+            "CROS_TEST_GTK4": str(self.gtk4),
+            "CROS_TEST_DEB_VERSION": "1.0.0",
+            "CROS_TEST_LOGIN_SHELL": "/bin/bash",
+            "CROS_TEST_REAL_GIT": REAL_GIT,
+            "CROS_TEST_REAL_FIND": shutil.which("find"),
+            "CROS_TEST_REAL_RM": shutil.which("rm"),
+        })
+        (self.root / "tmp").mkdir()
+        self.environment.pop("BASH_ENV", None)
+        self.environment.pop("ENV", None)
+
+        self.repo = self.make_checkout()
+
+    # ------------------------------------------------------------- fixtures
+
+    def make_checkout(self, path=None, commit_date=None):
+        path = Path(path) if path else self.root / "checkout"
+        path.mkdir(parents=True, exist_ok=True)
+        setup = path / "chromeos-dev-setup"
+        setup.mkdir()
+        (setup / "flake.nix").write_text("{ outputs = _: { }; }\n")
+        (setup / "flake.lock").write_text(json.dumps(DEFAULT_LOCK, indent=2) + "\n")
+        (setup / "host-example").mkdir()
+        (setup / "host-example" / "host.json").write_text("{}\n")
+        (path / "nixpkgs" / "kakaotalk").mkdir(parents=True)
+        (path / "nixpkgs" / "kakaotalk" / "package.nix").write_text("{ }\n")
+        (path / "README.md").write_text("test checkout\n")
+        self.git("-C", str(path), "init", "--initial-branch=main")
+        self.commit(path, "Initial checkout", date=commit_date)
+        return path
+
+    def git(self, *arguments, env=None, check=True):
+        result = subprocess.run(
+            [REAL_GIT, *arguments],
+            env=env or self.git_environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+        if check and result.returncode != 0:
+            raise AssertionError(
+                f"git {' '.join(arguments)} failed: {result.stdout}{result.stderr}"
+            )
+        return result
+
+    def commit(self, checkout, message, date=None):
+        self.git("-C", str(checkout), "add", "--all")
+        environment = dict(self.git_environment)
+        if date:
+            environment["GIT_AUTHOR_DATE"] = date
+            environment["GIT_COMMITTER_DATE"] = date
+        self.git("-C", str(checkout), "commit", "-m", message, env=environment)
+
+    def add_origin(self, checkout=None):
+        checkout = Path(checkout) if checkout else self.repo
+        remote = self.root / "origin remote.git"
+        self.git("init", "--bare", "--initial-branch=main", str(remote))
+        self.git("-C", str(checkout), "remote", "add", "origin", str(remote))
+        self.git("-C", str(checkout), "push", "origin", "main")
+        return remote
+
+    def write_host_json(self, **fields):
+        (self.host_dir / "host.json").write_text(json.dumps(fields) + "\n")
+
+    # ------------------------------------------------------------- helpers
+
+    def run_cros(self, *arguments, environment=None):
+        return subprocess.run(
+            [str(self.cros), *arguments],
+            cwd=self.root,
+            env=environment or self.environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=60,
+        )
+
+    def calls(self):
+        path = self.audit / "calls.jsonl"
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines()]
+
+    def argvs(self):
+        return [call["argv"] for call in self.calls()]
+
+    def index(self, predicate):
+        for position, argv in enumerate(self.argvs()):
+            if predicate(argv):
+                return position
+        raise AssertionError(f"no call matched; recorded: {self.argvs()}")
+
+    def matching(self, predicate):
+        return [call for call in self.calls() if predicate(call["argv"])]
+
+    def output(self, result):
+        return result.stdout + result.stderr
+
+    def apply(self, *arguments, environment=None):
+        return self.run_cros("apply", *arguments, environment=environment)
+
+
+class Dispatch(CrosTestCase):
+    def test_no_arguments_prints_usage_and_exits_two(self):
+        result = self.run_cros()
+        self.assertEqual(result.returncode, 2, self.output(result))
+        self.assertIn("Usage: cros <command>", result.stdout)
+        self.assertEqual(self.calls(), [])
+
+    def test_help_flags_print_usage_and_exit_zero(self):
+        for flag in ("--help", "-h", "help"):
+            with self.subTest(flag=flag):
+                result = self.run_cros(flag)
+                self.assertEqual(result.returncode, 0, self.output(result))
+                self.assertIn("Usage: cros <command>", result.stdout)
+
+    def test_unknown_command_reports_the_name_and_exits_one(self):
+        result = self.run_cros("frobnicate")
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("unknown command: frobnicate", result.stderr)
+        self.assertIn("Usage: cros", result.stderr)
+
+
+class ResolveCheckout(CrosTestCase):
+    def test_apply_without_host_json_names_the_bootstrap_script(self):
+        result = self.apply()
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn(str(self.host_dir / "host.json"), result.stderr)
+        self.assertIn("setup.bash", result.stderr)
+        self.assertEqual(self.argvs(), [])
+
+    def test_explicit_checkout_is_resolved_and_recorded(self):
+        result = self.apply("--checkout", str(self.repo))
+        self.assertEqual(result.returncode, 0, self.output(result))
+        host = json.loads((self.host_dir / "host.json").read_text())
+        self.assertEqual(host["checkout"], str(self.repo))
+
+    def test_recorded_checkout_is_used_when_none_is_given(self):
+        self.write_host_json(checkout=str(self.repo), maintainer=False)
+        result = self.apply()
+        self.assertEqual(result.returncode, 0, self.output(result))
+        builds = self.matching(lambda a: a[:2] == ["nix", "build"])
+        self.assertTrue(builds)
+        for call in builds:
+            self.assertTrue(call["argv"][-1].startswith(str(self.repo / "chromeos-dev-setup")))
+
+    def test_directory_with_spaces_is_passed_as_one_argument(self):
+        checkout = self.make_checkout(self.root / "checkout with spaces")
+        result = self.apply("--checkout", str(checkout))
+        self.assertEqual(result.returncode, 0, self.output(result))
+        expected = f"{checkout}/chromeos-dev-setup#system-deb"
+        build = next(
+            call for call in self.calls()
+            if call["argv"][:2] == ["nix", "build"] and call["argv"][-1].endswith("#system-deb")
+        )
+        self.assertEqual(build["argv"][-1], expected)
+        self.assertEqual(build["argv"].count(expected), 1)
+
+    def test_plain_directory_that_is_not_a_checkout_is_refused(self):
+        plain = self.root / "not a checkout"
+        plain.mkdir()
+        result = self.apply("--checkout", str(plain))
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("not a Git checkout", result.stderr)
+        self.assertEqual(self.matching(lambda a: a[0] != "git"), [])
+
+    def test_checkout_without_the_flake_is_refused(self):
+        bare = self.root / "checkout without flake"
+        bare.mkdir()
+        (bare / "README.md").write_text("no flake here\n")
+        self.git("-C", str(bare), "init", "--initial-branch=main")
+        self.commit(bare, "Initial")
+        result = self.apply("--checkout", str(bare))
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn(f"missing {bare}/chromeos-dev-setup/flake.nix", result.stderr)
+
+
+class Apply(CrosTestCase):
+    def test_order_system_package_host_data_build_activation(self):
+        result = self.apply("--checkout", str(self.repo))
+        self.assertEqual(result.returncode, 0, self.output(result))
+
+        system_build = self.index(
+            lambda a: a[:2] == ["nix", "build"] and a[-1].endswith("#system-deb")
+        )
+        install = self.index(lambda a: a[0] == "apt-get" and "install" in a)
+        home_build = self.index(
+            lambda a: a[:2] == ["nix", "build"] and "#homeConfigurations" in a[-1]
+        )
+        activate = self.index(lambda a: a[0] == "activate")
+        self.assertLess(system_build, install)
+        self.assertLess(install, home_build)
+        self.assertLess(home_build, activate)
+
+        system_call = self.calls()[system_build]
+        self.assertIs(system_call["host_json_exists"], False)
+        install_call = self.calls()[install]
+        self.assertIs(install_call["host_json_exists"], False)
+        home_call = self.calls()[home_build]
+        self.assertIsNotNone(home_call["host_json"])
+        self.assertEqual(home_call["host_json"]["checkout"], str(self.repo))
+
+        host = json.loads((self.host_dir / "host.json").read_text())
+        self.assertEqual(host["username"], "cros-test-user")
+        self.assertEqual(host["homeDirectory"], str(self.home))
+        self.assertEqual(host["checkout"], str(self.repo))
+        self.assertEqual(host["gtk3Cache"], str(self.gtk3))
+        self.assertEqual(host["gtk4Path"], str(self.gtk4))
+        self.assertIs(host["maintainer"], False)
+        self.assertEqual(
+            sorted(host),
+            ["checkout", "gtk3Cache", "gtk4Path", "homeDirectory", "maintainer", "username"],
+        )
+        # Atomic replace: only host.json is left behind, no mktemp leftovers.
+        self.assertEqual(list(self.host_dir.iterdir()), [self.host_dir / "host.json"])
+
+        home_argv = self.argvs()[home_build]
+        override = home_argv.index("--override-input")
+        self.assertEqual(home_argv[override + 1:override + 3], ["host", f"path:{self.host_dir}"])
+        self.assertIn("--accept-flake-config", home_argv)
+
+        activation = self.calls()[activate]
+        self.assertEqual(activation["backup"], "backup")
+        self.assertIn("applied", result.stderr)
+
+    def test_failed_host_data_write_leaves_the_previous_file_intact(self):
+        # host.json is replaced atomically: a failed write must not truncate it.
+        if os.geteuid() == 0:
+            self.skipTest("root ignores the directory permissions this test needs")
+        self.write_host_json(checkout=str(self.repo), maintainer=True, username="previous")
+        before = (self.host_dir / "host.json").read_bytes()
+        os.chmod(self.host_dir, 0o555)
+        self.addCleanup(os.chmod, self.host_dir, 0o755)
+        result = self.apply("--checkout", str(self.repo))
+        self.assertNotEqual(result.returncode, 0, self.output(result))
+        self.assertEqual((self.host_dir / "host.json").read_bytes(), before)
+        self.assertEqual(list(self.host_dir.iterdir()), [self.host_dir / "host.json"])
+
+    def test_current_system_package_is_not_reinstalled(self):
+        environment = dict(self.environment)
+        environment["CROS_TEST_INSTALLED_VERSION"] = "1.0.0"
+        result = self.apply("--checkout", str(self.repo), environment=environment)
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertIn("system package 1.0.0 is current", result.stderr)
+        self.assertEqual(self.matching(lambda a: a[0] == "apt-get"), [])
+
+    def test_changed_system_package_installs_with_allow_downgrades(self):
+        environment = dict(self.environment)
+        environment["CROS_TEST_INSTALLED_VERSION"] = "0.9.0"
+        result = self.apply("--checkout", str(self.repo), environment=environment)
+        self.assertEqual(result.returncode, 0, self.output(result))
+        deb = str(self.audit / "system-deb-out" / "cros-dev-system.deb")
+        self.assertIn(
+            ["apt-get", "install", "-y", "--allow-downgrades", deb],
+            self.argvs(),
+        )
+        self.assertIn(
+            ["sudo", "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install",
+             "-y", "--allow-downgrades", deb],
+            self.argvs(),
+        )
+        self.assertIn("installing system package 1.0.0 (installed: 0.9.0)", result.stderr)
+
+    def test_maintainer_is_preserved_and_set_by_flag(self):
+        scenarios = [
+            ("default", None, False),
+            ("preserved", True, True),
+            ("flag", False, True),
+        ]
+        for label, recorded, expected in scenarios:
+            with self.subTest(scenario=label):
+                (self.host_dir / "host.json").unlink(missing_ok=True)
+                if recorded is not None:
+                    self.write_host_json(checkout=str(self.repo), maintainer=recorded)
+                arguments = ["--checkout", str(self.repo)]
+                if label == "flag":
+                    arguments.append("--maintainer")
+                result = self.apply(*arguments)
+                self.assertEqual(result.returncode, 0, self.output(result))
+                host = json.loads((self.host_dir / "host.json").read_text())
+                self.assertIs(host["maintainer"], expected)
+
+    def test_gtk3_cache_without_cros_im_entry_is_refused(self):
+        cache = self.audit / "cache without cros"
+        cache.write_text('"im-ibus.so"\n')
+        environment = dict(self.environment)
+        environment["CROS_TEST_GTK3"] = str(cache)
+        result = self.apply("--checkout", str(self.repo), environment=environment)
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("GTK3's immodules cache", result.stderr)
+        self.assertFalse((self.host_dir / "host.json").exists())
+
+    def test_missing_gtk3_cache_is_refused(self):
+        environment = dict(self.environment)
+        environment.pop("CROS_TEST_GTK3")
+        result = self.apply("--checkout", str(self.repo), environment=environment)
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("GTK3's immodules cache", result.stderr)
+
+    def test_missing_gtk4_directory_is_refused(self):
+        environment = dict(self.environment)
+        environment.pop("CROS_TEST_GTK4")
+        result = self.apply("--checkout", str(self.repo), environment=environment)
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("GTK4's module directory", result.stderr)
+
+    def test_login_shell_is_switched_only_after_activation(self):
+        for shell in (
+            str(self.home / ".nix-profile/bin/zsh"),
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-zsh/bin/zsh",
+        ):
+            with self.subTest(shell=shell):
+                (self.audit / "calls.jsonl").unlink(missing_ok=True)
+                environment = dict(self.environment)
+                environment["CROS_TEST_LOGIN_SHELL"] = shell
+                result = self.apply("--checkout", str(self.repo), environment=environment)
+                self.assertEqual(result.returncode, 0, self.output(result))
+                activate = self.index(lambda a: a[0] == "activate")
+                chsh = self.index(lambda a: a[0] == "chsh")
+                self.assertLess(activate, chsh)
+                self.assertEqual(
+                    self.argvs()[chsh], ["chsh", "-s", "/bin/bash", "cros-test-user"]
+                )
+
+    def test_debian_bash_login_shell_is_left_alone(self):
+        result = self.apply("--checkout", str(self.repo))
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertEqual(self.matching(lambda a: a[0] == "chsh"), [])
+
+    def test_desktop_services_are_started_without_stopping_them(self):
+        result = self.apply("--checkout", str(self.repo))
+        self.assertEqual(result.returncode, 0, self.output(result))
+        systemctl = [argv for argv in self.argvs() if argv[0] == "systemctl"]
+        self.assertEqual(systemctl, [
+            ["systemctl", "--user", "daemon-reload"],
+            ["systemctl", "--user", "reset-failed", "earlyoom.service", *SESSION_UNITS],
+            ["systemctl", "--user", "start", "earlyoom.service", *SESSION_UNITS],
+        ])
+
+    def test_unknown_apply_option_is_refused(self):
+        result = self.apply("--frobnicate")
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("unknown apply option: --frobnicate", result.stderr)
+        self.assertEqual(self.argvs(), [])
+
+    def test_checkout_option_without_a_value_is_refused(self):
+        result = self.apply("--checkout")
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("--checkout needs a directory", result.stderr)
+
+
+class Migrations(CrosTestCase):
+    def legacy_config(self, host):
+        directory = self.home / ".config" / "home-manager"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "host.json").write_text(json.dumps(host) + "\n")
+        (directory / "home.nix").write_text("old generated configuration\n")
+        return directory
+
+    def test_git_identity_copied_only_when_unset_in_gitconfig(self):
+        self.legacy_config({"gitName": "Legacy Name", "gitEmail": "legacy@example.test"})
+        self.git("config", "--file", str(self.home / ".gitconfig"), "user.name", "Existing Name")
+        result = self.apply("--checkout", str(self.repo))
+        self.assertEqual(result.returncode, 0, self.output(result))
+        gitconfig = self.home / ".gitconfig"
+        self.assertEqual(
+            self.git("config", "--file", str(gitconfig), "user.name").stdout.strip(),
+            "Existing Name",
+        )
+        self.assertEqual(
+            self.git("config", "--file", str(gitconfig), "user.email").stdout.strip(),
+            "legacy@example.test",
+        )
+        self.assertFalse((self.home / ".config" / "git" / "config").exists())
+
+    def test_git_identity_is_not_invented_without_legacy_data(self):
+        result = self.apply("--checkout", str(self.repo))
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertFalse((self.home / ".gitconfig").exists())
+
+    def test_legacy_configuration_directory_is_renamed_once(self):
+        legacy = self.legacy_config({"gitName": "Legacy Name", "gitEmail": "legacy@example.test"})
+        result = self.apply("--checkout", str(self.repo))
+        self.assertEqual(result.returncode, 0, self.output(result))
+        renamed = self.home / ".config" / "home-manager.legacy"
+        self.assertFalse(legacy.exists())
+        self.assertEqual((renamed / "home.nix").read_text(), "old generated configuration\n")
+        snapshot = sorted(path.name for path in renamed.iterdir())
+
+        second = self.apply()
+        self.assertEqual(second.returncode, 0, self.output(second))
+        self.assertEqual(sorted(path.name for path in renamed.iterdir()), snapshot)
+        self.assertIn("moved the old generated configuration", result.stderr)
+
+    def test_legacy_rename_is_skipped_when_both_directories_exist(self):
+        old = self.legacy_config({"gitName": "Legacy", "gitEmail": "legacy@example.test"})
+        new = self.home / ".config" / "home-manager.legacy"
+        new.mkdir()
+        (new / "keep.txt").write_text("new directory\n")
+        result = self.apply("--checkout", str(self.repo))
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertIn("both", result.stderr)
+        self.assertTrue((old / "host.json").exists())
+        self.assertEqual((new / "keep.txt").read_text(), "new directory\n")
+
+    def test_desktop_copies_removed_but_different_files_and_symlinks_kept(self):
+        profile = self.home / ".nix-profile" / "share"
+        for kind in ("applications", "icons"):
+            (profile / kind).mkdir(parents=True)
+        (profile / "applications" / "same.desktop").write_text("identical entry\n")
+        (profile / "applications" / "nested").mkdir()
+        (profile / "applications" / "nested" / "same.desktop").write_text("identical entry\n")
+        (profile / "applications" / "other.desktop").write_text("profile version\n")
+        (profile / "icons" / "same.png").write_bytes(b"identical icon")
+        (profile / "icons" / "other.png").write_bytes(b"profile icon")
+
+        share = self.home / ".local" / "share"
+        (share / "applications" / "nested").mkdir(parents=True)
+        (share / "applications" / "same.desktop").write_text("identical entry\n")
+        (share / "applications" / "other.desktop").write_text("local version\n")
+        (share / "applications" / "nested" / "same.desktop").write_text("identical entry\n")
+        (share / "applications" / "linked.desktop").symlink_to(
+            profile / "applications" / "same.desktop"
+        )
+        (share / "icons").mkdir()
+        (share / "icons" / "same.png").write_bytes(b"identical icon")
+        (share / "icons" / "other.png").write_bytes(b"local icon")
+
+        result = self.apply("--checkout", str(self.repo))
+        self.assertEqual(result.returncode, 0, self.output(result))
+
+        self.assertFalse((share / "applications" / "same.desktop").exists())
+        self.assertFalse((share / "applications" / "nested").exists())
+        self.assertFalse((share / "icons" / "same.png").exists())
+        self.assertEqual((share / "applications" / "other.desktop").read_text(), "local version\n")
+        self.assertEqual((share / "icons" / "other.png").read_bytes(), b"local icon")
+        self.assertTrue((share / "applications" / "linked.desktop").is_symlink())
+        self.assertEqual(
+            (share / "applications" / "linked.desktop").read_text(), "identical entry\n"
+        )
+
+
+class Sync(CrosTestCase):
+    def setUp(self):
+        super().setUp()
+        self.write_host_json(checkout=str(self.repo), maintainer=False)
+        self.add_origin()
+
+    def test_pulls_upgrades_and_then_runs_apply(self):
+        result = self.run_cros("sync")
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertIn(
+            ["git", "-C", str(self.repo), "pull", "--ff-only", "origin", "main"],
+            self.argvs(),
+        )
+        apt = [argv for argv in self.argvs() if argv[0] == "apt-get"]
+        self.assertEqual(apt, [
+            ["apt-get", "update"],
+            ["apt-get", "full-upgrade", "-y"],
+            ["apt-get", "autoremove", "-y"],
+        ])
+        self.assertIn(
+            ["sudo", "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "full-upgrade", "-y"],
+            self.argvs(),
+        )
+        self.assertIn(["determinate-nixd", "upgrade"], self.argvs())
+        self.assertEqual(self.argvs()[-1], [
+            "nix", "run", "--accept-flake-config",
+            f"{self.repo}/chromeos-dev-setup#cros", "--", "apply",
+        ])
+
+    def test_refuses_a_branch_other_than_main_before_pulling(self):
+        self.git("-C", str(self.repo), "switch", "-c", "employee-work")
+        result = self.run_cros("sync")
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("requires the main branch", result.stderr)
+        self.assert_no_pull_or_sudo()
+
+    def test_refuses_dirty_tracked_and_untracked_files_before_pulling(self):
+        for label in ("tracked", "untracked"):
+            with self.subTest(label=label):
+                self.git("-C", str(self.repo), "reset", "--hard", "--quiet")
+                (self.repo / "employee notes.txt").unlink(missing_ok=True)
+                target = (
+                    self.repo / "README.md"
+                    if label == "tracked"
+                    else self.repo / "employee notes.txt"
+                )
+                target.write_text("keep this\n")
+                (self.audit / "calls.jsonl").unlink(missing_ok=True)
+                result = self.run_cros("sync")
+                self.assertEqual(result.returncode, 1, self.output(result))
+                self.assertIn("clean checkout, including untracked files", result.stderr)
+                self.assertEqual(target.read_text(), "keep this\n")
+                self.assert_no_pull_or_sudo()
+
+    def test_detached_head_is_refused(self):
+        self.git("-C", str(self.repo), "checkout", "--detach")
+        result = self.run_cros("sync")
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("detached HEAD", result.stderr)
+        self.assert_no_pull_or_sudo()
+
+    def test_determinate_nix_upgrade_failure_is_only_a_warning(self):
+        environment = dict(self.environment)
+        environment["CROS_TEST_NIXD_EXIT"] = "1"
+        result = self.run_cros("sync", environment=environment)
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertIn("Determinate Nix upgrade failed", result.stderr)
+        self.assertEqual(self.argvs()[-1][:2], ["nix", "run"])
+
+    def test_sync_takes_no_arguments(self):
+        result = self.run_cros("sync", "extra")
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("sync takes no arguments", result.stderr)
+
+    def assert_no_pull_or_sudo(self):
+        self.assertFalse(any("pull" in argv for argv in self.argvs()))
+        self.assertFalse(any(argv[0] in {"sudo", "apt-get"} for argv in self.argvs()))
+
+
+class Bump(CrosTestCase):
+    def setUp(self):
+        super().setUp()
+        self.write_host_json(checkout=str(self.repo), maintainer=False)
+        self.add_origin()
+        self.lock = self.repo / "chromeos-dev-setup" / "flake.lock"
+
+    def test_already_current_lock_makes_no_commit(self):
+        head = self.git("-C", str(self.repo), "rev-parse", "HEAD").stdout
+        environment = dict(self.environment)
+        environment["CROS_TEST_UPDATE_CHANGE"] = "0"
+        result = self.run_cros("bump", environment=environment)
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertIn("flake inputs are already current", result.stderr)
+        self.assertEqual(self.git("-C", str(self.repo), "rev-parse", "HEAD").stdout, head)
+        self.assertEqual(self.matching(lambda a: a[:2] == ["nix", "run"]), [])
+        self.assertIn(
+            ["nix", "flake", "update", "--accept-flake-config", "--flake",
+             str(self.repo / "chromeos-dev-setup")],
+            self.argvs(),
+        )
+
+    def test_changed_lock_applies_and_commits_only_the_lock(self):
+        result = self.run_cros("bump")
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertIn(
+            ["nix", "run", "--accept-flake-config",
+             f"{self.repo}/chromeos-dev-setup#cros", "--", "apply"],
+            self.argvs(),
+        )
+        message = self.git("-C", str(self.repo), "log", "-1", "--format=%B").stdout
+        self.assertIn("Inputs:", message)
+        self.assertIn("nixpkgs", message)
+        self.assertIn("- nixpkgs:", result.stdout)
+        self.assertEqual(
+            self.git("-C", str(self.repo), "show", "--name-only", "--format=").stdout.strip(),
+            "chromeos-dev-setup/flake.lock",
+        )
+        self.assertIn("run 'cros publish'", result.stderr)
+
+    def test_apply_failure_restores_the_lock_and_makes_no_commit(self):
+        head = self.git("-C", str(self.repo), "rev-parse", "HEAD").stdout
+        original = self.lock.read_bytes()
+        environment = dict(self.environment)
+        environment["CROS_TEST_RUN_EXIT"] = "1"
+        result = self.run_cros("bump", environment=environment)
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("flake.lock was restored", result.stderr)
+        self.assertEqual(self.lock.read_bytes(), original)
+        self.assertEqual(self.git("-C", str(self.repo), "rev-parse", "HEAD").stdout, head)
+
+    def test_selected_inputs_are_passed_to_flake_update(self):
+        environment = dict(self.environment)
+        environment["CROS_TEST_UPDATE_CHANGE"] = "0"
+        result = self.run_cros("bump", "nixpkgs", "home-manager", environment=environment)
+        self.assertEqual(result.returncode, 0, self.output(result))
+        update = next(
+            argv for argv in self.argvs()
+            if argv[:2] == ["nix", "flake"] and "update" in argv
+        )
+        self.assertEqual(
+            update,
+            ["nix", "flake", "update", "--accept-flake-config", "nixpkgs",
+             "home-manager", "--flake", str(self.repo / "chromeos-dev-setup")],
+        )
+
+    def test_refuses_non_main_and_dirty_checkouts(self):
+        self.git("-C", str(self.repo), "switch", "-c", "work")
+        branch = self.run_cros("bump")
+        self.assertEqual(branch.returncode, 1, self.output(branch))
+        self.assertIn("requires the main branch", branch.stderr)
+        self.git("-C", str(self.repo), "switch", "main")
+        (self.repo / "notes.txt").write_text("untracked\n")
+        dirty = self.run_cros("bump")
+        self.assertEqual(dirty.returncode, 1, self.output(dirty))
+        self.assertIn("clean checkout", dirty.stderr)
+        self.assertEqual(self.matching(lambda a: a[:2] == ["nix", "flake"]), [])
+
+
+class Publish(CrosTestCase):
+    def setUp(self):
+        super().setUp()
+        self.write_host_json(checkout=str(self.repo), maintainer=False)
+        self.remote = self.add_origin()
+
+    def remote_main(self):
+        return self.git("--git-dir", str(self.remote), "rev-parse", "main").stdout.strip()
+
+    def test_pushes_committed_work_to_origin_main(self):
+        (self.repo / "change.txt").write_text("publish me\n")
+        self.commit(self.repo, "A change")
+        head = self.git("-C", str(self.repo), "rev-parse", "HEAD").stdout.strip()
+        result = self.run_cros("publish")
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertIn("published 1 commit(s)", result.stderr)
+        self.assertEqual(self.remote_main(), head)
+        self.assertIn(
+            ["git", "-C", str(self.repo), "push", "origin", "HEAD:main"],
+            self.argvs(),
+        )
+
+    def test_nothing_to_publish_when_not_ahead(self):
+        result = self.run_cros("publish")
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertIn("nothing to publish", result.stderr)
+        self.assertFalse(any("push" in argv for argv in self.argvs()))
+
+    def test_refuses_when_origin_has_commits_missing_locally(self):
+        other = self.root / "other clone"
+        self.git("clone", str(self.remote), str(other))
+        (other / "elsewhere.txt").write_text("someone else\n")
+        self.git("-C", str(other), "add", "--all")
+        self.git("-C", str(other), "commit", "-m", "Elsewhere")
+        self.git("-C", str(other), "push", "origin", "main")
+        before = self.remote_main()
+        result = self.run_cros("publish")
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("run 'cros sync' first", result.stderr)
+        self.assertEqual(self.remote_main(), before)
+        self.assertFalse(any("push" in argv for argv in self.argvs()))
+
+    def test_refuses_dirty_worktree(self):
+        (self.repo / "README.md").write_text("dirty\n")
+        result = self.run_cros("publish")
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("clean checkout", result.stderr)
+        self.assertFalse(any("push" in argv for argv in self.argvs()))
+
+    def test_publish_takes_no_arguments(self):
+        result = self.run_cros("publish", "extra")
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("publish takes no arguments", result.stderr)
+
+
+class Reminders(CrosTestCase):
+    def bump_without_changes(self, maintainer=True, **extra):
+        self.write_host_json(checkout=str(self.repo), maintainer=maintainer)
+        environment = dict(self.environment)
+        environment["CROS_TEST_UPDATE_CHANGE"] = "0"
+        environment.update(extra)
+        return self.run_cros("bump", environment=environment)
+
+    def test_unpublished_commits_are_reported_to_maintainers(self):
+        self.add_origin()
+        (self.repo / "local.txt").write_text("local work\n")
+        self.commit(self.repo, "Local change")
+        result = self.bump_without_changes()
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertIn("1 commit(s) are not published", result.stderr)
+        self.assertIn("cros publish", result.stderr)
+
+    def test_non_maintainers_get_no_reminders(self):
+        self.add_origin()
+        (self.repo / "local.txt").write_text("local work\n")
+        self.commit(self.repo, "Local change")
+        result = self.bump_without_changes(maintainer=False)
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertNotIn("reminder:", result.stderr)
+
+    def test_old_lock_is_reported(self):
+        checkout = self.make_checkout(
+            self.root / "old lock checkout",
+            commit_date="2020-01-01T00:00:00 +0000",
+        )
+        self.write_host_json(checkout=str(checkout), maintainer=True)
+        remote = self.root / "origin remote.git"
+        self.git("init", "--bare", "--initial-branch=main", str(remote))
+        self.git("-C", str(checkout), "remote", "add", "origin", str(remote))
+        self.git("-C", str(checkout), "push", "origin", "main")
+        environment = dict(self.environment)
+        environment["CROS_TEST_UPDATE_CHANGE"] = "0"
+        result = self.run_cros("bump", environment=environment)
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertIn("flake inputs were last updated", result.stderr)
+        self.assertIn("run 'cros bump'", result.stderr)
+        self.assertNotIn("not published", result.stderr)
+
+
+class Reset(CrosTestCase):
+    def test_reset_starts_units_without_stopping_them(self):
+        result = self.run_cros("reset")
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertEqual(
+            [argv for argv in self.argvs() if argv[0] == "systemctl"],
+            [
+                ["systemctl", "--user", "daemon-reload"],
+                ["systemctl", "--user", "reset-failed", "earlyoom.service", *SESSION_UNITS],
+                ["systemctl", "--user", "start", "earlyoom.service", *SESSION_UNITS],
+            ],
+        )
+        self.assertEqual(self.matching(lambda a: a[0] == "rm"), [])
+
+    def test_reset_hard_stops_restarts_and_removes_wayland_sockets(self):
+        result = self.run_cros("reset", "--hard")
+        self.assertEqual(result.returncode, 0, self.output(result))
+        systemctl = [argv for argv in self.argvs() if argv[0] == "systemctl"]
+        self.assertEqual(systemctl, [
+            ["systemctl", "--user", "stop", *SESSION_UNITS],
+            ["systemctl", "--user", "daemon-reload"],
+            ["systemctl", "--user", "reset-failed", "earlyoom.service", *SESSION_UNITS],
+            ["systemctl", "--user", "start", "earlyoom.service", *SESSION_UNITS],
+        ])
+        removals = [argv for argv in self.argvs() if argv[0] == "rm"]
+        self.assertEqual(len(removals), 1)
+        self.assertEqual(removals[0][1], "-f")
+        self.assertEqual(len(removals[0]) - 2, 4)
+        for path in removals[0][2:]:
+            self.assertTrue(path.startswith("/run/user/"))
+            self.assertIn("wayland-", path)
+
+    def test_unknown_reset_option_is_refused(self):
+        result = self.run_cros("reset", "--frobnicate")
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("unknown reset option: --frobnicate", result.stderr)
+        self.assertEqual(self.argvs(), [])
+
+
+class CheckAndClean(CrosTestCase):
+    def test_check_builds_both_without_installing_or_activating(self):
+        self.write_host_json(checkout=str(self.repo), maintainer=False)
+        before = (self.host_dir / "host.json").read_bytes()
+        result = self.run_cros("check")
+        self.assertEqual(result.returncode, 0, self.output(result))
+        builds = [argv for argv in self.argvs() if argv[:2] == ["nix", "build"]]
+        self.assertEqual(len(builds), 2, builds)
+        self.assertTrue(builds[0][-1].endswith("#system-deb"))
+        self.assertIn("#homeConfigurations", builds[1][-1])
+        self.assertIn("build passed", result.stderr)
+        self.assertEqual(self.matching(lambda a: a[0] in {"apt-get", "sudo"}), [])
+        self.assertEqual(self.matching(lambda a: a[0] == "activate"), [])
+        self.assertEqual((self.host_dir / "host.json").read_bytes(), before)
+
+    def test_clean_collects_garbage_and_optimises(self):
+        result = self.run_cros("clean")
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertEqual(self.argvs(), [
+            ["nix-collect-garbage", "-d"],
+            ["nix", "store", "optimise"],
+        ])
+
+
+class SparseCheckout(CrosTestCase):
+    def sparse_clone(self):
+        remote = self.add_origin()
+        checkout = self.root / "sparse checkout"
+        self.git("clone", "--sparse", str(remote), str(checkout))
+        self.git("-C", str(checkout), "sparse-checkout", "set", "chromeos-dev-setup")
+        self.assertFalse((checkout / "nixpkgs").exists())
+        return checkout
+
+    def test_apply_adds_setup_and_lock_relative_paths(self):
+        checkout = self.sparse_clone()
+        result = self.apply("--checkout", str(checkout))
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertIn(
+            ["git", "-C", str(checkout), "sparse-checkout", "add",
+             "chromeos-dev-setup", "nixpkgs/kakaotalk"],
+            self.argvs(),
+        )
+        listed = self.git("-C", str(checkout), "sparse-checkout", "list").stdout.split()
+        self.assertIn("chromeos-dev-setup", listed)
+        self.assertIn("nixpkgs/kakaotalk", listed)
+        # host-example is inside chromeos-dev-setup and must not be re-added.
+        self.assertNotIn("chromeos-dev-setup/host-example", listed)
+
+    def test_full_checkouts_do_not_touch_sparse_checkout(self):
+        result = self.apply("--checkout", str(self.repo))
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertEqual(self.matching(lambda a: "sparse-checkout" in a), [])
+
+
+if __name__ == "__main__":
+    unittest.main()

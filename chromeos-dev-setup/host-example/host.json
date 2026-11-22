@@ -1,0 +1,8 @@
+{
+  "username": "ci",
+  "homeDirectory": "/home/ci",
+  "checkout": "/home/ci/workspaces/monorepo-public",
+  "gtk3Cache": "/usr/lib/x86_64-linux-gnu/gtk-3.0/3.0.0/immodules.cache",
+  "gtk4Path": "/usr/lib/x86_64-linux-gnu/gtk-4.0",
+  "maintainer": false
+}

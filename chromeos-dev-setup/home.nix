@@ -1,11 +1,13 @@
-{ config, pkgs, lib, inputs, ... }:
+{ config, pkgs, lib, inputs, hostData, hostDir, ... }:
 
 let
-  host = builtins.fromJSON (builtins.readFile ./host.json);
-  crosDesktopShareDir = "${config.home.homeDirectory}/.local/share";
-  nixProfileShareDir  = "${config.home.homeDirectory}/.nix-profile/share";
-  llmAgentsPkgs       = inputs.llm-agents.packages.${pkgs.stdenv.hostPlatform.system};
-  openspecCli         = inputs.openspec.packages.${pkgs.stdenv.hostPlatform.system}.default;
+  # Written by `cros apply` to ~/.config/cros/host/host.json.
+  host = hostData;
+  system = pkgs.stdenv.hostPlatform.system;
+  llmAgentsPkgs       = inputs.llm-agents.packages.${system};
+  openspecCli         = inputs.openspec.packages.${system}.default;
+  crosCli             = inputs.self.packages.${system}.cros;
+  zshPath             = "${config.home.profileDirectory}/bin/zsh";
   # Claude Code plugin whose skills directory is the shared ~/.agents/skills.
   sharedSkillsPluginDir = ".claude/local-plugins/agents";
   # Claude resets PATH to system directories before opening login links.
@@ -26,14 +28,47 @@ let
         "$out/lib/Orca/resources/app.asar" "$out/share/applications/orca-ide.desktop"
     '';
   });
-  # This file is evaluated with --impure on the host. Do not install a
-  # Crostini-specific browser default on ordinary Linux systems.
-  isCrostini = builtins.pathExists "/opt/google/cros-containers/bin/garcon"
-    && builtins.pathExists "/usr/share/applications/garcon_host_browser.desktop";
-  # GSettings schema dirs for codex-desktop file dialog (GLib fatal crash fix)
-  # See also `GSETTINGS_SCHEMA_DIR` in the cros-garcon override below.
-  gtk3SchemaDir       = "${pkgs.gtk3}/share/gsettings-schemas/gtk+3-${lib.getVersion pkgs.gtk3}/glib-2.0/schemas";
-  gsettingsSchemaDir  = "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/gsettings-desktop-schemas-${lib.getVersion pkgs.gsettings-desktop-schemas}/glib-2.0/schemas";
+  # wayland-0: Crostini's high-density Sommelier, wayland-1: its low-density
+  # one, wayland-2: sommelier-rs (direct VirtWL, ChromeOS IME protocols).
+  sommelierRsDisplay = "wayland-2";
+
+  # Display and input environment for login shells and for apps the ChromeOS
+  # launcher starts through cros-garcon.
+  desktopEnvironment = {
+    # Native Wayland clients use GTK's text-input-v3 module through
+    # sommelier-rs. X11/Xwayland cannot use that module and falls back to the
+    # ChromeOS GTK bridge; some GTK4 builds register it as "test-cros".
+    GTK_IM_MODULE = "wayland:cros:test-cros";
+    GTK_IM_MODULE_FILE = host.gtk3Cache;
+    GTK_PATH = host.gtk4Path;
+    QT_IM_MODULE = "cros";
+    WAYLAND_DISPLAY = sommelierRsDisplay;
+    DISPLAY = ":1";
+    # Codex Desktop's launcher defaults to X11, where the wayland-first
+    # GTK_IM_MODULE above crashes it on the first text input focus.
+    CODEX_OZONE_PLATFORM = "wayland";
+  };
+
+  systemdEnvironment = env:
+    lib.concatStrings (lib.mapAttrsToList (name: value: "Environment=\"${name}=${value}\"\n") env);
+
+  # ChromeOS shortcuts reach the host instead of Linux apps.
+  # https://www.reddit.com/r/Crostini/wiki/enable-chrome-shortcuts-in-linux-apps
+  # https://issuetracker.google.com/issues/149234835#comment14
+  sommelierAccelerators = "Super_L,<Alt>bracketleft,<Alt>bracketright,<Alt>minus,<Alt>equal,<Alt>1,<Alt>2,<Alt>3,<Alt>4,<Alt>5,<Alt>6,<Alt>7,<Alt>8,<Alt>9,print,<Control>space,<Control><Shift>space";
+
+  # Central secrets (chmod 600): values live in ~/.config/secrets/.env, never
+  # in the Nix store.
+  loadSecrets = ''
+    if [[ -f "$HOME/.config/secrets/.env" ]]; then
+      set -a
+      . "$HOME/.config/secrets/.env"
+      set +a
+    fi
+  '';
+
+  # The former commands forward to `cros` until users have switched.
+  retiredCommand = old: new: ''echo "${old} is now 'cros ${new}'." >&2 && cros ${new}'';
 
   myShellAliases = {
     sudo = "sudo env PATH=\\\"$PATH\\\"";
@@ -44,40 +79,22 @@ let
     dir = "dir --color=auto";
     vdir = "vdir --color=auto";
 
-    cros-update = "bash ${./update.bash} ${lib.escapeShellArg host.setupScript}";
-
-    cros-clean = ''
-      nix-collect-garbage -d && \
-      nix store optimise && \
-      nix store gc
-    '';
-
-    cros-reset = ''
-      echo "Ensuring deferred user services are running..." && \
-      systemctl --user daemon-reload && \
-      systemctl --user reset-failed atuin-daemon.service earlyoom.service sommelier@0.service sommelier@1.service sommelier-x@0.service sommelier-x@1.service sommelier-rs.service cros-garcon.service && \
-      systemctl --user start atuin-daemon.service earlyoom.service sommelier@0.service sommelier@1.service sommelier-x@0.service sommelier-x@1.service sommelier-rs.service cros-garcon.service
-    '';
-
-    cros-hard-reset = ''
-      echo "Hard-resetting Crostini user services; running GUI apps will close..." && \
-      systemctl --user stop cros-garcon.service sommelier-rs.service sommelier-x@1.service sommelier-x@0.service sommelier@1.service sommelier@0.service atuin-daemon.service && \
-      rm -f /run/user/$UID/wayland-{1,2}.lock /run/user/$UID/wayland-{1,2} 2>/dev/null; \
-      systemctl --user daemon-reload && \
-      systemctl --user reset-failed atuin-daemon.service earlyoom.service sommelier@0.service sommelier@1.service sommelier-x@0.service sommelier-x@1.service sommelier-rs.service cros-garcon.service && \
-      systemctl --user start atuin-daemon.service earlyoom.service sommelier@0.service sommelier@1.service sommelier-x@0.service sommelier-x@1.service sommelier-rs.service cros-garcon.service
-    '';
-
-    # Reapply configuration without restarting services, then update this shell
-    # so subsequently launched applications use the custom proxy.
-    cros-setup = "bash ${lib.escapeShellArg host.setupScript} && export WAYLAND_DISPLAY=wayland-2";
+    cros-update = retiredCommand "cros-update" "sync";
+    cros-setup = retiredCommand "cros-setup" "apply";
+    cros-clean = retiredCommand "cros-clean" "clean";
+    cros-reset = retiredCommand "cros-reset" "reset";
+    cros-hard-reset = retiredCommand "cros-hard-reset" "reset --hard";
   };
 in
 {
+  # Optional per-user additions: ~/.config/cros/host/local.nix.
+  imports = lib.optional (builtins.pathExists "${hostDir}/local.nix") "${hostDir}/local.nix";
+
   nixpkgs.config.allowUnfree = true;
 
-  # Keep cros-setup interruption-free. cros-reset starts only inactive services;
-  # updated running units take effect on the next login or after cros-hard-reset.
+  # Keep `cros apply` interruption-free. `cros reset` starts only inactive
+  # services; updated running units take effect on the next login or after
+  # `cros reset --hard`.
   systemd.user.startServices = "suggest";
 
   home = {
@@ -139,20 +156,13 @@ in
       vscode
       # Orca's skill updater spawns npx outside project development shells.
       nodejs
-      inputs.openspec.packages.${pkgs.stdenv.hostPlatform.system}.default
-      # Existing GUI packages kept active; llm-agents.nix has no IDE/base-app
-      # replacement for these yet.
+      openspecCli
+      crosCli
+      # llm-agents.nix has no Antigravity IDE; keep both apps from one source.
       google-antigravity-no-fhs
       google-antigravity-ide
 
-      # Packages replaced by llm-agents.nix are retained as comments for rollback:
-      # orca-ide
-      # google-antigravity-cli
-      # claude-code
-      # claude-desktop
-      # codex
-
-      # Keep all available replacements on the same upstream package set.
+      # Agent tools come from one upstream package set.
       llmAgentsPkgs.antigravity-cli
       llmAgentsPkgs.claude-code
       claudeDesktopWithOpener
@@ -161,8 +171,8 @@ in
       llmAgentsPkgs.opencode2
       orcaWithDesktopIdentity
 
-      # Existing desktop package kept active; llm-agents.nix currently has no
-      # OpenCode desktop replacement.
+      # nixpkgs' build ships ai.opencode.desktop.desktop, matching its window
+      # class; llm-agents' opencode2-desktop names its entry differently.
       opencode-desktop
 
       # Fonts
@@ -170,32 +180,13 @@ in
       noto-fonts
       google-fonts
     ];
-    sessionVariables = {
+    sessionVariables = desktopEnvironment // {
       NIXPKGS_ALLOW_UNFREE = "1";
-      # Legacy orca-deb-bin exposed the CLI as orca-ide; the llm-agents.nix
-      # package follows the upstream orca CLI name.
-      # ORCA_CLI_COMMAND = "orca-ide";
       ORCA_CLI_COMMAND = "orca";
       EDITOR = "code --wait --new-window";
       VISUAL = "code --wait --new-window";
-      GIT_USER_NAME = host.gitName;
-      GIT_USER_EMAIL = host.gitEmail;
-      CROS_SETUP_SCRIPT_FILE = host.setupScript;
-      GSETTINGS_SCHEMA_DIR = "${gtk3SchemaDir}:${gsettingsSchemaDir}";
-      # Native Wayland clients use GTK's text-input-v3 module through
-      # sommelier-rs. X11/Xwayland cannot use that module and falls back to the
-      # ChromeOS GTK bridge; some GTK4 builds register it as "test-cros".
-      GTK_IM_MODULE = "wayland:cros:test-cros";
-      GTK_IM_MODULE_FILE = host.gtk3Cache;
-      GTK_PATH = host.gtk4Path;
-      QT_IM_MODULE = "cros";
-      # wayland-0: Crostini default high-density Sommelier, wayland-1: low-density Sommelier, wayland-2: custom sommelier-rs
-      WAYLAND_DISPLAY = "wayland-2";
-      DISPLAY = ":1";
-      # Codex Desktop's launcher defaults to X11, where the wayland-first
-      # GTK_IM_MODULE above crashes it on the first text input focus.
-      CODEX_OZONE_PLATFORM = "wayland";
-      CODEX_LINUX_DISABLE_EXTERNAL_OPEN_PATCH = "1";
+      # Agent guidance refers to the bootstrap script through this variable.
+      CROS_SETUP_SCRIPT_FILE = "${host.checkout}/chromeos-dev-setup/setup.bash";
       # Web search provider selection. Required for non-opencode providers (model-gateway).
       # See ../scratch-monorepo/model_gateway/WEB_SEARCH.md.
       # OPENCODE_ENABLE_EXA = "true";
@@ -213,12 +204,12 @@ in
       # The nested wayland-0 path hides ChromeOS keyboard/text-input extensions,
       # preventing host IME switching and GTK text-input-v3 activation.
       ExecStart =
-        "${pkgs.sommelier-rs-bin}/bin/sommelier-rs --gpu-accel wayland-2";
+        "${pkgs.sommelier-rs-bin}/bin/sommelier-rs --gpu-accel ${sommelierRsDisplay}";
       Restart = "always";
       RestartSec = "5";
       Environment = [
         "RUST_LOG=info"
-        "SOMMELIER_ACCELERATORS=Super_L,<Alt>bracketleft,<Alt>bracketright,<Alt>minus,<Alt>equal,<Alt>1,<Alt>2,<Alt>3,<Alt>4,<Alt>5,<Alt>6,<Alt>7,<Alt>8,<Alt>9,print,<Control>space,<Control><Shift>space"
+        "SOMMELIER_ACCELERATORS=${sommelierAccelerators}"
       ];
     };
     Install = {
@@ -307,9 +298,8 @@ in
 
   xdg.mimeApps = {
     enable = true;
-    # Crostini's host-browser desktop entry is installed below only when the
-    # same host integration files are present.
-    defaultApplications = lib.optionalAttrs isCrostini {
+    # Crostini ships garcon_host_browser.desktop in /usr/share/applications.
+    defaultApplications = {
       "text/html" = [ "garcon_host_browser.desktop" ];
       "x-scheme-handler/http" = [ "garcon_host_browser.desktop" ];
       "x-scheme-handler/https" = [ "garcon_host_browser.desktop" ];
@@ -321,22 +311,15 @@ in
   programs = {
     home-manager.enable = true;
 
-    # codex-desktop known issues (for reference):
-    #
-    # 1. GLib-GIO-ERROR: Settings schema 'org.gtk.Settings.FileChooser' not found
-    #    → Fix: GSETTINGS_SCHEMA_DIR is set in cros-garcon.service override
-    #      (see xdg.configFile section below).
-    #
-    # 2. Re-launch hangs when X-closed (Electron single-instance lock)
-    #    → Ctrl+Q works to actually quit. No config-side fix yet.
-    #
-    # The current codex-desktop-linux module discovers the CLI from PATH;
-    # keep the Nix-managed codex package in home.packages above.
+    # Known codex-desktop issue: re-launch hangs after closing the window
+    # (Electron single-instance lock); Ctrl+Q quits. No config-side fix yet.
     codexDesktopLinux = {
       enable = true;
-      # Keep Computer Use UI disabled because enabling both package variants causes
-      # overlapping browser plugin paths in the Home Manager profile.
+      # Optional feature, off by choice; the module builds a single package
+      # with or without it.
       # computerUseUi.enable = true;
+      # The package's owner=desktop marker makes Codex Desktop run remote
+      # control from its own app-server; no ~/.codex/packages link is needed.
       remoteMobileControl.enable = true;
       # Keep the declarative remote-control service disabled because Codex Desktop
       # already owns the app-server control socket in this Crostini environment.
@@ -347,7 +330,24 @@ in
       enable = true;
       enableCompletion = true;
 
-      initExtra = ''
+      initExtra = lib.mkMerge [
+        # Debian bash stays the login shell, so a broken Nix profile still
+        # opens a working terminal. Interactive shells that are not running a
+        # command switch to the Nix zsh; an explicitly started `bash` (SHELL is
+        # already zsh) or CROS_NO_ZSH=1 stays in bash. A failed exec leaves
+        # interactive bash running.
+        (lib.mkBefore ''
+          if [[ -z "''${CROS_NO_ZSH:-}" && -z "''${BASH_EXECUTION_STRING:-}" &&
+                "''${SHELL:-}" != "${zshPath}" && -x "${zshPath}" ]]; then
+            export SHELL="${zshPath}"
+            if shopt -q login_shell; then
+              exec "$SHELL" -l
+            else
+              exec "$SHELL"
+            fi
+          fi
+        '')
+        ''
         # https://yazi-rs.github.io/docs/quick-start/
         function y() {
           local tmp="$(mktemp -t "yazi-cwd.XXXXXX")" cwd
@@ -357,17 +357,13 @@ in
           command rm -f -- "$tmp"
         }
         export PATH="$HOME/.local/bin:$PATH"
-      '';
+      ''
+      ];
       bashrcExtra = ''
         if [[ -f "$HOME/.bashrc.backup" ]]; then
           . "$HOME/.bashrc.backup"
         fi
-        # central secrets (chmod 600) - values live in ~/.config/secrets/.env, never in nix store
-        if [[ -f "$HOME/.config/secrets/.env" ]]; then
-          set -a
-          . "$HOME/.config/secrets/.env"
-          set +a
-        fi
+        ${loadSecrets}
       '';
       profileExtra = ''
         if [[ -f "$HOME/.profile.backup" ]]; then
@@ -440,12 +436,7 @@ in
 
         export PATH="$HOME/.local/bin:$PATH"
 
-        # central secrets (chmod 600) - values live in ~/.config/secrets/.env, never in nix store
-        if [[ -f "$HOME/.config/secrets/.env" ]]; then
-          set -a
-          . "$HOME/.config/secrets/.env"
-          set +a
-        fi
+        ${loadSecrets}
       '';
 
       # TODO: More options
@@ -457,10 +448,7 @@ in
         core.editor = "code --wait --new-window";
         diff.tool = "vscode";
         difftool.vscode.cmd = "code --wait --new-window --diff $LOCAL $REMOTE";
-        user = {
-          name = host.gitName;
-          email = host.gitEmail;
-        };
+        # Identity (user.name/user.email) lives in the user-owned ~/.gitconfig.
       };
       ignores = [
       ];
@@ -564,32 +552,14 @@ in
       [Service]
       Environment="PATH=%h/.nix-profile/bin:/usr/local/sbin:/usr/local/bin:/usr/local/games:/usr/sbin:/usr/bin:/usr/games:/sbin:/bin"
       Environment="XDG_DATA_DIRS=%h/.nix-profile/share:%h/.local/share:%h/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share:/usr/share"
-      Environment="WAYLAND_DISPLAY=wayland-2"
-      Environment="DISPLAY=:1"
-      Environment="GTK_IM_MODULE=wayland:cros:test-cros"
-      Environment="GTK_IM_MODULE_FILE=${host.gtk3Cache}"
-      Environment="GTK_PATH=${host.gtk4Path}"
-      Environment="QT_IM_MODULE=cros"
-      Environment="CODEX_OZONE_PLATFORM=wayland"
-      Environment="CODEX_LINUX_DISABLE_EXTERNAL_OPEN_PATCH=1"
-      # GLib-GIO-ERROR: Settings schema 'org.gtk.Settings.FileChooser' is not installed
-      # codex-desktop crashes (exit 5) when opening a file dialog if these are missing.
-      Environment="GSETTINGS_SCHEMA_DIR=${gtk3SchemaDir}:${gsettingsSchemaDir}"
-    '';
+    '' + systemdEnvironment desktopEnvironment;
 
-    # Chrome OS shortcuts in Linux apps
-    # https://www.reddit.com/r/Crostini/wiki/enable-chrome-shortcuts-in-linux-apps
-    # https://issuetracker.google.com/issues/149234835#comment14
-    "systemd/user/sommelier@.service.d/cros-sommelier-override.conf".text = ''
-      [Service]
-      Environment="SOMMELIER_ACCELERATORS=Super_L,<Alt>bracketleft,<Alt>bracketright,<Alt>minus,<Alt>equal,<Alt>1,<Alt>2,<Alt>3,<Alt>4,<Alt>5,<Alt>6,<Alt>7,<Alt>8,<Alt>9,print,<Control>space,<Control><Shift>space"
-    '';
-    "systemd/user/sommelier-x@.service.d/cros-sommelier-x-override.conf".text = ''
-      [Service]
-      Environment="SOMMELIER_ACCELERATORS=Super_L,<Alt>bracketleft,<Alt>bracketright,<Alt>minus,<Alt>equal,<Alt>1,<Alt>2,<Alt>3,<Alt>4,<Alt>5,<Alt>6,<Alt>7,<Alt>8,<Alt>9,print,<Control>space,<Control><Shift>space"
-    '';
+    "systemd/user/sommelier@.service.d/cros-sommelier-override.conf".text =
+      "[Service]\n" + systemdEnvironment { SOMMELIER_ACCELERATORS = sommelierAccelerators; };
+    "systemd/user/sommelier-x@.service.d/cros-sommelier-x-override.conf".text =
+      "[Service]\n" + systemdEnvironment { SOMMELIER_ACCELERATORS = sommelierAccelerators; };
 
-    # Override sommelier-x@1 to run at scale 1.0 (high-density)
+    # Debian's low-density drop-in sets sommelier-x@1 to 0.5; run it at 1.0.
     "systemd/user/sommelier-x@1.service.d/override.conf".text = ''
       [Service]
       Environment="SOMMELIER_SCALE=1.0"
@@ -597,9 +567,16 @@ in
 
   };
 
+  # ChromeOS's launcher (garcon) watches ~/.local/share/applications but not
+  # the Nix profile, so link each profile entry there; replaced links update
+  # the launcher immediately. Icons resolve through XDG_DATA_DIRS.
+  xdg.dataFile."applications" = {
+    source = "${config.home.path}/share/applications";
+    recursive = true;
+  };
+
   home.file = {
-    # Generate the model-policy wrapper from this setup script while letting
-    # Home Manager own its installed path and lifecycle.
+    # Applies the default model policy before every Codex launch.
     ".local/bin/codex" = {
       source = ./codex-wrapper;
     };
@@ -613,18 +590,10 @@ in
 
     # Share VS Code settings with Antigravity via symlink
     ".config/Antigravity/User/settings.json" = {
-      source = config.lib.file.mkOutOfStoreSymlink "${host.homeDirectory}/.config/Code/User/settings.json";
+      source = config.lib.file.mkOutOfStoreSymlink "${config.home.homeDirectory}/.config/Code/User/settings.json";
     };
     ".antigravity-ide/User/settings.json" = {
-      source = config.lib.file.mkOutOfStoreSymlink "${host.homeDirectory}/.config/Code/User/settings.json";
-    };
-
-    # Let the llm-agents.nix Codex CLI satisfy the remote-mobile cold-start
-    # hook's managed runtime path without bootstrapping the standalone updater.
-    ".codex/packages/standalone/current/codex" = {
-      # Legacy source retained for rollback:
-      # source = "${pkgs.codex}/bin/codex";
-      source = "${llmAgentsPkgs.codex}/bin/codex";
+      source = config.lib.file.mkOutOfStoreSymlink "${config.home.homeDirectory}/.config/Code/User/settings.json";
     };
 
     # ~/.agents/skills is the single home of user-scoped skills: Codex and
@@ -673,14 +642,8 @@ in
         fi
       done
 
-      # OpenSpec 2.x installs user-scoped skills under $HOME/.agents/skills;
-      # older releases wrote them into the project's .agents/skills.
-      generatedSkillsDir="$tempDir/home/.agents/skills"
-      if [ ! -d "$generatedSkillsDir" ]; then
-        generatedSkillsDir="$workDir/.agents/skills"
-      fi
-
-      for generatedSkill in "$generatedSkillsDir"/openspec-*; do
+      # OpenSpec 2.x installs user-scoped skills under $HOME/.agents/skills.
+      for generatedSkill in "$tempDir/home/.agents/skills"/openspec-*; do
         [ -d "$generatedSkill" ] || continue
         skillName="$(basename "$generatedSkill")"
         cp -a -- "$generatedSkill" "$openspecSkillsDir/$skillName"
@@ -750,23 +713,6 @@ in
         run mv -- "$settingsTemp" "$claudeSettings"
       fi
     '';
-
-    linkDesktopApplications = lib.hm.dag.entryAfter ["writeBoundary"] ''
-      rm -rf "${crosDesktopShareDir}/applications" "${crosDesktopShareDir}/icons"
-      mkdir -p "${crosDesktopShareDir}/applications" "${crosDesktopShareDir}/icons"
-
-      cp -rL "${nixProfileShareDir}/applications/." "${crosDesktopShareDir}/applications/"
-      cp -rL "${nixProfileShareDir}/icons/."        "${crosDesktopShareDir}/icons/"
-      if [ -r "/usr/share/applications/garcon_host_browser.desktop" ] &&
-         [ -x "/opt/google/cros-containers/bin/garcon" ]; then
-        cp -L "/usr/share/applications/garcon_host_browser.desktop"           "${crosDesktopShareDir}/applications/garcon_host_browser.desktop"
-      else
-        rm -f "${crosDesktopShareDir}/applications/garcon_host_browser.desktop"
-      fi
-      chmod -R u+w "${crosDesktopShareDir}/applications" "${crosDesktopShareDir}/icons" 2>/dev/null || true
-
-      # update-desktop-database "${crosDesktopShareDir}/applications" 2>/dev/null || true
-    '';
   };
 
   # Podman
@@ -778,6 +724,11 @@ in
   # Declarative Nix Settings / Cachix binary caches
   nix = {
     package = pkgs.nix;
+    # Optional user-owned GitHub token (README: "GitHub API rate limit");
+    # `!include` ignores a missing file.
+    extraOptions = ''
+      !include github-token.conf
+    '';
     settings = {
       substituters = [
         "https://cache.nixos.org"

@@ -153,6 +153,18 @@
         "type": "github"
       }
     },
+    "host": {
+      "flake": false,
+      "locked": {
+        "path": "./host-example",
+        "type": "path"
+      },
+      "original": {
+        "path": "./host-example",
+        "type": "path"
+      },
+      "parent": []
+    },
     "kakaotalk": {
       "inputs": {
         "nixpkgs": [
@@ -160,21 +172,14 @@
         ]
       },
       "locked": {
-        "dir": "nixpkgs/kakaotalk",
-        "lastModified": 1795216256,
-        "narHash": "sha256-m2lECOxJ+iQJLiIl2D8ixA5jpjRtUUQ7hO8FsTC1cJM=",
-        "owner": "kkimdev",
-        "repo": "monorepo-public",
-        "rev": "5dc4fb51218313692d7c398dddde58829e917c76",
-        "type": "github"
+        "path": "../nixpkgs/kakaotalk",
+        "type": "path"
       },
       "original": {
-        "dir": "nixpkgs/kakaotalk",
-        "owner": "kkimdev",
-        "ref": "main",
-        "repo": "monorepo-public",
-        "type": "github"
-      }
+        "path": "../nixpkgs/kakaotalk",
+        "type": "path"
+      },
+      "parent": []
     },
     "llm-agents": {
       "inputs": {
@@ -273,6 +278,7 @@
         "antigravity-nix": "antigravity-nix",
         "codex-desktop-linux": "codex-desktop-linux",
         "home-manager": "home-manager",
+        "host": "host",
         "kakaotalk": "kakaotalk",
         "llm-agents": "llm-agents",
         "nix-index-database": "nix-index-database",
