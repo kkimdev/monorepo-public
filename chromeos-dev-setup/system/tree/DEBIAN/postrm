@@ -3,6 +3,7 @@ set -e
 
 # Reload systemd and udev after removal, but never delete /var/lib/tmp: the
 # subvolume is user data and is harmless when the package is not installed.
+# The Debian sources file is generated, not packaged, so remove it here.
 reload_services() {
     if [ -d /run/systemd/system ]; then
         systemctl daemon-reload || true
@@ -15,6 +16,7 @@ reload_services() {
 
 case "$1" in
     remove|purge)
+        rm -f /etc/apt/sources.list.d/cros-dev-debian.list
         reload_services
         ;;
     upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)

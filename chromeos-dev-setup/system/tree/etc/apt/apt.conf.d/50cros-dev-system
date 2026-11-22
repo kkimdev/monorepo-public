@@ -1,0 +1,3 @@
+// cros-dev-system: before every update, point Debian's security and
+// stable-updates sources at the running release. Never blocks apt.
+APT::Update::Pre-Invoke { "sh /usr/lib/cros-dev-system/debian-sources || true"; };

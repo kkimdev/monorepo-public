@@ -82,6 +82,7 @@ case "$1" in
         else
             configure_disk_backed_tmp
         fi
+        sh /usr/lib/cros-dev-system/debian-sources
         reload_services
         ;;
     abort-upgrade|abort-remove|abort-deconfigure)

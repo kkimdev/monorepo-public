@@ -1,0 +1,42 @@
+#!/bin/sh
+# Writes Debian's security and stable-updates sources for the running release
+# to one file, unless another source file already provides them. postinst runs
+# it, and so does every `apt-get update` (/etc/apt/apt.conf.d/50cros-dev-system),
+# so a Debian release upgrade switches the suites to the new codename. apt reads
+# its sources before the hook runs, so a change applies from the next update.
+set -eu
+
+list=/etc/apt/sources.list.d/cros-dev-debian.list
+# shellcheck source=/dev/null
+codename=$(. /etc/os-release && printf '%s' "${VERSION_CODENAME:-}")
+[ -n "$codename" ] || exit 0
+
+others=$(find /etc/apt/sources.list /etc/apt/sources.list.d -maxdepth 1 -type f \
+    \( -name sources.list -o -name '*.list' -o -name '*.sources' \) ! -path "$list" 2>/dev/null || true)
+
+# Succeeds when an uncommented line elsewhere already names the suite.
+provided() {
+    [ -n "$others" ] || return 1
+    # shellcheck disable=SC2086 # one path per word; apt paths have no spaces.
+    grep -Eqs "^[^#]*[[:space:]]$1([[:space:]]|\$)" $others
+}
+
+content="# Managed by cros-dev-system; rewritten before every apt update."
+lines=0
+if ! provided "$codename-security"; then
+    content="$content
+deb https://deb.debian.org/debian-security $codename-security main"
+    lines=$((lines + 1))
+fi
+if ! provided "$codename-updates"; then
+    content="$content
+deb https://deb.debian.org/debian $codename-updates main"
+    lines=$((lines + 1))
+fi
+
+if [ "$lines" -eq 0 ]; then
+    rm -f "$list"
+elif [ "$(cat "$list" 2>/dev/null || true)" != "$content" ]; then
+    printf '%s\n' "$content" >"$list.tmp"
+    mv -f "$list.tmp" "$list"
+fi

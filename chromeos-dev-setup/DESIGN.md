@@ -89,10 +89,21 @@ from the installed one. The version embeds a hash of the package tree.
   `/usr/lib/udev/rules.d/51-cros-android.rules`,
   `/usr/lib/tmpfiles.d/00-cros-tmp.conf` (sorts before systemd's `tmp.conf`, so
   its `/tmp` line wins), `/usr/lib/systemd/system/tmp.mount.d/50-cros-disk-backed.conf`.
+- Debian security and stable updates: Crostini's image lists only
+  `<codename> main`, so security fixes would wait for point releases.
+  `/usr/lib/cros-dev-system/debian-sources` writes
+  `/etc/apt/sources.list.d/cros-dev-debian.list` with `<codename>-security` and
+  `<codename>-updates` (codename from `/etc/os-release`), skipping a suite that
+  another uncommented source already names. `postinst` runs it, and the apt hook
+  `/etc/apt/apt.conf.d/50cros-dev-system` (`APT::Update::Pre-Invoke`, never
+  fatal) reruns it before every update, so a Debian release upgrade follows
+  automatically; apt reads its sources before the hook, so a change applies from
+  the next update.
 - `postinst configure`: creates the btrfs subvolume `/var/lib/tmp` with a
-  MemTotal/2 quota and no-CoW, then reloads systemd and udev when they are
-  running.
-- `postrm`: reloads systemd and udev; it never deletes `/var/lib/tmp`.
+  MemTotal/2 quota and no-CoW, writes the Debian sources, then reloads systemd
+  and udev when they are running.
+- `postrm`: removes the generated sources file and reloads systemd and udev; it
+  never deletes `/var/lib/tmp`.
 
 Verified in a `debian:trixie` container: `Depends` installs, `Conflicts`
 removes `vim-tiny`, `dpkg -S` reports ownership, a file dropped in a newer
@@ -169,6 +180,7 @@ A full Home Manager build is out of scope for hosted runners.
 | Login shell | bash execs zsh | `chsh` to the Nix zsh (terminal fails to open if the profile breaks) |
 | Desktop entries | Home Manager links | `rm -rf` + copy (deletes unrelated entries); own manifest |
 | Update flow | `bump` commits, `publish` pushes | push inside `bump` |
+| Debian upgrades | `cros sync` only (manual), with security and updates suites | `unattended-upgrades` (security only, or everything) |
 | Reminders | in `cros` output only | shell start, prompt, desktop notifications |
 | CI | tests + pure eval + deb build | full build; none |
 | W1 trusted-users | ensured in code | note only |

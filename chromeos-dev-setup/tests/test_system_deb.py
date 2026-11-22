@@ -30,10 +30,14 @@ CROS_IM_CONTROL = (
     "Description: dummy cros-im for the cros-dev-system test\n"
 )
 
+DEBIAN_SOURCES_LIST = "/etc/apt/sources.list.d/cros-dev-debian.list"
+
 PACKAGE_FILES = (
     "/usr/lib/udev/rules.d/51-cros-android.rules",
     "/usr/lib/tmpfiles.d/00-cros-tmp.conf",
     "/usr/lib/systemd/system/tmp.mount.d/50-cros-disk-backed.conf",
+    "/usr/lib/cros-dev-system/debian-sources",
+    "/etc/apt/apt.conf.d/50cros-dev-system",
 )
 
 
@@ -141,8 +145,11 @@ class PackageBuildTest(unittest.TestCase):
             )
 
     def test_maintainer_scripts_are_valid_posix_sh(self):
-        for name in ("postinst", "postrm"):
-            script = SYSTEM / "tree/DEBIAN" / name
+        for script in (
+            SYSTEM / "tree/DEBIAN/postinst",
+            SYSTEM / "tree/DEBIAN/postrm",
+            SYSTEM / "tree/usr/lib/cros-dev-system/debian-sources",
+        ):
             result = subprocess.run(
                 ["sh", "-n", str(script)],
                 capture_output=True,
@@ -325,6 +332,63 @@ class PackageContainerTest(unittest.TestCase):
         )
         self.assertNotEqual(guard.returncode, 0)
         self.assertIn("not btrfs", guard.stdout + guard.stderr)
+
+    def sources_file(self, container):
+        result = self.exec_in(
+            container, f"cat {DEBIAN_SOURCES_LIST}", check=False
+        )
+        return result.stdout if result.returncode == 0 else None
+
+    def test_debian_sources_follow_the_release_and_existing_sources(self):
+        container = self.prepare()
+        # The debian:trixie image already lists security and updates.
+        self.install(container)
+        self.assertIsNone(self.sources_file(container))
+        hook = self.exec_in(container, "apt-config dump APT::Update::Pre-Invoke").stdout
+        self.assertIn("/usr/lib/cros-dev-system/debian-sources", hook)
+
+        # Crostini's image lists only `trixie main`.
+        self.exec_in(
+            container,
+            "rm /etc/apt/sources.list.d/debian.sources && "
+            "echo 'deb http://deb.debian.org/debian trixie main' > /etc/apt/sources.list",
+        )
+        # The hook writes the file; apt read its sources before the hook ran.
+        self.exec_in(container, "apt-get update -qq")
+        self.assertEqual(
+            self.sources_file(container),
+            "# Managed by cros-dev-system; rewritten before every apt update.\n"
+            "deb https://deb.debian.org/debian-security trixie-security main\n"
+            "deb https://deb.debian.org/debian trixie-updates main\n",
+        )
+        self.exec_in(container, "apt-get update -qq")
+        policy = self.exec_in(container, "apt-cache policy").stdout
+        self.assertIn("trixie-security", policy)
+        self.assertIn("trixie-updates", policy)
+
+        # A release upgrade changes the codename; the next update follows it.
+        self.exec_in(
+            container,
+            "sed -i 's/^VERSION_CODENAME=.*/VERSION_CODENAME=forky/' /etc/os-release && "
+            "sh /usr/lib/cros-dev-system/debian-sources",
+        )
+        self.assertIn("forky-security", self.sources_file(container))
+        self.assertNotIn("trixie", self.sources_file(container))
+
+        # A suite another file provides (even after a comment) is not repeated.
+        self.exec_in(
+            container,
+            "printf '# deb x forky-updates main\\ndeb https://deb.debian.org/debian-security forky-security main\\n'"
+            " >> /etc/apt/sources.list && sh /usr/lib/cros-dev-system/debian-sources",
+        )
+        self.assertEqual(
+            self.sources_file(container),
+            "# Managed by cros-dev-system; rewritten before every apt update.\n"
+            "deb https://deb.debian.org/debian forky-updates main\n",
+        )
+
+        self.exec_in(container, "apt-get remove -y cros-dev-system")
+        self.assertIsNone(self.sources_file(container))
 
     def test_purge_keeps_tmp_data(self):
         container = self.prepare()

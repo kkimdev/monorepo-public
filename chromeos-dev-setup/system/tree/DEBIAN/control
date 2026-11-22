@@ -8,4 +8,5 @@ Depends: uidmap, cros-im, btrfs-progs, e2fsprogs, curl, ca-certificates, git, xz
 Conflicts: vim, vim-tiny, command-not-found
 Description: root-level ChromeOS Crostini configuration for chromeos-dev-setup
  Installs the Android adb udev rule and the disk-backed /tmp policy that must
- stay effective without Nix.
+ stay effective without Nix, and keeps Debian's security and stable-updates
+ sources for the running release.

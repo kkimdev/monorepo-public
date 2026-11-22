@@ -1,5 +1,6 @@
 # Local Debian package for the root-owned configuration that must survive
-# without Nix: the adb udev rule and the disk-backed /tmp policy.
+# without Nix: the adb udev rule, the disk-backed /tmp policy, and Debian's
+# security and stable-updates sources.
 #
 # The package version embeds a hash of the whole tree (including DEBIAN/
 # scripts and the control template), so any content change makes `cros apply`
