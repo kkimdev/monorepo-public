@@ -99,6 +99,9 @@ from the installed one. The version embeds a hash of the package tree.
   fatal) reruns it before every update, so a Debian release upgrade follows
   automatically; apt reads its sources before the hook, so a change applies from
   the next update.
+- The same apt file sets `APT::Keep-Downloaded-Packages "false"`: `apt-get`
+  (used by `cros sync`) deletes downloaded `.deb` files after a successful
+  install, as `apt` already does, so `/var/cache/apt/archives` does not grow.
 - `postinst configure`: creates the btrfs subvolume `/var/lib/tmp` with a
   MemTotal/2 quota and no-CoW, writes the Debian sources, then reloads systemd
   and udev when they are running.

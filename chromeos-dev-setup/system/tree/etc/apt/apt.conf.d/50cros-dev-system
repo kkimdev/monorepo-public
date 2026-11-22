@@ -1,3 +1,9 @@
-// cros-dev-system: before every update, point Debian's security and
-// stable-updates sources at the running release. Never blocks apt.
+// cros-dev-system apt settings.
+
+// Before every update, point Debian's security and stable-updates sources at
+// the running release. Never blocks apt.
 APT::Update::Pre-Invoke { "sh /usr/lib/cros-dev-system/debian-sources || true"; };
+
+// Delete downloaded .debs after a successful install, as `apt` already does;
+// `apt-get` (used by `cros sync`) would otherwise keep them forever.
+APT::Keep-Downloaded-Packages "false";

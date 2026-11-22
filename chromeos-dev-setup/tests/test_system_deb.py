@@ -346,6 +346,8 @@ class PackageContainerTest(unittest.TestCase):
         self.assertIsNone(self.sources_file(container))
         hook = self.exec_in(container, "apt-config dump APT::Update::Pre-Invoke").stdout
         self.assertIn("/usr/lib/cros-dev-system/debian-sources", hook)
+        keep = self.exec_in(container, "apt-config dump APT::Keep-Downloaded-Packages").stdout
+        self.assertIn('APT::Keep-Downloaded-Packages "false";', keep)
 
         # Crostini's image lists only `trixie main`.
         self.exec_in(
