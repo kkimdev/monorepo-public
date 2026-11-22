@@ -169,6 +169,11 @@ last lock change older than 14 days.
   execs the Nix `zsh` for interactive shells (with `SHELL` exported and login
   mode preserved); if zsh is missing or broken, the terminal still opens in bash.
   `CROS_NO_ZSH=1` skips the switch.
+- PATH: `home.sessionPath` (absolute paths) is the one list of user
+  directories. Shells get it from Home Manager; the cros-garcon drop-in (apps
+  the ChromeOS launcher starts) and the `local-services` unit start PATH with
+  it, followed by the Nix profile `bin` and each unit's system directories.
+  Units pick up a change when they restart (cros-garcon: next Linux restart).
 - Desktop apps come from maintained sources: OpenAI's official Linux ChatGPT
   (Codex) app and the Antigravity app from llm-agents, the Antigravity IDE from
   nixpkgs. Small `wrapApp` wrappers add what Crostini needs: `NIXOS_OZONE_WL=1`
