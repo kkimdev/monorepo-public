@@ -50,10 +50,13 @@ fi
 
 # Binary caches declared by the flake need the user to be trusted. A Nix that
 # was installed before this setup lacks the entry the installer adds above.
-if ! nix config show trusted-users 2>/dev/null | tr ' ' '\n' | grep -qxF -e "$USER"; then
+nix_trusts_user() { nix config show trusted-users 2>/dev/null | tr ' ' '\n' | grep -qxF -e "$USER"; }
+if ! nix_trusts_user; then
   log "adding $USER to Nix trusted-users"
   echo "extra-trusted-users = $USER" | sudo tee -a "$NIX_CUSTOM_CONF" >/dev/null
   sudo systemctl restart nix-daemon.service
+  nix_trusts_user ||
+    die "Nix still does not trust $USER; this Nix does not read $NIX_CUSTOM_CONF (expected Determinate Nix)"
 fi
 
 # GPU acceleration reads /dev/dri render nodes; takes effect at next login.

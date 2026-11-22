@@ -332,13 +332,14 @@ in
 
       initExtra = lib.mkMerge [
         # Debian bash stays the login shell, so a broken Nix profile still
-        # opens a working terminal. Interactive shells that are not running a
-        # command switch to the Nix zsh; an explicitly started `bash` (SHELL is
-        # already zsh) or CROS_NO_ZSH=1 stays in bash. A failed exec leaves
+        # opens a working terminal. Only shells started as the login shell
+        # (SHELL is /bin/bash or unset) switch to the Nix zsh; `bash` typed in
+        # zsh, `nix develop` (which sets SHELL to its own bash), commands
+        # (`bash -ic`), and CROS_NO_ZSH=1 stay in bash. A failed exec leaves
         # interactive bash running.
         (lib.mkBefore ''
           if [[ -z "''${CROS_NO_ZSH:-}" && -z "''${BASH_EXECUTION_STRING:-}" &&
-                "''${SHELL:-}" != "${zshPath}" && -x "${zshPath}" ]]; then
+                "''${SHELL:-/bin/bash}" == /bin/bash && -x "${zshPath}" ]]; then
             export SHELL="${zshPath}"
             if shopt -q login_shell; then
               exec "$SHELL" -l

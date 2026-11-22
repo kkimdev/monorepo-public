@@ -107,7 +107,18 @@ if name == "git":
 
 if name == "nix":
     if args[:2] == ["config", "show"]:
-        print(variable("SETUP_TEST_TRUSTED_USERS", "root"))
+        users = variable("SETUP_TEST_TRUSTED_USERS")
+        if users is None:
+            users = "root"
+            # The bootstrap appends to nix.custom.conf through `sudo tee`; the
+            # sudo stub records that line instead of writing /etc.
+            custom_conf = audit / "tee.log"
+            if variable("SETUP_TEST_IGNORE_CUSTOM_CONF", "0") != "1" and custom_conf.exists():
+                for line in custom_conf.read_text().splitlines():
+                    key, _, value = line.partition("=")
+                    if key.strip() == "extra-trusted-users":
+                        users += " " + value.strip()
+        print(users)
         sys.exit(0)
     if args[:1] == ["run"]:
         sys.exit(int(variable("SETUP_TEST_RUN_EXIT", "0")))
@@ -197,6 +208,7 @@ class SetupTestCase(unittest.TestCase):
             "SETUP_TEST_UID", "SETUP_TEST_MACHINE", "SETUP_TEST_GROUPS",
             "SETUP_TEST_TRUSTED_USERS", "SETUP_TEST_INSTALLER_SCRIPT",
             "SETUP_TEST_CURL_EXIT", "SETUP_TEST_RUN_EXIT",
+            "SETUP_TEST_IGNORE_CUSTOM_CONF",
         ):
             self.environment.pop(name, None)
 
@@ -417,6 +429,27 @@ class Bootstrap(SetupTestCase):
         tee = self.index(lambda a: a[:2] == ["sudo", "tee"])
         restart = self.index(lambda a: a[:3] == ["sudo", "systemctl", "restart"])
         self.assertLess(tee, restart)
+
+    def test_dies_when_nix_still_does_not_trust_the_user(self):
+        # A Nix that ignores nix.custom.conf must fail loudly instead of
+        # continuing to a flake that needs the user to be trusted.
+        environment = dict(self.environment)
+        environment["SETUP_TEST_IGNORE_CUSTOM_CONF"] = "1"
+        result = self.run_setup(environment=environment)
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("Nix still does not trust setup-test-user", result.stderr)
+        self.assertIn("/etc/nix/nix.custom.conf", result.stderr)
+        # It appended the line and restarted the daemon before giving up.
+        self.assertIn(
+            ["sudo", "tee", "-a", "/etc/nix/nix.custom.conf"], self.argvs()
+        )
+        self.assertIn(
+            ["sudo", "systemctl", "restart", "nix-daemon.service"], self.argvs()
+        )
+        # It never hands off to `cros apply`.
+        self.assertEqual(
+            self.matching(lambda a: a[0] == "nix" and "run" in a), []
+        )
 
     def test_trusted_users_left_alone_when_the_user_is_already_listed(self):
         environment = dict(self.environment)

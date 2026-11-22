@@ -85,6 +85,8 @@ if name == "nix" and args[:1] == ["build"]:
         extra["installable"] = "home"
         host = host_json_path()
         extra["host_json"] = json.loads(host.read_text()) if host.exists() else None
+if name == "nix" and args[:1] == ["run"]:
+    extra["no_reminders"] = os.environ.get("CROS_NO_REMINDERS")
 emit(extra)
 
 if name == "sudo":
@@ -132,7 +134,8 @@ if name == "dpkg-query":
     installed = variable("CROS_TEST_INSTALLED_VERSION")
     if not installed:
         sys.exit(1)
-    print(installed)
+    # Status-Abbrev is three characters, including its trailing space.
+    print(variable("CROS_TEST_INSTALLED_STATUS", "ii ") + installed)
     sys.exit(0)
 
 if name == "nix":
@@ -540,6 +543,22 @@ class Apply(CrosTestCase):
         self.assertIn("system package 1.0.0 is current", result.stderr)
         self.assertEqual(self.matching(lambda a: a[0] == "apt-get"), [])
 
+    def test_half_configured_system_package_is_reinstalled(self):
+        # A failed postinst leaves the same version with status "iF".
+        environment = dict(self.environment)
+        environment["CROS_TEST_INSTALLED_VERSION"] = "1.0.0"
+        environment["CROS_TEST_INSTALLED_STATUS"] = "iF "
+        result = self.apply("--checkout", str(self.repo), environment=environment)
+        self.assertEqual(result.returncode, 0, self.output(result))
+        deb = str(self.audit / "system-deb-out" / "cros-dev-system.deb")
+        self.assertIn(
+            ["apt-get", "install", "-y", "--allow-downgrades", deb],
+            self.argvs(),
+        )
+        self.assertIn(
+            "installing system package 1.0.0 (installed: iF 1.0.0)", result.stderr
+        )
+
     def test_changed_system_package_installs_with_allow_downgrades(self):
         environment = dict(self.environment)
         environment["CROS_TEST_INSTALLED_VERSION"] = "0.9.0"
@@ -555,7 +574,7 @@ class Apply(CrosTestCase):
              "-y", "--allow-downgrades", deb],
             self.argvs(),
         )
-        self.assertIn("installing system package 1.0.0 (installed: 0.9.0)", result.stderr)
+        self.assertIn("installing system package 1.0.0 (installed: ii 0.9.0)", result.stderr)
 
     def test_maintainer_is_preserved_and_set_by_flag(self):
         scenarios = [
@@ -700,7 +719,10 @@ class Migrations(CrosTestCase):
         self.assertEqual((new / "keep.txt").read_text(), "new directory\n")
 
     def test_desktop_copies_removed_but_different_files_and_symlinks_kept(self):
-        profile = self.home / ".nix-profile" / "share"
+        profile = (
+            self.home / ".local" / "state" / "nix" / "profiles"
+            / "home-manager" / "home-path" / "share"
+        )
         for kind in ("applications", "icons"):
             (profile / kind).mkdir(parents=True)
         (profile / "applications" / "same.desktop").write_text("identical entry\n")
@@ -733,6 +755,32 @@ class Migrations(CrosTestCase):
         self.assertTrue((share / "applications" / "linked.desktop").is_symlink())
         self.assertEqual(
             (share / "applications" / "linked.desktop").read_text(), "identical entry\n"
+        )
+
+    def test_desktop_copies_matching_only_the_old_profile_are_kept(self):
+        # The old activation copied ~/.nix-profile/share; only the current
+        # Home Manager generation (home-path) may cause a copy to be removed.
+        old_profile = self.home / ".nix-profile" / "share"
+        (old_profile / "applications").mkdir(parents=True)
+        (old_profile / "icons").mkdir()
+        (old_profile / "applications" / "cros-test-legacy.desktop").write_text("legacy entry\n")
+        (old_profile / "icons" / "cros-test-legacy.png").write_bytes(b"legacy icon")
+
+        share = self.home / ".local" / "share"
+        (share / "applications").mkdir(parents=True)
+        (share / "icons").mkdir()
+        (share / "applications" / "cros-test-legacy.desktop").write_text("legacy entry\n")
+        (share / "icons" / "cros-test-legacy.png").write_bytes(b"legacy icon")
+
+        result = self.apply("--checkout", str(self.repo))
+        self.assertEqual(result.returncode, 0, self.output(result))
+
+        self.assertEqual(
+            (share / "applications" / "cros-test-legacy.desktop").read_text(),
+            "legacy entry\n",
+        )
+        self.assertEqual(
+            (share / "icons" / "cros-test-legacy.png").read_bytes(), b"legacy icon"
         )
 
 
@@ -838,13 +886,20 @@ class Bump(CrosTestCase):
         )
 
     def test_changed_lock_applies_and_commits_only_the_lock(self):
+        original = self.lock.read_bytes()
         result = self.run_cros("bump")
         self.assertEqual(result.returncode, 0, self.output(result))
-        self.assertIn(
+        apply_call = next(
+            call for call in self.calls()
+            if call["argv"][:2] == ["nix", "run"]
+        )
+        self.assertEqual(
+            apply_call["argv"],
             ["nix", "run", "--accept-flake-config",
              f"{self.repo}/chromeos-dev-setup#cros", "--", "apply"],
-            self.argvs(),
         )
+        # The nested apply must not print its own reminders.
+        self.assertEqual(apply_call["no_reminders"], "1")
         message = self.git("-C", str(self.repo), "log", "-1", "--format=%B").stdout
         self.assertIn("Inputs:", message)
         self.assertIn("nixpkgs", message)
@@ -852,6 +907,15 @@ class Bump(CrosTestCase):
         self.assertEqual(
             self.git("-C", str(self.repo), "show", "--name-only", "--format=").stdout.strip(),
             "chromeos-dev-setup/flake.lock",
+        )
+        # The updated lock is kept and is exactly what was committed.
+        self.assertNotEqual(self.lock.read_bytes(), original)
+        self.assertEqual(
+            self.git("-C", str(self.repo), "show", "HEAD:chromeos-dev-setup/flake.lock").stdout,
+            self.lock.read_text(),
+        )
+        self.assertEqual(
+            self.git("-C", str(self.repo), "status", "--porcelain").stdout, ""
         )
         self.assertIn("run 'cros publish'", result.stderr)
 
@@ -862,9 +926,26 @@ class Bump(CrosTestCase):
         environment["CROS_TEST_RUN_EXIT"] = "1"
         result = self.run_cros("bump", environment=environment)
         self.assertEqual(result.returncode, 1, self.output(result))
-        self.assertIn("flake.lock was restored", result.stderr)
+        self.assertIn("apply failed with the updated inputs", result.stderr)
+        self.assertIn("restored the previous flake.lock", result.stderr)
         self.assertEqual(self.lock.read_bytes(), original)
         self.assertEqual(self.git("-C", str(self.repo), "rev-parse", "HEAD").stdout, head)
+
+    def test_failing_commit_restores_the_lock_and_makes_no_commit(self):
+        # A pre-commit hook can reject the lock after a successful apply.
+        head = self.git("-C", str(self.repo), "rev-parse", "HEAD").stdout
+        original = self.lock.read_bytes()
+        hook = self.repo / ".git" / "hooks" / "pre-commit"
+        hook.write_text("#!/usr/bin/env bash\nexit 1\n")
+        hook.chmod(0o755)
+        result = self.run_cros("bump")
+        self.assertNotEqual(result.returncode, 0, self.output(result))
+        self.assertIn("restored the previous flake.lock", result.stderr)
+        self.assertEqual(self.lock.read_bytes(), original)
+        self.assertEqual(self.git("-C", str(self.repo), "rev-parse", "HEAD").stdout, head)
+        self.assertEqual(
+            self.git("-C", str(self.repo), "status", "--porcelain").stdout, ""
+        )
 
     def test_selected_inputs_are_passed_to_flake_update(self):
         environment = dict(self.environment)
@@ -972,6 +1053,45 @@ class Reminders(CrosTestCase):
         self.commit(self.repo, "Local change")
         result = self.bump_without_changes(maintainer=False)
         self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertNotIn("reminder:", result.stderr)
+
+    def test_no_reminders_variable_silences_them(self):
+        self.add_origin()
+        (self.repo / "local.txt").write_text("local work\n")
+        self.commit(self.repo, "Local change")
+        result = self.bump_without_changes(CROS_NO_REMINDERS="1")
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertNotIn("reminder:", result.stderr)
+        self.assertNotIn("not published", result.stderr)
+
+    def test_no_reminders_off_the_main_branch(self):
+        self.write_host_json(checkout=str(self.repo), maintainer=True)
+        self.add_origin()
+        (self.repo / "local.txt").write_text("local work\n")
+        self.commit(self.repo, "Local change")
+        self.git("-C", str(self.repo), "switch", "-c", "work")
+        result = self.apply()
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertNotIn("reminder:", result.stderr)
+        self.assertNotIn("not published", result.stderr)
+
+    def test_shallow_repository_skips_the_lock_age_reminder(self):
+        checkout = self.make_checkout(
+            self.root / "old lock checkout",
+            commit_date="2020-01-01T00:00:00 +0000",
+        )
+        remote = self.add_origin(checkout)
+        shallow = self.root / "shallow clone"
+        self.git("clone", "--depth", "1", remote.as_uri(), str(shallow))
+        self.assertEqual(
+            self.git("-C", str(shallow), "rev-parse", "--is-shallow-repository").stdout.strip(),
+            "true",
+        )
+        self.write_host_json(checkout=str(shallow), maintainer=True)
+        result = self.apply()
+        self.assertEqual(result.returncode, 0, self.output(result))
+        # The single old commit would otherwise look like a stale lock.
+        self.assertNotIn("flake inputs were last updated", result.stderr)
         self.assertNotIn("reminder:", result.stderr)
 
     def test_old_lock_is_reported(self):

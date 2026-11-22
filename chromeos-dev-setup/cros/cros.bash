@@ -121,9 +121,10 @@ install_system_package() {
     die "building the system package failed"
   deb="$out/cros-dev-system.deb"
   want="$(dpkg-deb --field "$deb" Version)"
-  # shellcheck disable=SC2016 # ${Version} is a dpkg-query field, not a shell variable.
-  have="$(dpkg-query --showformat='${Version}' --show cros-dev-system 2>/dev/null || true)"
-  if [[ "$want" == "$have" ]]; then
+  # Status matters too: a failed postinst leaves the same version half-configured.
+  # shellcheck disable=SC2016 # dpkg-query fields, not shell variables.
+  have="$(dpkg-query --showformat='${db:Status-Abbrev}${Version}' --show cros-dev-system 2>/dev/null || true)"
+  if [[ "$have" == "ii $want" ]]; then
     log "system package $want is current"
     return 0
   fi
@@ -178,7 +179,7 @@ migrate_legacy_config_dir() {
 # The old activation copied the profile's entries and icons; remove exact
 # copies so Home Manager can link entries and unrelated files stay untouched.
 migrate_desktop_copies() {
-  local share="$HOME/.local/share" profile="$HOME/.nix-profile/share" kind file rel
+  local share="$HOME/.local/share" profile="$HM_PROFILE/home-path/share" kind file rel
   for kind in applications icons; do
     [[ -d "$share/$kind" ]] || continue
     while IFS= read -r -d '' file; do
@@ -212,11 +213,15 @@ migrate_after_activation() {
 
 print_reminders() {
   local root="$1" ahead last days
+  [[ -z "${CROS_NO_REMINDERS:-}" ]] || return 0
   is_maintainer || return 0
+  [[ "$(git -C "$root" symbolic-ref --quiet --short HEAD || true)" == main ]] || return 0
   ahead="$(git -C "$root" rev-list --count origin/main..HEAD 2>/dev/null || echo 0)"
   if ((ahead > 0)); then
     log "reminder: $ahead commit(s) are not published; run 'cros publish' when ready"
   fi
+  # A shallow clone lacks the history that dates the last lock change.
+  [[ "$(git -C "$root" rev-parse --is-shallow-repository)" == false ]] || return 0
   last="$(git -C "$root" log -1 --format=%ct -- "$SETUP_SUBDIR/flake.lock" 2>/dev/null || true)"
   if [[ -n "$last" ]]; then
     days=$((($(date +%s) - last) / 86400))
@@ -333,14 +338,30 @@ print_workarounds() {
   done < <(jq -r '.[] | [.id, .check.type, (.check.repo // "-"), (.check.number // "-" | tostring), .removeWhen] | @tsv' "$file")
 }
 
+# Until bump commits, any exit (failure, Ctrl-C) puts the previous lock back.
+BUMP_LOCK=""
+BUMP_PREVIOUS=""
+BUMP_COMMITTED=0
+finish_bump() {
+  [[ -n "$BUMP_PREVIOUS" ]] || return 0
+  if ((!BUMP_COMMITTED)) && ! cmp -s -- "$BUMP_PREVIOUS" "$BUMP_LOCK"; then
+    cp -- "$BUMP_PREVIOUS" "$BUMP_LOCK"
+    log "restored the previous flake.lock; run 'cros apply' if the new one was activated"
+  fi
+  rm -f -- "$BUMP_PREVIOUS"
+}
+
 cmd_bump() {
   local root lock previous before after inputs packages workarounds message
   root="$(resolve_checkout "")"
   require_clean_main "$root"
   lock="$root/$SETUP_SUBDIR/flake.lock"
   previous="$(mktemp)"
-  # shellcheck disable=SC2064 # Expand now: the trap must remove this file.
-  trap "rm -f -- '$previous'" EXIT
+  BUMP_LOCK="$lock"
+  BUMP_PREVIOUS="$previous"
+  trap finish_bump EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
   cp -- "$lock" "$previous"
   before="$(readlink -f "$HM_PROFILE" 2>/dev/null || true)"
 
@@ -350,10 +371,8 @@ cmd_bump() {
     print_reminders "$root"
     return 0
   fi
-  if ! nix run "${NIX_FLAGS[@]}" "$(flake_dir "$root")#cros" -- apply; then
-    git -C "$root" checkout -- "$SETUP_SUBDIR/flake.lock"
-    die "apply failed with the updated inputs; flake.lock was restored (run 'cros apply' to return to it)"
-  fi
+  CROS_NO_REMINDERS=1 nix run "${NIX_FLAGS[@]}" "$(flake_dir "$root")#cros" -- apply ||
+    die "apply failed with the updated inputs"
   after="$(readlink -f "$HM_PROFILE" 2>/dev/null || true)"
 
   inputs="$(print_input_changes "$previous" "$lock")"
@@ -366,6 +385,7 @@ cmd_bump() {
   printf '%s\n' "$message"
   [[ -z "$workarounds" ]] || printf '\n%s\n' "$workarounds"
   git -C "$root" commit --quiet -m "$message" -- "$SETUP_SUBDIR/flake.lock"
+  BUMP_COMMITTED=1
   log "committed $(git -C "$root" rev-parse --short HEAD); run 'cros publish' to release it"
 }
 
