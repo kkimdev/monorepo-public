@@ -52,8 +52,9 @@ a user named `ci`. Every build passes
 refuses a USER/HOME mismatch, so a build that forgets the override cannot be
 activated by accident.
 
-Git identity is not host data: it lives in the user-owned `~/.gitconfig`;
-Home Manager keeps shared Git settings in `~/.config/git/config`.
+Git identity is not managed at all: users set it in their own `~/.gitconfig`
+(nothing in the setup needs it); Home Manager keeps shared Git settings in
+`~/.config/git/config`.
 
 ## Builds
 
@@ -100,9 +101,7 @@ nothing, and the `00-` tmpfiles name wins over systemd's `tmp.conf`.
 
 Only user-specific or Nix-level steps remain in `setup.bash`: the `render`
 group, installing Nix, and ensuring `trusted-users` includes the user (restart
-`nix-daemon` only when that line changes). It writes `GIT_USER_NAME`/`GIT_USER_EMAIL`
-to `~/.gitconfig` once, and refuses the README's example values before changing
-anything.
+`nix-daemon` only when that line changes).
 
 ## The `cros` CLI
 
@@ -162,7 +161,7 @@ A full Home Manager build is out of scope for hosted runners.
 | System arch | `x86_64-linux` fixed | host-provided system |
 | Crostini detection | removed; always Crostini | eval-time `pathExists` (impure) |
 | GTK paths | detected by `cros apply`, passed in host data | constants; runtime detection in shells |
-| Git identity | `~/.gitconfig` | Nix-managed via host data |
+| Git identity | left to the user (`~/.gitconfig`) | Nix-managed via host data; written once by `setup.bash` |
 | Per-user customization | `~/.config/cros/host/local.nix` | none |
 | Packages | all shared for now | split shared/personal |
 | In-repo packages | relative path | GitHub URL + lock bump |

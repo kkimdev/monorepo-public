@@ -204,7 +204,7 @@ class SetupTestCase(unittest.TestCase):
         (self.root / "tmp").mkdir()
         (self.root / "gitconfig-global").write_text("")
         for name in (
-            "BASH_ENV", "ENV", "GIT_USER_NAME", "GIT_USER_EMAIL",
+            "BASH_ENV", "ENV",
             "SETUP_TEST_UID", "SETUP_TEST_MACHINE", "SETUP_TEST_GROUPS",
             "SETUP_TEST_TRUSTED_USERS", "SETUP_TEST_INSTALLER_SCRIPT",
             "SETUP_TEST_CURL_EXIT", "SETUP_TEST_RUN_EXIT",
@@ -367,24 +367,6 @@ class Guards(SetupTestCase):
         self.assertIn("/dev/wl0", result.stderr)
         self.assert_no_privileged_actions()
 
-    def test_refuses_the_readme_example_git_identity(self):
-        readme = (SETUP.parent / "README.md").read_text()
-        for variable, example in (
-            ("GIT_USER_NAME", "Your Name"),
-            ("GIT_USER_EMAIL", "your-email@example.com"),
-        ):
-            with self.subTest(variable=variable):
-                # The guard must match what the README tells users to edit.
-                self.assertIn(f'export {variable}="{example}"', readme)
-                (self.audit / "calls.jsonl").unlink(missing_ok=True)
-                environment = dict(self.environment)
-                environment[variable] = example
-                result = self.run_setup(environment=environment)
-                self.assertEqual(result.returncode, 1, self.output(result))
-                self.assertIn("example GIT_USER_NAME/GIT_USER_EMAIL", result.stderr)
-                self.assert_no_privileged_actions()
-                self.assertFalse((self.home / ".gitconfig").exists())
-
     def test_refuses_a_directory_outside_a_git_checkout(self):
         outside = self.root / "outside a checkout"
         outside.mkdir()
@@ -401,10 +383,7 @@ class Guards(SetupTestCase):
 
 class Bootstrap(SetupTestCase):
     def test_installs_prerequisites_and_hands_off_to_cros_apply(self):
-        environment = dict(self.environment)
-        environment["GIT_USER_NAME"] = "New Employee"
-        environment["GIT_USER_EMAIL"] = "employee@example.test"
-        result = self.run_setup(environment=environment)
+        result = self.run_setup()
         self.assertEqual(result.returncode, 0, self.output(result))
 
         self.assertIn(["sudo", "apt-get", "update"], self.argvs())
@@ -426,11 +405,6 @@ class Bootstrap(SetupTestCase):
         self.assertEqual(self.final_nix_run().count(expected[3]), 1)
         # `cros apply` owns sparse checkouts now.
         self.assertEqual(self.matching(lambda a: "sparse-checkout" in a), [])
-
-        self.assertEqual(
-            (self.home / ".gitconfig").read_text(),
-            "[user]\n\tname = New Employee\n\temail = employee@example.test\n",
-        )
 
     def test_trusted_users_added_and_daemon_restarted_only_when_missing(self):
         result = self.run_setup()
@@ -495,42 +469,12 @@ class Bootstrap(SetupTestCase):
         self.assertEqual(result.returncode, 0, self.output(result))
         self.assertEqual(self.matching(lambda a: a[0] == "usermod"), [])
 
-    def test_git_identity_written_only_when_unset(self):
+    def test_git_config_is_left_to_the_user(self):
+        gitconfig = self.home / ".gitconfig"
+        gitconfig.write_text("[user]\n\tname = Existing\n")
         result = self.run_setup()
         self.assertEqual(result.returncode, 0, self.output(result))
-        self.assertFalse((self.home / ".gitconfig").exists())
-
-        environment = dict(self.environment)
-        environment["GIT_USER_NAME"] = "New Employee"
-        environment["GIT_USER_EMAIL"] = "employee@example.test"
-        result = self.run_setup(environment=environment)
-        self.assertEqual(result.returncode, 0, self.output(result))
-        gitconfig = self.home / ".gitconfig"
-        self.assertEqual(
-            self.git("config", "--file", str(gitconfig), "user.name").stdout.strip(),
-            "New Employee",
-        )
-        self.assertEqual(
-            self.git("config", "--file", str(gitconfig), "user.email").stdout.strip(),
-            "employee@example.test",
-        )
-
-    def test_existing_git_identity_is_not_overwritten(self):
-        self.git("config", "--file", str(self.home / ".gitconfig"), "user.name", "Existing")
-        environment = dict(self.environment)
-        environment["GIT_USER_NAME"] = "New Employee"
-        environment["GIT_USER_EMAIL"] = "employee@example.test"
-        result = self.run_setup(environment=environment)
-        self.assertEqual(result.returncode, 0, self.output(result))
-        gitconfig = self.home / ".gitconfig"
-        self.assertEqual(
-            self.git("config", "--file", str(gitconfig), "user.name").stdout.strip(),
-            "Existing",
-        )
-        self.assertEqual(
-            self.git("config", "--file", str(gitconfig), "user.email").stdout.strip(),
-            "employee@example.test",
-        )
+        self.assertEqual(gitconfig.read_text(), "[user]\n\tname = Existing\n")
 
 
 class NixInstall(SetupTestCase):

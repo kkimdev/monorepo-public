@@ -31,10 +31,6 @@ done
 [[ -c /dev/wl0 ]] || die "Crostini's VirtWL device /dev/wl0 is missing; run inside Crostini"
 REPO_ROOT="$(git -C "$SETUP_DIR" rev-parse --show-toplevel 2>/dev/null)" ||
   die "$SETUP_DIR is not inside a Git checkout"
-# The README's install snippet carries these example values; never write them.
-if [[ "${GIT_USER_NAME:-}" == "Your Name" || "${GIT_USER_EMAIL:-}" == "your-email@example.com" ]]; then
-  die "replace the README's example GIT_USER_NAME/GIT_USER_EMAIL with your own (or unset them)"
-fi
 
 # Minimal tools to install Nix; the system package declares the rest.
 sudo apt-get update
@@ -68,14 +64,6 @@ if ! id -nG "$USER" | tr ' ' '\n' | grep -qxF render; then
   sudo usermod -aG render "$USER"
   log "added $USER to the render group (effective after the next login)"
 fi
-
-# Git identity is user-owned data in ~/.gitconfig, written once if provided.
-for key in name email; do
-  variable="GIT_USER_${key^^}"
-  if [[ -n "${!variable:-}" ]] && ! git config --file "$HOME/.gitconfig" --get "user.$key" >/dev/null 2>&1; then
-    git config --file "$HOME/.gitconfig" "user.$key" "${!variable}"
-  fi
-done
 
 # `cros apply` owns everything else, including sparse checkout paths.
 exec nix run --accept-flake-config "$SETUP_DIR#cros" -- apply --checkout "$REPO_ROOT" "${apply_args[@]}"

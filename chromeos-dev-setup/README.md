@@ -46,14 +46,9 @@ await term_.prefs_.set('user-css-text', '@font-face {font-family: "JetBrainsMono
 
 Open `chrome://os-settings/crostini/details` in Chrome's address bar and set up **Linux development environment** if needed.
 
-In an **x86_64 ChromeOS Linux terminal**, fill in your Git identity (written
-once to `~/.gitconfig`) and paste:
+In an **x86_64 ChromeOS Linux terminal**, paste:
 
 ```bash
-# TODO: fill
-export GIT_USER_NAME="Your Name"
-export GIT_USER_EMAIL="your-email@example.com"
-
 (
   set -e
   sudo apt-get update
@@ -86,6 +81,8 @@ cros clean         # Delete generations older than 14 days, collect Nix garbage
 
 `cros sync` requires a clean `main` branch. To contribute, create a branch in
 `~/workspaces/monorepo-public`, edit, commit, and push a PR (fork if needed).
+The setup does not manage your Git identity; set it once with
+`git config --global user.name "…"` and `git config --global user.email "…"`.
 New files must be added to Git (`git add`) before Nix can see them.
 
 Per-user files live in `~/.config/cros/host/`: `host.json` is written by
