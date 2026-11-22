@@ -106,12 +106,38 @@ require_clean_main() {
     die "this command requires a clean checkout, including untracked files"
 }
 
-# Replaces $2 with a copy of $1 atomically (temp file in the same directory).
-restore_file() {
+# ---------------------------------------------------------------- rollback
+# A command that changes a file before work that can fail guards it: any exit
+# before keep_file (a failure, Ctrl-C) puts the saved copy back atomically and
+# logs the note. One guarded file per run.
+GUARDED_FILE=""
+GUARDED_COPY=""
+GUARDED_NOTE=""
+
+guard_file() {
+  local copy
+  copy="$(mktemp)"
+  cp -- "$1" "$copy"
+  GUARDED_FILE="$1"
+  GUARDED_COPY="$copy"
+  GUARDED_NOTE="$2"
+  trap restore_guarded_file EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+}
+
+keep_file() { GUARDED_FILE=""; }
+
+restore_guarded_file() {
   local tmp
-  tmp="$(mktemp "$(dirname -- "$2")/.cros-restore.XXXXXX")"
-  cp -- "$1" "$tmp"
-  mv -f -- "$tmp" "$2"
+  [[ -n "$GUARDED_COPY" ]] || return 0
+  if [[ -n "$GUARDED_FILE" ]] && ! cmp -s -- "$GUARDED_COPY" "$GUARDED_FILE"; then
+    tmp="$(mktemp "$(dirname -- "$GUARDED_FILE")/.cros-restore.XXXXXX")"
+    cp -- "$GUARDED_COPY" "$tmp"
+    mv -f -- "$tmp" "$GUARDED_FILE"
+    log "$GUARDED_NOTE"
+  fi
+  rm -f -- "$GUARDED_COPY"
 }
 
 # ---------------------------------------------------------------- host data
@@ -245,22 +271,8 @@ print_reminders() {
 
 # ---------------------------------------------------------------- commands
 
-# Until apply has activated, any exit (failure, Ctrl-C) puts the previous host
-# data back, so a failed `apply --checkout DIR` leaves this machine following
-# the checkout it followed before.
-HOST_BACKUP=""
-APPLY_DONE=0
-finish_apply() {
-  [[ -n "$HOST_BACKUP" ]] || return 0
-  if ((!APPLY_DONE)) && ! cmp -s -- "$HOST_BACKUP" "$HOST_JSON"; then
-    restore_file "$HOST_BACKUP" "$HOST_JSON"
-    log "restored the previous host data; this machine still follows $(recorded_checkout)"
-  fi
-  rm -f -- "$HOST_BACKUP"
-}
-
 cmd_apply() {
-  local checkout="" maintainer=keep root deb backup activation
+  local checkout="" maintainer=keep root deb activation
   while (($#)); do
     case "$1" in
       --checkout)
@@ -280,13 +292,9 @@ cmd_apply() {
   # Build everything before changing the system: a failed build leaves both the
   # system package and the recorded checkout as they were.
   deb="$(build_system_package "$root")"
+  # Until activation, a failure keeps this machine on its previous checkout.
   if [[ -f "$HOST_JSON" ]]; then
-    backup="$(mktemp)"
-    cp -- "$HOST_JSON" "$backup"
-    HOST_BACKUP="$backup"
-    trap finish_apply EXIT
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
+    guard_file "$HOST_JSON" "restored the previous host data; this machine still follows $(recorded_checkout)"
   fi
   write_host_data "$root" "$maintainer"
   activation="$(build_home "$root")" || die "the Home Manager build failed; nothing was installed or activated"
@@ -294,7 +302,7 @@ cmd_apply() {
   install_system_package "$deb"
   HOME_MANAGER_BACKUP_EXT=backup "$activation/activate" ||
     die "Home Manager activation failed; inspect its output, or run the previous generation's activate"
-  APPLY_DONE=1
+  keep_file
   sync_gpu_drivers "$activation"
   start_desktop_services
   log "applied $root"
@@ -374,19 +382,6 @@ print_workarounds() {
   done < <(jq -r '.[] | [.id, .check.type, (.check.repo // "-"), (.check.number // "-" | tostring), .removeWhen] | @tsv' "$file")
 }
 
-# Until bump commits, any exit (failure, Ctrl-C) puts the previous lock back.
-BUMP_LOCK=""
-BUMP_PREVIOUS=""
-BUMP_COMMITTED=0
-finish_bump() {
-  [[ -n "$BUMP_PREVIOUS" ]] || return 0
-  if ((!BUMP_COMMITTED)) && ! cmp -s -- "$BUMP_PREVIOUS" "$BUMP_LOCK"; then
-    restore_file "$BUMP_PREVIOUS" "$BUMP_LOCK"
-    log "restored the previous flake.lock; run 'cros apply' if the new one was activated"
-  fi
-  rm -f -- "$BUMP_PREVIOUS"
-}
-
 cmd_bump() {
   local root head lock previous before after inputs packages workarounds message
   root="$(resolve_checkout "")"
@@ -399,13 +394,9 @@ cmd_bump() {
   git -C "$root" pull --ff-only origin main ||
     die "main cannot fast-forward to origin/main; reconcile them, then run 'cros bump' again"
   lock="$root/$SETUP_SUBDIR/flake.lock"
-  previous="$(mktemp)"
-  cp -- "$lock" "$previous"
-  BUMP_LOCK="$lock"
-  BUMP_PREVIOUS="$previous"
-  trap finish_bump EXIT
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
+  # Until the commit, a failure puts the previous lock back.
+  guard_file "$lock" "restored the previous flake.lock; run 'cros apply' if the new one was activated"
+  previous="$GUARDED_COPY"
   before="$(readlink -f "$HM_PROFILE" 2>/dev/null || true)"
 
   nix flake update "${NIX_FLAGS[@]}" "$@" --flake "$(flake_dir "$root")"
@@ -434,7 +425,7 @@ cmd_bump() {
   printf '%s\n' "$message"
   [[ -z "$workarounds" ]] || printf '\n%s\n' "$workarounds"
   git -C "$root" commit --quiet -m "$message" -- "$SETUP_SUBDIR/flake.lock"
-  BUMP_COMMITTED=1
+  keep_file
   log "committed $(git -C "$root" rev-parse --short HEAD); run 'cros publish' to release it"
 }
 

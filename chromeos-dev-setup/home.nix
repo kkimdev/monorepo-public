@@ -75,6 +75,15 @@ let
   # sessionPath entries must be absolute paths.
   sessionPathPrefix = lib.concatStringsSep ":"
     (config.home.sessionPath ++ [ "${config.home.profileDirectory}/bin" ]);
+  # Shells re-prepend it after the system Nix scripts (/etc/bash.bashrc,
+  # /etc/zshrc) put the Nix profile first, so ~/.local/bin wrappers such as
+  # codex win over the profile's binaries.
+  prependSessionPath = ''export PATH="${sessionPathPrefix}:$PATH"'';
+
+  flakeNixConfig = (import ./flake.nix).nixConfig;
+
+  # One editor command for $EDITOR, $VISUAL, and Git.
+  editor = "code --wait --new-window";
 
   systemdEnvironment = env:
     lib.concatStrings (lib.mapAttrsToList (name: value: "Environment=\"${name}=${value}\"\n") env);
@@ -157,15 +166,9 @@ in
       xdg-utils
       gh
 
-      ## Already included via other lines.
-      # nix-direnv
-      # podman
-
       # Apps
       chromium
       inkscape
-      # # Insecure?
-      # beekeeper-studio
       yt-dlp
       sommelier-rs-bin
       kakaotalk-bin
@@ -203,13 +206,11 @@ in
     sessionVariables = desktopEnvironment // {
       NIXPKGS_ALLOW_UNFREE = "1";
       ORCA_CLI_COMMAND = "orca";
-      EDITOR = "code --wait --new-window";
-      VISUAL = "code --wait --new-window";
+      EDITOR = editor;
+      VISUAL = editor;
       # Agent guidance refers to the bootstrap script through this variable.
       CROS_SETUP_SCRIPT_FILE = "${host.checkout}/chromeos-dev-setup/setup.bash";
-      # Web search provider selection. Required for non-opencode providers (model-gateway).
-      # See ../scratch-monorepo/model_gateway/WEB_SEARCH.md.
-      # OPENCODE_ENABLE_EXA = "true";
+      # OpenCode's web search through Parallel, for non-OpenCode providers.
       OPENCODE_ENABLE_PARALLEL = "true";
     };
   };
@@ -264,7 +265,7 @@ in
     };
 
     Service = {
-    ExecStartPre = "${pkgs.coreutils}/bin/mkdir -p %t/podman";
+      ExecStartPre = "${pkgs.coreutils}/bin/mkdir -p %t/podman";
       ExecStart =
         "${pkgs.podman}/bin/podman system service --time=0 unix://%t/podman/podman.sock";
       Restart = "always";
@@ -362,21 +363,11 @@ in
           [ -n "$cwd" ] && [ "$cwd" != "$PWD" ] && [ -d "$cwd" ] && builtin cd -- "$cwd"
           command rm -f -- "$tmp"
         }
-        export PATH="$HOME/.local/bin:$PATH"
+        ${prependSessionPath}
       ''
       ];
-      bashrcExtra = ''
-        if [[ -f "$HOME/.bashrc.backup" ]]; then
-          . "$HOME/.bashrc.backup"
-        fi
-        ${loadSecrets}
-      '';
-      profileExtra = ''
-        if [[ -f "$HOME/.profile.backup" ]]; then
-          . "$HOME/.profile.backup"
-        fi
-        export PATH="$HOME/.local/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:$PATH"
-      '';
+      bashrcExtra = loadSecrets;
+      profileExtra = prependSessionPath;
 
       shellAliases = myShellAliases;
     };
@@ -414,18 +405,6 @@ in
       };
 
       initContent = ''
-        # History Beginning Search (Commented out as Atuin is enabled)
-        # autoload -U up-line-or-beginning-search
-        # autoload -U down-line-or-beginning-search
-        # zle -N up-line-or-beginning-search
-        # zle -N down-line-or-beginning-search
-
-        # Arrow up and down keys binding
-        # bindkey "^[[A" up-line-or-beginning-search
-        # bindkey "^[[B" down-line-or-beginning-search
-        # bindkey "^[OA" up-line-or-beginning-search
-        # bindkey "^[OB" down-line-or-beginning-search
-
         # Fix standard navigation keys
         bindkey "\e[1~" beginning-of-line       # Home
         bindkey "^[[H"  beginning-of-line       # Home key
@@ -440,24 +419,21 @@ in
         bindkey "^[^?"    backward-kill-word   # Ctrl + Backspace
         bindkey "^H"      backward-kill-word   # Ctrl + Backspace
 
-        export PATH="$HOME/.local/bin:$PATH"
+        ${prependSessionPath}
 
         ${loadSecrets}
       '';
 
-      # TODO: More options
     };
 
     git = {
       enable = true;
       settings = {
-        core.editor = "code --wait --new-window";
+        core.editor = editor;
         diff.tool = "vscode";
-        difftool.vscode.cmd = "code --wait --new-window --diff $LOCAL $REMOTE";
+        difftool.vscode.cmd = "${editor} --diff $LOCAL $REMOTE";
         # Identity (user.name/user.email) lives in the user-owned ~/.gitconfig.
       };
-      ignores = [
-      ];
     };
 
     ssh = {
@@ -475,7 +451,6 @@ in
       enableBashIntegration = true;
       enableZshIntegration = true;
       presets = [ "catppuccin-powerline" ];
-      settings = {};
     };
 
     direnv = {
@@ -512,26 +487,6 @@ in
       enable = true;
       enableBashIntegration = true;
       enableZshIntegration = true;
-    };
-
-    # https://github.com/nix-community/home-manager/blob/master/modules/programs/zellij.nix
-    zellij = {
-      enable = false;
-      enableBashIntegration = true;
-      attachExistingSession = false;
-      exitShellOnExit = false;
-
-      settings = {
-        show_startup_tips = false;
-        theme = "catppuccin-mocha";
-        # default_layout = "compact";
-        pane_frames = false;
-        ui = {
-          pane_frames = {
-            # rounded_corners = true;
-          };
-        };
-      };
     };
 
     atuin = {
@@ -587,10 +542,7 @@ in
       source = ./codex-wrapper;
     };
 
-    # Your existing inputrc configuration
     ".inputrc".text = ''
-      # "\e[A": history-search-backward
-      # "\e[B": history-search-forward
       set show-all-if-ambiguous on
     '';
 
@@ -615,9 +567,6 @@ in
     "${sharedSkillsPluginDir}/skills" = {
       source = config.lib.file.mkOutOfStoreSymlink "${config.home.homeDirectory}/.agents/skills";
     };
-
-    # TODO
-    # https://www.reddit.com/r/Nix/comments/zh1803/guide_how_to_have_nix_installed_applications/
   };
 
   home.activation = {
@@ -736,14 +685,11 @@ in
       !include github-token.conf
     '';
     settings = {
-      substituters = [
-        "https://cache.nixos.org"
-        "https://cache.numtide.com"
-      ];
-      trusted-public-keys = [
-        "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
-        "niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g="
-      ];
+      # flake.nix's nixConfig lists the extra caches; it is also what the
+      # first build uses, before this configuration exists.
+      substituters = [ "https://cache.nixos.org" ] ++ flakeNixConfig.extra-substituters;
+      trusted-public-keys = [ "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=" ]
+        ++ flakeNixConfig.extra-trusted-public-keys;
     };
   };
 }
