@@ -88,9 +88,8 @@ from the installed one. The version embeds a hash of the package tree.
   `/usr/lib/tmpfiles.d/00-cros-tmp.conf` (sorts before systemd's `tmp.conf`, so
   its `/tmp` line wins), `/usr/lib/systemd/system/tmp.mount.d/50-cros-disk-backed.conf`.
 - `postinst configure`: creates the btrfs subvolume `/var/lib/tmp` with a
-  MemTotal/2 quota and no-CoW, removes files the old setup wrote under `/etc`
-  only when their content is exactly what it wrote, then reloads systemd and
-  udev when they are running.
+  MemTotal/2 quota and no-CoW, then reloads systemd and udev when they are
+  running.
 - `postrm`: reloads systemd and udev; it never deletes `/var/lib/tmp`.
 
 Verified in a `debian:trixie` container: `Depends` installs, `Conflicts`
@@ -107,21 +106,18 @@ group, installing Nix, and ensuring `trusted-users` includes the user (restart
 | Command | Effect |
 | --- | --- |
 | `cros sync` | Requires a clean `main`; `git pull --ff-only`, `apt-get update/full-upgrade/autoremove`, `determinate-nixd upgrade`, then `apply`. |
-| `cros apply` | Add sparse paths, install the system package if changed, refresh host data, run migrations, build and activate Home Manager, start inactive desktop services. |
-| `cros check` | Build the system package and the Home Manager configuration without installing or activating anything. |
-| `cros bump [input…]` | Maintainer: requires a clean `main`; `nix flake update [input…]`, `apply`, print input and package-version changes and workaround status, commit only `flake.lock`. Does not push. |
+| `cros apply` | Add sparse paths, install the system package if changed, refresh host data, build and activate Home Manager, start inactive desktop services. |
+| `cros check` | Build the system package and the Home Manager configuration without installing or activating anything, then report whether this machine already runs that build (installed package version, active Home Manager generation). |
+| `cros bump [input…]` | Maintainer: requires a clean `main`; `git pull --ff-only` (so the commit can be published), `nix flake update [input…]`, `apply`, print input and package-version changes and workaround status, commit only `flake.lock`. Does not push. |
 | `cros publish` | Maintainer: requires a clean `main` that is ahead of and descends from `origin/main`; push. |
-| `cros clean` | Nix garbage collection and store optimisation. |
+| `cros clean` | Delete generations older than 14 days (recent ones stay for rollback), collect garbage, optimise the store. |
 | `cros reset [--hard]` | Start inactive desktop services; `--hard` restarts them (closes GUI apps). |
 
-On maintainer machines every command ends with reminders when there are
-unpushed `bump` commits or the last lock change is older than 14 days.
-
-The old aliases (`cros-setup`, `cros-update`, `cros-clean`, `cros-reset`,
-`cros-hard-reset`) forward to the new commands with a notice and will be
-removed later. The previous Home Manager generation's `cros-update` alias runs
-the old `update.bash`, which pulls `main` and runs the new `setup.bash`; that is
-how existing installs migrate.
+`apply` and `bump` end with reminders. When the applied checkout is not on
+`main` (for example a worktree applied with `apply --checkout` for testing),
+the reminder names the command that returns to the primary checkout. On
+maintainer machines on `main`, reminders report unpushed `bump` commits or a
+last lock change older than 14 days.
 
 ## Home Manager changes
 
@@ -136,25 +132,6 @@ how existing installs migrate.
   `CROS_NO_ZSH=1` skips the switch.
 - Codex Desktop runs with `CODEX_OZONE_PLATFORM=wayland`; under X11 the
   wayland-first `GTK_IM_MODULE` crashes it on first text input.
-
-## Migrations run by `cros apply`
-
-Each step is idempotent and reversible where data is involved. They live in
-one block of `cros/cros.bash`; delete it once every machine has run
-`cros apply`.
-
-1. Git identity: copy the old `~/.config/home-manager/host.json` identity to
-   `~/.gitconfig` when `user.name`/`user.email` are unset.
-2. Old generated configuration: rename `~/.config/home-manager` to
-   `~/.config/home-manager.legacy` once.
-3. Old desktop copies: delete regular files under
-   `~/.local/share/{applications,icons}` that are byte-identical to the
-   profile's file of the same name (or, for entries, to the same name in
-   `/usr/share/applications`), then prune empty directories, before Home
-   Manager links its entries. Anything else is left alone.
-4. Login shell: if it is the Nix zsh, `chsh` back to `/bin/bash`, after the new
-   `~/.bashrc` is active.
-5. Old `/etc` files: handled by the package's `postinst` (see above).
 
 ## Workarounds
 

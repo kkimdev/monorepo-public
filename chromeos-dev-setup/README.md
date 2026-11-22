@@ -78,10 +78,10 @@ rerun `setup.bash` from its new location after moving it.
 ```bash
 cros sync          # Pull main, upgrade Debian and Nix, then apply
 cros apply         # Reapply the current checkout; running GUI services stay up
-cros check         # Build without installing or activating anything
+cros check         # Build without installing; say whether this machine runs it
 cros reset         # Start inactive desktop services
 cros reset --hard  # Restart desktop services (running GUI apps close)
-cros clean         # Collect Nix garbage
+cros clean         # Delete generations older than 14 days, collect Nix garbage
 ```
 
 `cros sync` requires a clean `main` branch. To contribute, create a branch in
@@ -98,7 +98,7 @@ Install with `bash chromeos-dev-setup/setup.bash --maintainer` (once) to enable
 update reminders. Then, periodically:
 
 ```bash
-cros bump            # Update every flake input, apply, commit flake.lock (no push)
+cros bump            # Pull main, update every flake input, apply, commit flake.lock (no push)
 cros bump nixpkgs    # Or update selected inputs only
 cros publish         # Push the tested commits to main for everyone
 ```

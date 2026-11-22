@@ -5,6 +5,8 @@ readonly HOST_DIR="${CROS_HOST_DIR:-$HOME/.config/cros/host}"
 readonly HOST_JSON="$HOST_DIR/host.json"
 readonly SETUP_SUBDIR="chromeos-dev-setup"
 readonly REMINDER_DAYS=14
+# `cros clean` keeps generations this recent so a bad update can be rolled back.
+readonly KEEP_GENERATIONS_DAYS=14
 readonly HM_PROFILE="$HOME/.local/state/nix/profiles/home-manager"
 readonly NIX_FLAGS=(--accept-flake-config)
 # Desktop session units; `cros reset --hard` restarts these, earlyoom keeps running.
@@ -22,10 +24,13 @@ Usage: cros <command> [options]
 
   sync              Pull main, upgrade Debian and Nix, then apply.
   apply             Apply the current checkout (system package + Home Manager).
-  check             Build everything without installing or activating.
-  bump [input...]   Maintainer: update flake inputs, apply, commit flake.lock.
+  check             Build everything without installing it; report whether
+                    this machine already runs that build.
+  bump [input...]   Maintainer: pull main, update flake inputs, apply, commit
+                    flake.lock.
   publish           Maintainer: push committed updates to origin/main.
-  clean             Collect Nix garbage and optimise the store.
+  clean             Delete generations older than 14 days, collect Nix
+                    garbage, and optimise the store.
   reset [--hard]    Start inactive desktop services; --hard restarts them
                     (running GUI apps close).
 
@@ -115,19 +120,35 @@ is_maintainer() {
 
 # ---------------------------------------------------------------- builds
 
-install_system_package() {
-  local root="$1" out deb want have
-  out="$(nix build "${NIX_FLAGS[@]}" --no-link --print-out-paths "$(flake_dir "$root")#system-deb")" ||
+# Prints the path of the built system package.
+build_system_package() {
+  local out
+  out="$(nix build "${NIX_FLAGS[@]}" --no-link --print-out-paths "$(flake_dir "$1")#system-deb")" ||
     die "building the system package failed"
-  deb="$out/cros-dev-system.deb"
-  want="$(dpkg-deb --field "$deb" Version)"
-  # Status matters too: a failed postinst leaves the same version half-configured.
+  printf '%s/cros-dev-system.deb\n' "$out"
+}
+
+# Prints the installed package's status and version ("ii 1+abc"), or nothing.
+installed_system_package() {
   # shellcheck disable=SC2016 # dpkg-query fields, not shell variables.
-  have="$(dpkg-query --showformat='${db:Status-Abbrev}${Version}' --show cros-dev-system 2>/dev/null || true)"
-  if [[ "$have" == "ii $want" ]]; then
+  dpkg-query --showformat='${db:Status-Abbrev}${Version}' --show cros-dev-system 2>/dev/null || true
+}
+
+# Succeeds when the given package's version is installed and configured.
+# Status matters too: a failed postinst leaves the same version half-configured.
+system_package_is_installed() {
+  [[ "$(installed_system_package)" == "ii $(dpkg-deb --field "$1" Version)" ]]
+}
+
+install_system_package() {
+  local deb want have
+  deb="$(build_system_package "$1")"
+  want="$(dpkg-deb --field "$deb" Version)"
+  if system_package_is_installed "$deb"; then
     log "system package $want is current"
     return 0
   fi
+  have="$(installed_system_package)"
   log "installing system package $want (installed: ${have:-none})"
   sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades "$deb"
 }
@@ -141,81 +162,23 @@ build_home() {
     "$(flake_dir "$root")#homeConfigurations.\"$USER\".activationPackage"
 }
 
-# ---------------------------------------------------------------- migrations
-# One-time moves from the pre-2026-11 setup. Each step is idempotent. Delete
-# this block (and its calls in cmd_apply) once every machine has run
-# `cros apply`; see "Migrations run by cros apply" in DESIGN.md.
-
-migrate_git_identity() {
-  local legacy="$HOME/.config/home-manager/host.json" key value
-  if [[ ! -f "$legacy" ]]; then
-    legacy="$HOME/.config/home-manager.legacy/host.json"
-  fi
-  [[ -f "$legacy" ]] || return 0
-  for key in name email; do
-    # Only ~/.gitconfig counts: the old Home Manager config still holds identity.
-    if git config --file "$HOME/.gitconfig" --get "user.$key" >/dev/null 2>&1; then
-      continue
-    fi
-    value="$(jq -r --arg key "git${key^}" '.[$key] // empty' "$legacy")"
-    if [[ -n "$value" ]]; then
-      git config --file "$HOME/.gitconfig" "user.$key" "$value"
-      log "moved Git user.$key to ~/.gitconfig"
-    fi
-  done
-}
-
-migrate_legacy_config_dir() {
-  local old="$HOME/.config/home-manager" new="$HOME/.config/home-manager.legacy"
-  [[ -f "$old/host.json" ]] || return 0
-  if [[ -e "$new" ]]; then
-    log "warning: both $old and $new exist; leaving them unchanged"
-    return 0
-  fi
-  mv -- "$old" "$new"
-  log "moved the old generated configuration to $new"
-}
-
-# The old activation copied the profile's entries and icons; remove exact
-# copies so Home Manager can link entries and unrelated files stay untouched.
-migrate_desktop_copies() {
-  local share="$HOME/.local/share" profile="$HM_PROFILE/home-path/share" kind file rel
-  for kind in applications icons; do
-    [[ -d "$share/$kind" ]] || continue
-    while IFS= read -r -d '' file; do
-      rel="${file#"$share/$kind/"}"
-      if cmp -s -- "$file" "$profile/$kind/$rel" ||
-        { [[ "$kind" == applications ]] && cmp -s -- "$file" "/usr/share/applications/$rel"; }; then
-        rm -f -- "$file"
-      fi
-    done < <(find "$share/$kind" -type f -print0)
-    find "$share/$kind" -mindepth 1 -depth -type d -empty -delete
-  done
-}
-
-migrate_before_activation() {
-  migrate_git_identity
-  migrate_legacy_config_dir
-  migrate_desktop_copies
-}
-
-# Runs after activation, when ~/.bashrc already starts zsh.
-migrate_after_activation() {
-  local current
-  current="$(getent passwd "$USER" | cut -d: -f7)"
-  if [[ "$current" == "$HOME/.nix-profile/bin/zsh" || "$current" == /nix/store/* ]]; then
-    log "switching the login shell to /bin/bash; ~/.bashrc starts zsh"
-    sudo chsh -s /bin/bash "$USER"
-  fi
-}
-
 # ---------------------------------------------------------------- reminders
 
 print_reminders() {
-  local root="$1" ahead last days
+  local root="$1" branch primary ahead last days
   [[ -z "${CROS_NO_REMINDERS:-}" ]] || return 0
+  branch="$(git -C "$root" symbolic-ref --quiet --short HEAD || true)"
+  # Applying a test worktree is temporary; say how to return to main.
+  if [[ "$branch" != main ]]; then
+    primary="$(git -C "$root" worktree list --porcelain | sed -n '1s/^worktree //p')"
+    if [[ -n "$primary" && "$primary" != "$root" ]]; then
+      log "reminder: this machine follows $root on ${branch:-detached HEAD}; return with 'cros apply --checkout $primary'"
+    else
+      log "reminder: this machine follows $root on ${branch:-detached HEAD}; switch it back to main when done"
+    fi
+    return 0
+  fi
   is_maintainer || return 0
-  [[ "$(git -C "$root" symbolic-ref --quiet --short HEAD || true)" == main ]] || return 0
   ahead="$(git -C "$root" rev-list --count origin/main..HEAD 2>/dev/null || echo 0)"
   if ((ahead > 0)); then
     log "reminder: $ahead commit(s) are not published; run 'cros publish' when ready"
@@ -253,12 +216,10 @@ cmd_apply() {
   ensure_sparse_paths "$root"
   install_system_package "$root"
   write_host_data "$root" "$maintainer"
-  migrate_before_activation
   activation="$(build_home "$root")" || die "the Home Manager build failed; nothing was activated"
   [[ -x "$activation/activate" ]] || die "no activation script in $activation"
   HOME_MANAGER_BACKUP_EXT=backup "$activation/activate" ||
     die "Home Manager activation failed; inspect its output, or run the previous generation's activate"
-  migrate_after_activation
   start_desktop_services
   log "applied $root"
   log "running services pick up changes at next login or after 'cros reset --hard'"
@@ -266,13 +227,21 @@ cmd_apply() {
 }
 
 cmd_check() {
-  local root
+  local root deb activation active stale=""
   (($# == 0)) || die "check takes no arguments"
   root="$(resolve_checkout "")"
   ensure_sparse_paths "$root"
-  nix build "${NIX_FLAGS[@]}" --no-link --print-out-paths "$(flake_dir "$root")#system-deb"
-  build_home "$root"
+  deb="$(build_system_package "$root")"
+  activation="$(build_home "$root")" || die "the Home Manager build failed"
   log "build passed; nothing was installed or activated"
+  active="$(readlink -f "$HM_PROFILE" 2>/dev/null || true)"
+  system_package_is_installed "$deb" || stale+=", system package"
+  [[ "$active" == "$activation" ]] || stale+=", Home Manager"
+  if [[ -z "$stale" ]]; then
+    log "this machine runs this build"
+  else
+    log "this machine does not run this build (${stale#, }); run 'cros apply'"
+  fi
 }
 
 cmd_sync() {
@@ -355,6 +324,9 @@ cmd_bump() {
   local root lock previous before after inputs packages workarounds message
   root="$(resolve_checkout "")"
   require_clean_main "$root"
+  # Start from the published lock; otherwise `publish` cannot fast-forward.
+  git -C "$root" pull --ff-only origin main ||
+    die "main cannot fast-forward to origin/main; reconcile them, then run 'cros bump' again"
   lock="$root/$SETUP_SUBDIR/flake.lock"
   previous="$(mktemp)"
   BUMP_LOCK="$lock"
@@ -409,7 +381,7 @@ cmd_publish() {
 
 cmd_clean() {
   (($# == 0)) || die "clean takes no arguments"
-  nix-collect-garbage -d
+  nix-collect-garbage --delete-older-than "${KEEP_GENERATIONS_DAYS}d"
   nix store optimise
 }
 

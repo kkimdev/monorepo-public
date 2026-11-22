@@ -121,11 +121,6 @@ if name == "rm":
         sys.exit(0)
     os.execv(variable("CROS_TEST_REAL_RM"), ["rm", *args])
 
-if name == "getent":
-    shell = variable("CROS_TEST_LOGIN_SHELL", "/bin/bash")
-    print(f"{os.environ['USER']}:x:1000:1000:Test User:{os.environ['HOME']}:{shell}")
-    sys.exit(0)
-
 if name == "dpkg-deb":
     print(variable("CROS_TEST_DEB_VERSION", "1.0.0"))
     sys.exit(0)
@@ -176,7 +171,7 @@ if name == "gh":
     print("OPEN")
     sys.exit(0)
 
-if name in {"systemctl", "chsh", "apt-get"}:
+if name in {"systemctl", "apt-get"}:
     sys.exit(0)
 
 raise SystemExit("unexpected stub command: " + name)
@@ -242,8 +237,8 @@ class CrosTestCase(unittest.TestCase):
         driver.write_text(STUB)
         driver.chmod(0o755)
         for name in (
-            "sudo", "apt-get", "dpkg-deb", "dpkg-query", "systemctl", "getent",
-            "chsh", "determinate-nixd", "gh", "nix", "nix-collect-garbage",
+            "sudo", "apt-get", "dpkg-deb", "dpkg-query", "systemctl",
+            "determinate-nixd", "gh", "nix", "nix-collect-garbage",
             "find", "rm", "git",
         ):
             (self.bin / name).symlink_to(driver)
@@ -298,7 +293,6 @@ class CrosTestCase(unittest.TestCase):
             "CROS_TEST_GTK3": str(self.gtk3),
             "CROS_TEST_GTK4": str(self.gtk4),
             "CROS_TEST_DEB_VERSION": "1.0.0",
-            "CROS_TEST_LOGIN_SHELL": "/bin/bash",
             "CROS_TEST_REAL_GIT": REAL_GIT,
             "CROS_TEST_REAL_FIND": shutil.which("find"),
             "CROS_TEST_REAL_RM": shutil.which("rm"),
@@ -619,29 +613,6 @@ class Apply(CrosTestCase):
         self.assertEqual(result.returncode, 1, self.output(result))
         self.assertIn("GTK4's module directory", result.stderr)
 
-    def test_login_shell_is_switched_only_after_activation(self):
-        for shell in (
-            str(self.home / ".nix-profile/bin/zsh"),
-            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-zsh/bin/zsh",
-        ):
-            with self.subTest(shell=shell):
-                (self.audit / "calls.jsonl").unlink(missing_ok=True)
-                environment = dict(self.environment)
-                environment["CROS_TEST_LOGIN_SHELL"] = shell
-                result = self.apply("--checkout", str(self.repo), environment=environment)
-                self.assertEqual(result.returncode, 0, self.output(result))
-                activate = self.index(lambda a: a[0] == "activate")
-                chsh = self.index(lambda a: a[0] == "chsh")
-                self.assertLess(activate, chsh)
-                self.assertEqual(
-                    self.argvs()[chsh], ["chsh", "-s", "/bin/bash", "cros-test-user"]
-                )
-
-    def test_debian_bash_login_shell_is_left_alone(self):
-        result = self.apply("--checkout", str(self.repo))
-        self.assertEqual(result.returncode, 0, self.output(result))
-        self.assertEqual(self.matching(lambda a: a[0] == "chsh"), [])
-
     def test_desktop_services_are_started_without_stopping_them(self):
         result = self.apply("--checkout", str(self.repo))
         self.assertEqual(result.returncode, 0, self.output(result))
@@ -662,126 +633,6 @@ class Apply(CrosTestCase):
         result = self.apply("--checkout")
         self.assertEqual(result.returncode, 1, self.output(result))
         self.assertIn("--checkout needs a directory", result.stderr)
-
-
-class Migrations(CrosTestCase):
-    def legacy_config(self, host):
-        directory = self.home / ".config" / "home-manager"
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / "host.json").write_text(json.dumps(host) + "\n")
-        (directory / "home.nix").write_text("old generated configuration\n")
-        return directory
-
-    def test_git_identity_copied_only_when_unset_in_gitconfig(self):
-        self.legacy_config({"gitName": "Legacy Name", "gitEmail": "legacy@example.test"})
-        self.git("config", "--file", str(self.home / ".gitconfig"), "user.name", "Existing Name")
-        result = self.apply("--checkout", str(self.repo))
-        self.assertEqual(result.returncode, 0, self.output(result))
-        gitconfig = self.home / ".gitconfig"
-        self.assertEqual(
-            self.git("config", "--file", str(gitconfig), "user.name").stdout.strip(),
-            "Existing Name",
-        )
-        self.assertEqual(
-            self.git("config", "--file", str(gitconfig), "user.email").stdout.strip(),
-            "legacy@example.test",
-        )
-        self.assertFalse((self.home / ".config" / "git" / "config").exists())
-
-    def test_git_identity_is_not_invented_without_legacy_data(self):
-        result = self.apply("--checkout", str(self.repo))
-        self.assertEqual(result.returncode, 0, self.output(result))
-        self.assertFalse((self.home / ".gitconfig").exists())
-
-    def test_legacy_configuration_directory_is_renamed_once(self):
-        legacy = self.legacy_config({"gitName": "Legacy Name", "gitEmail": "legacy@example.test"})
-        result = self.apply("--checkout", str(self.repo))
-        self.assertEqual(result.returncode, 0, self.output(result))
-        renamed = self.home / ".config" / "home-manager.legacy"
-        self.assertFalse(legacy.exists())
-        self.assertEqual((renamed / "home.nix").read_text(), "old generated configuration\n")
-        snapshot = sorted(path.name for path in renamed.iterdir())
-
-        second = self.apply()
-        self.assertEqual(second.returncode, 0, self.output(second))
-        self.assertEqual(sorted(path.name for path in renamed.iterdir()), snapshot)
-        self.assertIn("moved the old generated configuration", result.stderr)
-
-    def test_legacy_rename_is_skipped_when_both_directories_exist(self):
-        old = self.legacy_config({"gitName": "Legacy", "gitEmail": "legacy@example.test"})
-        new = self.home / ".config" / "home-manager.legacy"
-        new.mkdir()
-        (new / "keep.txt").write_text("new directory\n")
-        result = self.apply("--checkout", str(self.repo))
-        self.assertEqual(result.returncode, 0, self.output(result))
-        self.assertIn("both", result.stderr)
-        self.assertTrue((old / "host.json").exists())
-        self.assertEqual((new / "keep.txt").read_text(), "new directory\n")
-
-    def test_desktop_copies_removed_but_different_files_and_symlinks_kept(self):
-        profile = (
-            self.home / ".local" / "state" / "nix" / "profiles"
-            / "home-manager" / "home-path" / "share"
-        )
-        for kind in ("applications", "icons"):
-            (profile / kind).mkdir(parents=True)
-        (profile / "applications" / "same.desktop").write_text("identical entry\n")
-        (profile / "applications" / "nested").mkdir()
-        (profile / "applications" / "nested" / "same.desktop").write_text("identical entry\n")
-        (profile / "applications" / "other.desktop").write_text("profile version\n")
-        (profile / "icons" / "same.png").write_bytes(b"identical icon")
-        (profile / "icons" / "other.png").write_bytes(b"profile icon")
-
-        share = self.home / ".local" / "share"
-        (share / "applications" / "nested").mkdir(parents=True)
-        (share / "applications" / "same.desktop").write_text("identical entry\n")
-        (share / "applications" / "other.desktop").write_text("local version\n")
-        (share / "applications" / "nested" / "same.desktop").write_text("identical entry\n")
-        (share / "applications" / "linked.desktop").symlink_to(
-            profile / "applications" / "same.desktop"
-        )
-        (share / "icons").mkdir()
-        (share / "icons" / "same.png").write_bytes(b"identical icon")
-        (share / "icons" / "other.png").write_bytes(b"local icon")
-
-        result = self.apply("--checkout", str(self.repo))
-        self.assertEqual(result.returncode, 0, self.output(result))
-
-        self.assertFalse((share / "applications" / "same.desktop").exists())
-        self.assertFalse((share / "applications" / "nested").exists())
-        self.assertFalse((share / "icons" / "same.png").exists())
-        self.assertEqual((share / "applications" / "other.desktop").read_text(), "local version\n")
-        self.assertEqual((share / "icons" / "other.png").read_bytes(), b"local icon")
-        self.assertTrue((share / "applications" / "linked.desktop").is_symlink())
-        self.assertEqual(
-            (share / "applications" / "linked.desktop").read_text(), "identical entry\n"
-        )
-
-    def test_desktop_copies_matching_only_the_old_profile_are_kept(self):
-        # The old activation copied ~/.nix-profile/share; only the current
-        # Home Manager generation (home-path) may cause a copy to be removed.
-        old_profile = self.home / ".nix-profile" / "share"
-        (old_profile / "applications").mkdir(parents=True)
-        (old_profile / "icons").mkdir()
-        (old_profile / "applications" / "cros-test-legacy.desktop").write_text("legacy entry\n")
-        (old_profile / "icons" / "cros-test-legacy.png").write_bytes(b"legacy icon")
-
-        share = self.home / ".local" / "share"
-        (share / "applications").mkdir(parents=True)
-        (share / "icons").mkdir()
-        (share / "applications" / "cros-test-legacy.desktop").write_text("legacy entry\n")
-        (share / "icons" / "cros-test-legacy.png").write_bytes(b"legacy icon")
-
-        result = self.apply("--checkout", str(self.repo))
-        self.assertEqual(result.returncode, 0, self.output(result))
-
-        self.assertEqual(
-            (share / "applications" / "cros-test-legacy.desktop").read_text(),
-            "legacy entry\n",
-        )
-        self.assertEqual(
-            (share / "icons" / "cros-test-legacy.png").read_bytes(), b"legacy icon"
-        )
 
 
 class Sync(CrosTestCase):
@@ -867,7 +718,7 @@ class Bump(CrosTestCase):
     def setUp(self):
         super().setUp()
         self.write_host_json(checkout=str(self.repo), maintainer=False)
-        self.add_origin()
+        self.remote = self.add_origin()
         self.lock = self.repo / "chromeos-dev-setup" / "flake.lock"
 
     def test_already_current_lock_makes_no_commit(self):
@@ -961,6 +812,38 @@ class Bump(CrosTestCase):
             ["nix", "flake", "update", "--accept-flake-config", "nixpkgs",
              "home-manager", "--flake", str(self.repo / "chromeos-dev-setup")],
         )
+
+    def push_from_another_clone(self, name, path, content):
+        other = self.root / name
+        self.git("clone", str(self.remote), str(other))
+        (other / path).write_text(content)
+        self.commit(other, f"Change {path} elsewhere")
+        self.git("-C", str(other), "push", "origin", "main")
+        return self.git("--git-dir", str(self.remote), "rev-parse", "main").stdout.strip()
+
+    def test_published_commits_are_pulled_before_the_update(self):
+        published = self.push_from_another_clone("other clone", "elsewhere.txt", "published\n")
+        result = self.run_cros("bump")
+        self.assertEqual(result.returncode, 0, self.output(result))
+        pull = self.index(lambda a: a[:1] == ["git"] and "pull" in a)
+        update = self.index(lambda a: a[:2] == ["nix", "flake"] and "update" in a)
+        self.assertLess(pull, update)
+        self.assertEqual(
+            self.git("-C", str(self.repo), "rev-parse", "HEAD~1").stdout.strip(), published
+        )
+
+    def test_diverged_main_is_refused_before_the_update(self):
+        self.push_from_another_clone("other clone", "elsewhere.txt", "published\n")
+        (self.repo / "local.txt").write_text("unpublished\n")
+        self.commit(self.repo, "Local change")
+        head = self.git("-C", str(self.repo), "rev-parse", "HEAD").stdout
+        original = self.lock.read_bytes()
+        result = self.run_cros("bump")
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("cannot fast-forward", result.stderr)
+        self.assertEqual(self.matching(lambda a: a[:2] == ["nix", "flake"]), [])
+        self.assertEqual(self.lock.read_bytes(), original)
+        self.assertEqual(self.git("-C", str(self.repo), "rev-parse", "HEAD").stdout, head)
 
     def test_refuses_non_main_and_dirty_checkouts(self):
         self.git("-C", str(self.repo), "switch", "-c", "work")
@@ -1064,7 +947,7 @@ class Reminders(CrosTestCase):
         self.assertNotIn("reminder:", result.stderr)
         self.assertNotIn("not published", result.stderr)
 
-    def test_no_reminders_off_the_main_branch(self):
+    def test_branch_checkout_is_reported_instead_of_maintainer_reminders(self):
         self.write_host_json(checkout=str(self.repo), maintainer=True)
         self.add_origin()
         (self.repo / "local.txt").write_text("local work\n")
@@ -1072,8 +955,23 @@ class Reminders(CrosTestCase):
         self.git("-C", str(self.repo), "switch", "-c", "work")
         result = self.apply()
         self.assertEqual(result.returncode, 0, self.output(result))
-        self.assertNotIn("reminder:", result.stderr)
+        self.assertIn(f"follows {self.repo} on work; switch it back to main", result.stderr)
         self.assertNotIn("not published", result.stderr)
+
+    def test_applied_worktree_names_the_command_back_to_the_primary_checkout(self):
+        worktree = self.root / "test worktree"
+        self.git("-C", str(self.repo), "worktree", "add", "-b", "try", str(worktree))
+        result = self.apply("--checkout", str(worktree))
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertIn(
+            f"follows {worktree} on try; return with 'cros apply --checkout {self.repo}'",
+            result.stderr,
+        )
+
+    def test_main_checkout_of_a_non_maintainer_gets_no_reminders(self):
+        result = self.apply("--checkout", str(self.repo))
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertNotIn("reminder:", result.stderr)
 
     def test_shallow_repository_skips_the_lock_age_reminder(self):
         checkout = self.make_checkout(
@@ -1167,11 +1065,40 @@ class CheckAndClean(CrosTestCase):
         self.assertEqual(self.matching(lambda a: a[0] == "activate"), [])
         self.assertEqual((self.host_dir / "host.json").read_bytes(), before)
 
-    def test_clean_collects_garbage_and_optimises(self):
+    def check_with(self, installed_version=None, active_profile=None):
+        self.write_host_json(checkout=str(self.repo), maintainer=False)
+        if active_profile:
+            profile = self.home / ".local/state/nix/profiles/home-manager"
+            profile.parent.mkdir(parents=True)
+            profile.symlink_to(active_profile)
+        environment = dict(self.environment)
+        if installed_version:
+            environment["CROS_TEST_INSTALLED_VERSION"] = installed_version
+        return self.run_cros("check", environment=environment)
+
+    def test_check_reports_a_machine_that_runs_the_build(self):
+        result = self.check_with("1.0.0", self.audit / "activation")
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertIn("this machine runs this build", result.stderr)
+
+    def test_check_names_each_part_the_machine_does_not_run(self):
+        cases = [
+            ("0.9.0", self.audit / "activation", "(system package)"),
+            ("1.0.0", self.audit, "(Home Manager)"),
+            (None, None, "(system package, Home Manager)"),
+        ]
+        for installed, profile, parts in cases:
+            with self.subTest(parts=parts):
+                shutil.rmtree(self.home / ".local", ignore_errors=True)
+                result = self.check_with(installed, profile)
+                self.assertEqual(result.returncode, 0, self.output(result))
+                self.assertIn(f"does not run this build {parts}; run 'cros apply'", result.stderr)
+
+    def test_clean_keeps_recent_generations_and_optimises(self):
         result = self.run_cros("clean")
         self.assertEqual(result.returncode, 0, self.output(result))
         self.assertEqual(self.argvs(), [
-            ["nix-collect-garbage", "-d"],
+            ["nix-collect-garbage", "--delete-older-than", "14d"],
             ["nix", "store", "optimise"],
         ])
 

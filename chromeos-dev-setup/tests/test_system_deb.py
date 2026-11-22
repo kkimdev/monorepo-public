@@ -22,25 +22,6 @@ SYSTEM = Path(__file__).resolve().parents[1] / "system"
 PODMAN = shutil.which("podman")
 IMAGE = "docker.io/library/debian:trixie"
 
-# Exactly the bytes the old setup.bash wrote with its heredocs.
-OLD_ANDROID_RULES = (
-    "# adb 로 붙는 안드로이드 기기. Crostini 의 기본 노드는 root:root 0644 라 사용자가 열 수 없다.\n"
-    'SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", MODE="0666"\n'
-    'SUBSYSTEM=="usb", ATTR{idVendor}=="22b8", MODE="0666"\n'
-)
-OLD_TMP_MOUNT_OVERRIDE = (
-    "[Mount]\n"
-    "What=/var/lib/tmp\n"
-    "Type=none\n"
-    "Options=bind,nosuid,nodev\n"
-    "DirectoryMode=1777\n"
-)
-OLD_TMPFILES_CONF = (
-    "# Keep the vendor cleanup policy but remove short-lived build artifacts sooner.\n"
-    "q /tmp 1777 root root 2d\n"
-    "q /var/tmp 1777 root root 30d\n"
-)
-
 CROS_IM_CONTROL = (
     "Package: cros-im\n"
     "Version: 0.0.1\n"
@@ -240,8 +221,8 @@ class PackageContainerTest(unittest.TestCase):
         self.containers.append(name)
         return name
 
-    def prepare(self, tmpfiles_conf=OLD_TMPFILES_CONF):
-        """Start a container with the old setup.bash files and a dummy cros-im."""
+    def prepare(self):
+        """Start a container with systemd, vim-tiny, and a dummy cros-im."""
         container = self.new_container()
         self.exec_in(
             container,
@@ -257,16 +238,6 @@ class PackageContainerTest(unittest.TestCase):
             "dpkg-deb --build /tmp/cros-im /tmp/cros-im.deb >/dev/null && "
             "dpkg -i /tmp/cros-im.deb >/dev/null",
         )
-
-        self.write_file(
-            container, "/etc/udev/rules.d/51-android.rules", OLD_ANDROID_RULES
-        )
-        self.write_file(
-            container,
-            "/etc/systemd/system/tmp.mount.d/override.conf",
-            OLD_TMP_MOUNT_OVERRIDE,
-        )
-        self.write_file(container, "/etc/tmpfiles.d/tmp.conf", tmpfiles_conf)
 
         run(
             [PODMAN, "cp", str(self.deb), f"{container}:/tmp/cros-dev-system.deb"],
@@ -285,23 +256,11 @@ class PackageContainerTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, output)
         return output
 
-    def assert_absent(self, container, path):
-        result = self.exec_in(container, f"test ! -e {path}", check=False)
-        self.assertEqual(result.returncode, 0, f"{path} still exists")
-
-    def test_install_migrates_identical_files_and_wins_tmpfiles_order(self):
+    def test_install_owns_its_files_and_wins_tmpfiles_order(self):
         container = self.prepare()
         output = self.install(container)
 
         self.assertIn("Skipping disk-backed /tmp configuration", output)
-        for path in (
-            "/etc/udev/rules.d/51-android.rules",
-            "/etc/systemd/system/tmp.mount.d/override.conf",
-            "/etc/tmpfiles.d/tmp.conf",
-        ):
-            self.assertIn(f"Removed obsolete {path}", output)
-            self.assert_absent(container, path)
-        self.assert_absent(container, "/etc/systemd/system/tmp.mount.d")
 
         version = self.exec_in(
             container, "dpkg-query -W -f='${Version}' cros-dev-system"
@@ -367,26 +326,12 @@ class PackageContainerTest(unittest.TestCase):
         self.assertNotEqual(guard.returncode, 0)
         self.assertIn("not btrfs", guard.stdout + guard.stderr)
 
-    def test_modified_file_is_kept_with_warning_and_purge_keeps_tmp(self):
-        modified_tmpfiles = "# locally modified\nq /tmp 1777 root root 7d\n"
-        container = self.prepare(tmpfiles_conf=modified_tmpfiles)
+    def test_purge_keeps_tmp_data(self):
+        container = self.prepare()
         self.exec_in(
             container, "mkdir -p /var/lib/tmp && touch /var/lib/tmp/user-data"
         )
-
-        output = self.install(container)
-        self.assertIn(
-            "WARNING: /etc/tmpfiles.d/tmp.conf differs from the file "
-            "the old setup.bash wrote; leaving it in place.",
-            output,
-        )
-        self.assertEqual(
-            self.exec_in(container, "cat /etc/tmpfiles.d/tmp.conf").stdout,
-            modified_tmpfiles,
-        )
-        self.assert_absent(container, "/etc/udev/rules.d/51-android.rules")
-        self.assert_absent(container, "/etc/systemd/system/tmp.mount.d/override.conf")
-        self.assert_absent(container, "/etc/systemd/system/tmp.mount.d")
+        self.install(container)
 
         purge = self.exec_in(
             container, "apt-get purge -y cros-dev-system", check=False

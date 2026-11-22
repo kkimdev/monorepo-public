@@ -67,9 +67,6 @@ let
     fi
   '';
 
-  # The former commands forward to `cros` until users have switched.
-  retiredCommand = old: new: ''echo "${old} is now 'cros ${new}'." >&2 && cros ${new}'';
-
   myShellAliases = {
     sudo = "sudo env PATH=\\\"$PATH\\\"";
     grep = "grep --color=auto";
@@ -78,12 +75,6 @@ let
     ls = "ls --color=auto";
     dir = "dir --color=auto";
     vdir = "vdir --color=auto";
-
-    cros-update = retiredCommand "cros-update" "sync";
-    cros-setup = retiredCommand "cros-setup" "apply";
-    cros-clean = retiredCommand "cros-clean" "clean";
-    cros-reset = retiredCommand "cros-reset" "reset";
-    cros-hard-reset = retiredCommand "cros-hard-reset" "reset --hard";
   };
 in
 {

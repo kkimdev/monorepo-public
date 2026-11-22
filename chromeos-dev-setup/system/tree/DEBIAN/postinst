@@ -3,7 +3,7 @@ set -e
 
 # CROS_DEV_SYSTEM_SKIP_TMP=1 skips ONLY the btrfs /tmp subvolume step below.
 # The container test uses it because containers cannot manage btrfs
-# subvolumes; the migration and service reloads still run.
+# subvolumes; the service reloads still run.
 #
 # The rest of this script is idempotent so reinstalling a new package version
 # (or configuring twice) is safe.
@@ -64,56 +64,6 @@ configure_disk_backed_tmp() {
     echo "Configured /tmp quota: $tmp_quota_gib ($tmp_quota_bytes bytes)."
 }
 
-migrate_old_etc_files() {
-    # Remove each old file only when its bytes are exactly what setup.bash
-    # wrote; a user-edited file is left alone with a warning.
-    if [ -e /etc/udev/rules.d/51-android.rules ]; then
-        if cmp -s - /etc/udev/rules.d/51-android.rules <<'EOF'
-# adb 로 붙는 안드로이드 기기. Crostini 의 기본 노드는 root:root 0644 라 사용자가 열 수 없다.
-SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", MODE="0666"
-SUBSYSTEM=="usb", ATTR{idVendor}=="22b8", MODE="0666"
-EOF
-        then
-            rm -f /etc/udev/rules.d/51-android.rules
-            echo "Removed obsolete /etc/udev/rules.d/51-android.rules."
-        else
-            echo "WARNING: /etc/udev/rules.d/51-android.rules differs from the file the old setup.bash wrote; leaving it in place." >&2
-        fi
-    fi
-
-    if [ -e /etc/systemd/system/tmp.mount.d/override.conf ]; then
-        if cmp -s - /etc/systemd/system/tmp.mount.d/override.conf <<'EOF'
-[Mount]
-What=/var/lib/tmp
-Type=none
-Options=bind,nosuid,nodev
-DirectoryMode=1777
-EOF
-        then
-            rm -f /etc/systemd/system/tmp.mount.d/override.conf
-            echo "Removed obsolete /etc/systemd/system/tmp.mount.d/override.conf."
-        else
-            echo "WARNING: /etc/systemd/system/tmp.mount.d/override.conf differs from the file the old setup.bash wrote; leaving it in place." >&2
-        fi
-        # Drop the override directory only when nothing else lives there.
-        rmdir /etc/systemd/system/tmp.mount.d 2>/dev/null || true
-    fi
-
-    if [ -e /etc/tmpfiles.d/tmp.conf ]; then
-        if cmp -s - /etc/tmpfiles.d/tmp.conf <<'EOF'
-# Keep the vendor cleanup policy but remove short-lived build artifacts sooner.
-q /tmp 1777 root root 2d
-q /var/tmp 1777 root root 30d
-EOF
-        then
-            rm -f /etc/tmpfiles.d/tmp.conf
-            echo "Removed obsolete /etc/tmpfiles.d/tmp.conf."
-        else
-            echo "WARNING: /etc/tmpfiles.d/tmp.conf differs from the file the old setup.bash wrote; leaving it in place." >&2
-        fi
-    fi
-}
-
 reload_services() {
     # Never fail the package transaction because a service is not running.
     if [ -d /run/systemd/system ]; then
@@ -132,7 +82,6 @@ case "$1" in
         else
             configure_disk_backed_tmp
         fi
-        migrate_old_etc_files
         reload_services
         ;;
     abort-upgrade|abort-remove|abort-deconfigure)
