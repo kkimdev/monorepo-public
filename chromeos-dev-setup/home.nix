@@ -327,6 +327,25 @@ in
   targets.genericLinux.enable = true;
   xdg.enable = true;
 
+  # One font policy for Nix and Debian apps, which both read
+  # ~/.config/fontconfig: Korean prefers Noto Sans/Serif KR (from google-fonts)
+  # over whichever font matches first, and monospace is JetBrains Mono (the
+  # Nerd Font "Mono" variant keeps icons one cell wide) with a Korean coding
+  # font for Hangul. Rendering suits high-density screens; it matches Debian's
+  # defaults but no longer depends on them.
+  fonts.fontconfig = {
+    enable = true;
+    defaultFonts = {
+      sansSerif = [ "Noto Sans" "Noto Sans KR" ];
+      serif = [ "Noto Serif" "Noto Serif KR" ];
+      monospace = [ "JetBrainsMono Nerd Font Mono" "NanumGothicCoding" ];
+      emoji = [ "Noto Color Emoji" ];
+    };
+    antialiasing = true;
+    hinting = "slight";
+    subpixelRendering = "none";
+  };
+
   xdg.mimeApps = {
     enable = true;
     # Crostini ships garcon_host_browser.desktop in /usr/share/applications.
