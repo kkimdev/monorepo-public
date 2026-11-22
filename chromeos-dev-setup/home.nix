@@ -22,10 +22,19 @@ let
   # Match Electron's native Wayland app ID and X11 class to orca-ide.desktop.
   # Copies need no patch: sommelier-rs offers ext-data-control-v1 (0.4.1+),
   # which Orca's clipboard helper uses to reach the ChromeOS clipboard.
+  #
+  # Crostini exposes a scale-2 wl_output plus wp_fractional_scale_v1. Without
+  # fractional scaling Electron renders at the integer output scale and the
+  # host resamples it to the ChromeOS display scale, which blurs text. Render
+  # at the exact fractional scale on native Wayland instead.
   orcaWithDesktopIdentity = llmAgentsPkgs.orca.overrideAttrs (old: {
+    nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkgs.makeBinaryWrapper ];
     postFixup = (old.postFixup or "") + ''
       ${pkgs.python3}/bin/python3 ${./patch-orca.py} \
         "$out/lib/Orca/resources/app.asar" "$out/share/applications/orca-ide.desktop"
+      wrapProgram "$out/bin/orca-ide" \
+        --add-flags "--ozone-platform=wayland" \
+        --add-flags "--enable-features=WaylandFractionalScaleV1,WaylandPerSurfaceScale,WaylandUiScale"
     '';
   });
   # wayland-0: Crostini's high-density Sommelier, wayland-1: its low-density

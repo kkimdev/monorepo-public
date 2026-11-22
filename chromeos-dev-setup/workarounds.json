@@ -7,6 +7,13 @@
     "check": { "type": "github-pr", "repo": "stablyai/orca", "number": 29172 }
   },
   {
+    "id": "orca-fractional-scale",
+    "where": "home.nix orcaWithDesktopIdentity (wrapProgram flags)",
+    "why": "Electron rounds Crostini's scale-2 output to an integer scale and the host resamples it to the fractional display scale, so text is blurry.",
+    "removeWhen": "Orca's Electron build enables Wayland fractional scaling by default, or llm-agents.nix wraps orca-ide itself",
+    "check": { "type": "manual" }
+  },
+  {
     "id": "claude-desktop-xdg-open",
     "where": "home.nix claudeDesktopWithOpener",
     "why": "Claude Desktop's FHS environment has no xdg-open, so login links do not open.",
