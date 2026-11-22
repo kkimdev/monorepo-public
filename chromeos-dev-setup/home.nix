@@ -69,6 +69,13 @@ let
     DISPLAY = ":1";
   };
 
+  # PATH prefix for login shells (home.sessionPath), apps the ChromeOS
+  # launcher starts through cros-garcon, and local services; each unit appends
+  # its own system directories. systemd does not expand variables, so
+  # sessionPath entries must be absolute paths.
+  sessionPathPrefix = lib.concatStringsSep ":"
+    (config.home.sessionPath ++ [ "${config.home.profileDirectory}/bin" ]);
+
   systemdEnvironment = env:
     lib.concatStrings (lib.mapAttrsToList (name: value: "Environment=\"${name}=${value}\"\n") env);
 
@@ -289,7 +296,7 @@ in
       TimeoutStopSec = "15s";
       Environment = [
         "HOME=%h"
-        "PATH=%h/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin"
+        "PATH=${sessionPathPrefix}:/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin"
         "XDG_CONFIG_HOME=%h/.config"
         "XDG_STATE_HOME=%h/.local/state"
       ];
@@ -549,7 +556,7 @@ in
     # https://nixos.wiki/wiki/Installing_Nix_on_Crostini
     "systemd/user/cros-garcon.service.d/override.conf".text = ''
       [Service]
-      Environment="PATH=%h/.nix-profile/bin:/usr/local/sbin:/usr/local/bin:/usr/local/games:/usr/sbin:/usr/bin:/usr/games:/sbin:/bin"
+      Environment="PATH=${sessionPathPrefix}:/usr/local/sbin:/usr/local/bin:/usr/local/games:/usr/sbin:/usr/bin:/usr/games:/sbin:/bin"
       Environment="XDG_DATA_DIRS=%h/.nix-profile/share:%h/.local/share:%h/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share:/usr/share"
     '' + systemdEnvironment desktopEnvironment;
 
