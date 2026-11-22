@@ -140,6 +140,8 @@ if name == "nix":
         if installable.endswith("#system-deb"):
             print(audit / "system-deb-out")
         elif "#homeConfigurations" in installable:
+            if variable("CROS_TEST_HOME_BUILD_EXIT", "0") != "0":
+                sys.exit(int(variable("CROS_TEST_HOME_BUILD_EXIT")))
             print(audit / "activation")
         else:
             sys.exit("unexpected build installable: " + installable)
@@ -258,6 +260,7 @@ class CrosTestCase(unittest.TestCase):
             "#!/usr/bin/env bash\n"
             "printf '{\"argv\": [\"activate\"], \"backup\": \"%s\"}\\n' "
             "\"${HOME_MANAGER_BACKUP_EXT:-}\" >> \"$CROS_TEST_AUDIT/calls.jsonl\"\n"
+            "exit \"${CROS_TEST_ACTIVATE_EXIT:-0}\"\n"
         )
         activate.chmod(0o755)
 
@@ -406,6 +409,28 @@ class Dispatch(CrosTestCase):
                 result = self.run_cros(flag)
                 self.assertEqual(result.returncode, 0, self.output(result))
                 self.assertIn("Usage: cros <command>", result.stdout)
+
+    def test_help_after_a_command_shows_help_without_running_it(self):
+        self.write_host_json(checkout=str(self.repo), maintainer=False)
+        for arguments in (["bump", "--help"], ["apply", "-h"], ["sync", "--help"],
+                          ["bump", "nixpkgs", "--help"]):
+            with self.subTest(arguments=arguments):
+                result = self.run_cros(*arguments)
+                self.assertEqual(result.returncode, 0, self.output(result))
+                self.assertIn("Usage: cros <command>", result.stdout)
+                self.assertEqual(self.calls(), [])
+
+    def test_command_list_matches_help_and_dispatch(self):
+        listed = self.run_cros("__commands")
+        self.assertEqual(listed.returncode, 0, self.output(listed))
+        names = [line.split(":", 1)[0] for line in listed.stdout.splitlines()]
+        self.assertEqual(names, ["sync", "apply", "check", "bump", "publish", "clean", "reset"])
+        self.assertTrue(all(line.split(":", 1)[1] for line in listed.stdout.splitlines()))
+        usage = self.run_cros("--help").stdout
+        for name in names:
+            self.assertRegex(usage, rf"(?m)^  {name}\b")
+            # Every listed command dispatches to a handler, not "unknown command".
+            self.assertIn(f"\ncmd_{name}() {{", CROS.read_text())
 
     def test_unknown_command_reports_the_name_and_exits_one(self):
         result = self.run_cros("frobnicate")
@@ -623,6 +648,31 @@ class Apply(CrosTestCase):
             ["systemctl", "--user", "start", "earlyoom.service", *SESSION_UNITS],
         ])
 
+    def test_failed_apply_keeps_following_the_previous_checkout(self):
+        self.write_host_json(checkout=str(self.repo), maintainer=True)
+        before = (self.host_dir / "host.json").read_bytes()
+        worktree = self.root / "test worktree"
+        self.git("-C", str(self.repo), "worktree", "add", "-b", "try", str(worktree))
+        for variable in ("CROS_TEST_HOME_BUILD_EXIT", "CROS_TEST_ACTIVATE_EXIT"):
+            with self.subTest(failure=variable):
+                environment = dict(self.environment)
+                environment[variable] = "1"
+                result = self.apply("--checkout", str(worktree), environment=environment)
+                self.assertEqual(result.returncode, 1, self.output(result))
+                self.assertIn(f"this machine still follows {self.repo}", result.stderr)
+                self.assertEqual((self.host_dir / "host.json").read_bytes(), before)
+                self.assertEqual(list(self.host_dir.iterdir()), [self.host_dir / "host.json"])
+
+    def test_successful_apply_follows_the_new_checkout(self):
+        self.write_host_json(checkout=str(self.repo), maintainer=False)
+        worktree = self.root / "test worktree"
+        self.git("-C", str(self.repo), "worktree", "add", "-b", "try", str(worktree))
+        result = self.apply("--checkout", str(worktree))
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertNotIn("restored", result.stderr)
+        host = json.loads((self.host_dir / "host.json").read_text())
+        self.assertEqual(host["checkout"], str(worktree))
+
     def test_unknown_apply_option_is_refused(self):
         result = self.apply("--frobnicate")
         self.assertEqual(result.returncode, 1, self.output(result))
@@ -753,7 +803,11 @@ class Bump(CrosTestCase):
         self.assertEqual(apply_call["no_reminders"], "1")
         message = self.git("-C", str(self.repo), "log", "-1", "--format=%B").stdout
         self.assertIn("Inputs:", message)
-        self.assertIn("nixpkgs", message)
+        # Only nixpkgs changed; path inputs and unchanged nodes are not listed.
+        self.assertIn(
+            "Inputs:\n- nixpkgs: aaaaaaaaaaaa (2020-01-01) -> ffffffffffff (2020-01-01)\n",
+            message + "\n",
+        )
         self.assertIn("- nixpkgs:", result.stdout)
         self.assertEqual(
             self.git("-C", str(self.repo), "show", "--name-only", "--format=").stdout.strip(),

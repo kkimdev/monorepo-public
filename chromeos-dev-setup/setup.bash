@@ -31,6 +31,10 @@ done
 [[ -c /dev/wl0 ]] || die "Crostini's VirtWL device /dev/wl0 is missing; run inside Crostini"
 REPO_ROOT="$(git -C "$SETUP_DIR" rev-parse --show-toplevel 2>/dev/null)" ||
   die "$SETUP_DIR is not inside a Git checkout"
+# The README's install snippet carries these example values; never write them.
+if [[ "${GIT_USER_NAME:-}" == "Your Name" || "${GIT_USER_EMAIL:-}" == "your-email@example.com" ]]; then
+  die "replace the README's example GIT_USER_NAME/GIT_USER_EMAIL with your own (or unset them)"
+fi
 
 # Minimal tools to install Nix; the system package declares the rest.
 sudo apt-get update

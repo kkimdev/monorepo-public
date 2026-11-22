@@ -25,7 +25,8 @@ chromeos-dev-setup/
   flake.lock
   home.nix            Home Manager configuration shared by all users
   host-example/       example host data used by CI and pure evaluation
-  cros/               the `cros` CLI (Nix package, installed by Home Manager)
+  cros/               the `cros` CLI and its zsh completion (Nix package,
+                      installed by Home Manager)
   system/             local Debian package `cros-dev-system`
   codex-wrapper       Codex model-policy wrapper (installed by Home Manager)
   patch-orca.py       Orca desktop-identity patch
@@ -99,19 +100,25 @@ nothing, and the `00-` tmpfiles name wins over systemd's `tmp.conf`.
 
 Only user-specific or Nix-level steps remain in `setup.bash`: the `render`
 group, installing Nix, and ensuring `trusted-users` includes the user (restart
-`nix-daemon` only when that line changes).
+`nix-daemon` only when that line changes). It writes `GIT_USER_NAME`/`GIT_USER_EMAIL`
+to `~/.gitconfig` once, and refuses the README's example values before changing
+anything.
 
 ## The `cros` CLI
 
 | Command | Effect |
 | --- | --- |
 | `cros sync` | Requires a clean `main`; `git pull --ff-only`, `apt-get update/full-upgrade/autoremove`, `determinate-nixd upgrade`, then `apply`. |
-| `cros apply` | Add sparse paths, install the system package if changed, refresh host data, build and activate Home Manager, start inactive desktop services. |
+| `cros apply` | Add sparse paths, install the system package if changed, refresh host data, build and activate Home Manager, start inactive desktop services. If the build or activation fails (or is interrupted), the previous host data is restored, so the machine keeps following its previous checkout. |
 | `cros check` | Build the system package and the Home Manager configuration without installing or activating anything, then report whether this machine already runs that build (installed package version, active Home Manager generation). |
 | `cros bump [input…]` | Maintainer: requires a clean `main`; `git pull --ff-only` (so the commit can be published), `nix flake update [input…]`, `apply`, print input and package-version changes and workaround status, commit only `flake.lock`. Does not push. |
 | `cros publish` | Maintainer: requires a clean `main` that is ahead of and descends from `origin/main`; push. |
 | `cros clean` | Delete generations older than 14 days (recent ones stay for rollback), collect garbage, optimise the store. |
 | `cros reset [--hard]` | Start inactive desktop services; `--hard` restarts them (closes GUI apps). |
+
+One table in `cros.bash` lists the commands; `cros --help`, dispatch, and the
+zsh completion (`cros/_cros`, via `cros __commands`) all read it. `--help`
+after any command prints help without running the command.
 
 `apply` and `bump` end with reminders. When the applied checkout is not on
 `main` (for example a worktree applied with `apply --checkout` for testing),

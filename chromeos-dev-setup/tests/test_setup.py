@@ -367,6 +367,24 @@ class Guards(SetupTestCase):
         self.assertIn("/dev/wl0", result.stderr)
         self.assert_no_privileged_actions()
 
+    def test_refuses_the_readme_example_git_identity(self):
+        readme = (SETUP.parent / "README.md").read_text()
+        for variable, example in (
+            ("GIT_USER_NAME", "Your Name"),
+            ("GIT_USER_EMAIL", "your-email@example.com"),
+        ):
+            with self.subTest(variable=variable):
+                # The guard must match what the README tells users to edit.
+                self.assertIn(f'export {variable}="{example}"', readme)
+                (self.audit / "calls.jsonl").unlink(missing_ok=True)
+                environment = dict(self.environment)
+                environment[variable] = example
+                result = self.run_setup(environment=environment)
+                self.assertEqual(result.returncode, 1, self.output(result))
+                self.assertIn("example GIT_USER_NAME/GIT_USER_EMAIL", result.stderr)
+                self.assert_no_privileged_actions()
+                self.assertFalse((self.home / ".gitconfig").exists())
+
     def test_refuses_a_directory_outside_a_git_checkout(self):
         outside = self.root / "outside a checkout"
         outside.mkdir()

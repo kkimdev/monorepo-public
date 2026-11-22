@@ -18,24 +18,42 @@ die() {
   exit 1
 }
 
+# The command table: "name|arguments|description". `usage`, dispatch in `main`,
+# and the zsh completion (via `cros __commands`) all read it.
+readonly COMMANDS=(
+  "sync||Pull main, upgrade Debian and Nix, then apply."
+  "apply|[options]|Apply the current checkout (system package + Home Manager)."
+  "check||Build without installing; report whether this machine runs it."
+  "bump|[input...]|Maintainer: pull main, update inputs, apply, commit (no push)."
+  "publish||Maintainer: push bump commits to main, releasing them to all."
+  "clean||Delete generations over 14 days old, collect garbage, optimise."
+  "reset|[--hard]|Start stopped desktop services; --hard restarts them."
+)
+
 usage() {
-  cat <<'EOF'
-Usage: cros <command> [options]
+  local entry name arguments description
+  printf 'Usage: cros <command>\n\n'
+  for entry in "${COMMANDS[@]}"; do
+    IFS='|' read -r name arguments description <<<"$entry"
+    printf '  %-17s %s\n' "$name${arguments:+ $arguments}" "$description"
+  done
+  printf '\napply options: --checkout DIR (first install or testing), --maintainer.\n'
+}
 
-  sync              Pull main, upgrade Debian and Nix, then apply.
-  apply             Apply the current checkout (system package + Home Manager).
-  check             Build everything without installing it; report whether
-                    this machine already runs that build.
-  bump [input...]   Maintainer: pull main, update flake inputs, apply, commit
-                    flake.lock.
-  publish           Maintainer: push committed updates to origin/main.
-  clean             Delete generations older than 14 days, collect Nix
-                    garbage, and optimise the store.
-  reset [--hard]    Start inactive desktop services; --hard restarts them
-                    (running GUI apps close).
+# Prints "name:description" per command for the zsh completion.
+list_commands() {
+  local entry
+  for entry in "${COMMANDS[@]}"; do
+    printf '%s:%s\n' "${entry%%|*}" "${entry##*|}"
+  done
+}
 
-apply options: --checkout DIR (first install), --maintainer.
-EOF
+is_command() {
+  local entry
+  for entry in "${COMMANDS[@]}"; do
+    [[ "${entry%%|*}" != "$1" ]] || return 0
+  done
+  return 1
 }
 
 # ---------------------------------------------------------------- checkout
@@ -196,6 +214,20 @@ print_reminders() {
 
 # ---------------------------------------------------------------- commands
 
+# Until apply has activated, any exit (failure, Ctrl-C) puts the previous host
+# data back, so a failed `apply --checkout DIR` leaves this machine following
+# the checkout it followed before.
+HOST_BACKUP=""
+APPLY_DONE=0
+finish_apply() {
+  [[ -n "$HOST_BACKUP" ]] || return 0
+  if ((!APPLY_DONE)) && ! cmp -s -- "$HOST_BACKUP" "$HOST_JSON"; then
+    cp -- "$HOST_BACKUP" "$HOST_JSON"
+    log "restored the previous host data; this machine still follows $(recorded_checkout)"
+  fi
+  rm -f -- "$HOST_BACKUP"
+}
+
 cmd_apply() {
   local checkout="" maintainer=keep root activation
   while (($#)); do
@@ -215,11 +247,19 @@ cmd_apply() {
   root="$(resolve_checkout "$checkout")"
   ensure_sparse_paths "$root"
   install_system_package "$root"
+  if [[ -f "$HOST_JSON" ]]; then
+    HOST_BACKUP="$(mktemp)"
+    trap finish_apply EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    cp -- "$HOST_JSON" "$HOST_BACKUP"
+  fi
   write_host_data "$root" "$maintainer"
   activation="$(build_home "$root")" || die "the Home Manager build failed; nothing was activated"
   [[ -x "$activation/activate" ]] || die "no activation script in $activation"
   HOME_MANAGER_BACKUP_EXT=backup "$activation/activate" ||
     die "Home Manager activation failed; inspect its output, or run the previous generation's activate"
+  APPLY_DONE=1
   start_desktop_services
   log "applied $root"
   log "running services pick up changes at next login or after 'cros reset --hard'"
@@ -262,28 +302,18 @@ cmd_sync() {
   exec nix run "${NIX_FLAGS[@]}" "$(flake_dir "$root")#cros" -- apply
 }
 
+# Prints "- input: old-rev (date) -> new-rev (date)" for each changed input.
 print_input_changes() {
-  python3 -I - "$1" "$2" <<'PY'
-import json
-import sys
-import time
-
-old, new = (json.load(open(path))["nodes"] for path in sys.argv[1:])
-
-def describe(node):
-    locked = node.get("locked", {})
-    revision = (locked.get("rev") or locked.get("narHash") or locked.get("path") or "?")[:12]
-    modified = locked.get("lastModified")
-    date = time.strftime("%Y-%m-%d", time.gmtime(modified)) if modified else "-"
-    return f"{revision} ({date})"
-
-for name in sorted(set(old) | set(new)):
-    if name == "root" or old.get(name, {}).get("locked") == new.get(name, {}).get("locked"):
-        continue
-    before = describe(old[name]) if name in old else "added"
-    after = describe(new[name]) if name in new else "removed"
-    print(f"- {name}: {before} -> {after}")
-PY
+  jq -rn --slurpfile old "$1" --slurpfile new "$2" '
+    def describe:
+      (.locked // {}) as $l
+      | "\(($l.rev // $l.narHash // $l.path // "?")[:12]) (\(
+          if $l.lastModified then ($l.lastModified | strftime("%Y-%m-%d")) else "-" end))";
+    $old[0].nodes as $o | $new[0].nodes as $n
+    | ($o + $n | keys[] | select(. != "root"))
+    | select($o[.].locked != $n[.].locked)
+    | "- \(.): \(if $o[.] then ($o[.] | describe) else "added" end) -> \(
+        if $n[.] then ($n[.] | describe) else "removed" end)"'
 }
 
 print_package_changes() {
@@ -410,24 +440,28 @@ start_desktop_services() {
 }
 
 main() {
-  local command="${1:-}"
+  local command="${1:-}" argument
   (($#)) && shift
+  # `cros <command> --help` shows help instead of running the command.
+  for argument in "$@"; do
+    if [[ "$argument" == -h || "$argument" == --help ]]; then
+      usage
+      return 0
+    fi
+  done
   case "$command" in
-    sync) cmd_sync "$@" ;;
-    apply) cmd_apply "$@" ;;
-    check) cmd_check "$@" ;;
-    bump) cmd_bump "$@" ;;
-    publish) cmd_publish "$@" ;;
-    clean) cmd_clean "$@" ;;
-    reset) cmd_reset "$@" ;;
     -h | --help | help) usage ;;
+    __commands) list_commands ;;
     "")
       usage
       exit 2
       ;;
     *)
-      usage >&2
-      die "unknown command: $command"
+      if ! is_command "$command"; then
+        usage >&2
+        die "unknown command: $command"
+      fi
+      "cmd_$command" "$@"
       ;;
   esac
 }

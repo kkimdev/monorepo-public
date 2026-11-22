@@ -1,0 +1,26 @@
+#compdef cros
+# zsh completion for cros. Command names and descriptions come from
+# `cros __commands`, the same table that `cros --help` prints.
+
+local -a commands
+if (( CURRENT == 2 )); then
+  commands=("${(@f)$(_call_program commands cros __commands)}")
+  _describe -t commands 'cros command' commands
+  return
+fi
+
+shift words
+(( CURRENT-- ))
+case $words[1] in
+  apply)
+    _arguments \
+      '--checkout[apply this checkout and make this machine follow it]:checkout:_files -/' \
+      '--maintainer[enable maintainer reminders]'
+    ;;
+  reset)
+    _arguments '--hard[restart desktop services; running GUI apps close]'
+    ;;
+  bump)
+    _message 'flake input names (default: every input)'
+    ;;
+esac
