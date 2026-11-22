@@ -14,11 +14,40 @@ codename=$(. /etc/os-release && printf '%s' "${VERSION_CODENAME:-}")
 others=$(find /etc/apt/sources.list /etc/apt/sources.list.d -maxdepth 1 -type f \
     \( -name sources.list -o -name '*.list' -o -name '*.sources' \) ! -path "$list" 2>/dev/null || true)
 
-# Succeeds when an uncommented line elsewhere already names the suite.
+# Succeeds when another enabled binary source already names the suite: a
+# one-line `deb` entry, or a deb822 stanza with `Types: deb` that is not
+# `Enabled: no`. deb-src entries and comments do not count.
 provided() {
-    [ -n "$others" ] || return 1
-    # shellcheck disable=SC2086 # one path per word; apt paths have no spaces.
-    grep -Eqs "^[^#]*[[:space:]]$1([[:space:]]|\$)" $others
+    for file in $others; do
+        case "$file" in
+            *.sources)
+                awk -v suite="$1" '
+                    BEGIN { RS = ""; found = 0 }
+                    {
+                        types = ""; suites = ""; enabled = "yes"
+                        n = split($0, line, "\n")
+                        for (i = 1; i <= n; i++) {
+                            if (line[i] ~ /^[[:space:]]*#/) continue
+                            key = tolower(line[i]); sub(/:.*/, "", key)
+                            value = line[i]; sub(/^[^:]*:/, "", value)
+                            if (key == "types") types = value
+                            else if (key == "suites") suites = value
+                            else if (key == "enabled") enabled = tolower(value)
+                        }
+                        gsub(/[[:space:]]+/, " ", types); gsub(/[[:space:]]+/, " ", suites)
+                        gsub(/[[:space:]]/, "", enabled)
+                        if ((" " types " ") ~ / deb / && (" " suites " ") ~ (" " suite " ") && enabled != "no")
+                            found = 1
+                    }
+                    END { exit !found }' "$file" && return 0
+                ;;
+            *)
+                grep -Eqs "^[[:space:]]*deb[[:space:]]+(\[[^]]*\][[:space:]]+)?[^[:space:]]+[[:space:]]+$1([[:space:]]|\$)" "$file" &&
+                    return 0
+                ;;
+        esac
+    done
+    return 1
 }
 
 content="# Managed by cros-dev-system; rewritten before every apt update."

@@ -14,6 +14,7 @@ Run with: python3 -m unittest discover -s chromeos-dev-setup/tests -v
 
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import stat
@@ -389,7 +390,7 @@ class Bootstrap(SetupTestCase):
         self.assertIn(["sudo", "apt-get", "update"], self.argvs())
         self.assertIn(
             ["sudo", "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install",
-             "-y", "git", "curl", "ca-certificates", "xz-utils"],
+             "-y", "git", "curl", "ca-certificates", "xz-utils", "cros-im"],
             self.argvs(),
         )
         # Nix is already on PATH, so the Determinate installer must not run.
@@ -405,6 +406,25 @@ class Bootstrap(SetupTestCase):
         self.assertEqual(self.final_nix_run().count(expected[3]), 1)
         # `cros apply` owns sparse checkouts now.
         self.assertEqual(self.matching(lambda a: "sparse-checkout" in a), [])
+
+        # Debian is upgraded after apply, once the system package has added
+        # the security and updates suites.
+        nix_run = self.index(lambda a: a[:1] == ["nix"] and "run" in a)
+        upgrade = self.index(lambda a: "full-upgrade" in a)
+        autoremove = self.index(lambda a: "autoremove" in a)
+        self.assertLess(nix_run, upgrade)
+        self.assertLess(upgrade, autoremove)
+        self.assertIn(
+            ["sudo", "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "full-upgrade", "-y"],
+            self.argvs(),
+        )
+
+    def test_failed_apply_skips_the_debian_upgrade(self):
+        environment = dict(self.environment)
+        environment["SETUP_TEST_RUN_EXIT"] = "1"
+        result = self.run_setup(environment=environment)
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertEqual(self.matching(lambda a: "full-upgrade" in a), [])
 
     def test_trusted_users_added_and_daemon_restarted_only_when_missing(self):
         result = self.run_setup()
@@ -475,6 +495,94 @@ class Bootstrap(SetupTestCase):
         result = self.run_setup()
         self.assertEqual(result.returncode, 0, self.output(result))
         self.assertEqual(gitconfig.read_text(), "[user]\n\tname = Existing\n")
+
+
+class PipedInstall(SetupTestCase):
+    """`curl … | bash` clones the repository and reruns setup from it."""
+
+    def setUp(self):
+        super().setUp()
+        # A published repository whose setup.bash records how it was run.
+        published = self.root / "published"
+        (published / "chromeos-dev-setup").mkdir(parents=True)
+        (published / "chromeos-dev-setup" / "setup.bash").write_text(
+            '#!/usr/bin/env bash\nprintf "%s\\n" "$0" "$@" > "$SETUP_TEST_AUDIT/rerun"\n'
+        )
+        (published / "README.md").write_text("published\n")
+        self.git("-C", str(published), "init", "--initial-branch=main")
+        self.git("-C", str(published), "add", "--all")
+        self.git("-C", str(published), "commit", "-m", "Published")
+        self.checkout = self.home / "workspaces" / "monorepo-public"
+        self.environment["CROS_SETUP_REPOSITORY"] = published.as_uri()
+        self.environment["CROS_SETUP_CHECKOUT"] = str(self.checkout)
+
+    def run_piped(self, *arguments):
+        text = SETUP.read_text()
+        if not self.has_device:
+            text = text.replace(DEVICE_CHECK, "true")
+        return subprocess.run(
+            ["bash", "-s", "--", *arguments],
+            input=text,
+            cwd=self.root,
+            env=self.environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=60,
+        )
+
+    def rerun(self):
+        return (self.audit / "rerun").read_text().splitlines()
+
+    def test_clones_sparse_and_reruns_from_the_checkout(self):
+        result = self.run_piped("--maintainer")
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertEqual(
+            self.rerun(),
+            [str(self.checkout / "chromeos-dev-setup" / "setup.bash"), "--maintainer"],
+        )
+        self.assertEqual(
+            self.git("-C", str(self.checkout), "config", "--bool", "core.sparseCheckout").stdout.strip(),
+            "true",
+        )
+        self.assertIn(
+            "chromeos-dev-setup",
+            self.git("-C", str(self.checkout), "sparse-checkout", "list").stdout.split(),
+        )
+        # git is already installed, so nothing else ran before the handoff.
+        self.assert_no_privileged_actions()
+
+    def test_existing_checkout_is_reused(self):
+        self.git("clone", self.environment["CROS_SETUP_REPOSITORY"], str(self.checkout))
+        head = self.git("-C", str(self.checkout), "rev-parse", "HEAD").stdout
+        result = self.run_piped()
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertEqual(self.rerun(), [str(self.checkout / "chromeos-dev-setup" / "setup.bash")])
+        self.assertEqual(self.git("-C", str(self.checkout), "rev-parse", "HEAD").stdout, head)
+
+    def test_unrelated_directory_at_the_checkout_path_is_refused(self):
+        self.checkout.mkdir(parents=True)
+        (self.checkout / "notes.txt").write_text("not a checkout\n")
+        result = self.run_piped()
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("is not a monorepo-public checkout", result.stderr)
+        self.assertFalse((self.audit / "rerun").exists())
+
+    def test_guards_run_before_cloning(self):
+        self.environment["SETUP_TEST_UID"] = "0"
+        result = self.run_piped()
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertFalse(self.checkout.exists())
+
+    def test_readme_one_liner_matches_the_defaults(self):
+        readme = (SETUP.parent / "README.md").read_text()
+        text = SETUP.read_text()
+        repository = re.search(r'CROS_SETUP_REPOSITORY:-([^}]+)\}', text).group(1)
+        owner_repo = repository.removeprefix("https://github.com/").removesuffix(".git")
+        url = f"https://raw.githubusercontent.com/{owner_repo}/main/chromeos-dev-setup/setup.bash"
+        self.assertIn(f"curl -fsSL {url} | bash", readme)
+        self.assertIn(f"curl -fsSL {url} | bash", text)
+        self.assertIn("CROS_SETUP_CHECKOUT:-$HOME/workspaces/monorepo-public}", text)
 
 
 class NixInstall(SetupTestCase):

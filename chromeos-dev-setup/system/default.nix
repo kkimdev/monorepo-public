@@ -2,9 +2,9 @@
 # without Nix: the adb udev rule, the disk-backed /tmp policy, and Debian's
 # security and stable-updates sources.
 #
-# The package version embeds a hash of the whole tree (including DEBIAN/
-# scripts and the control template), so any content change makes `cros apply`
-# reinstall it.
+# The package version embeds a hash of this whole directory: the tree
+# (including DEBIAN/ scripts and the control template) and this recipe, which
+# sets file modes and compression. Any change makes `cros apply` reinstall it.
 {
   lib,
   runCommand,
@@ -12,19 +12,19 @@
 }:
 
 let
-  # builtins.path gives the subtree its own store path even when this file is
-  # evaluated as part of a flake, so the hash covers every file below tree/.
-  tree = builtins.path {
-    path = ./tree;
-    name = "cros-dev-system-tree";
+  # builtins.path gives this directory its own store path even when this file
+  # is evaluated as part of a flake, so the hash covers exactly system/.
+  src = builtins.path {
+    path = ./.;
+    name = "cros-dev-system-src";
   };
+  tree = "${src}/tree";
 
-  version = "1+" + builtins.substring 0 12 (builtins.baseNameOf "${tree}");
+  version = "1+" + builtins.substring 0 12 (builtins.baseNameOf "${src}");
 in
 runCommand "cros-dev-system.deb"
   {
     nativeBuildInputs = [ dpkg ];
-    passthru.debVersion = version;
   }
   ''
     set -euo pipefail

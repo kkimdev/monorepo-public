@@ -57,25 +57,15 @@ Open `chrome://os-settings/crostini/details` in Chrome's address bar and set up 
 In an **x86_64 ChromeOS Linux terminal**, paste:
 
 ```bash
-(
-  set -e
-  sudo apt-get update
-  sudo apt-get install -y git curl ca-certificates
-  mkdir -p "$HOME/workspaces"
-  cd "$HOME/workspaces"
-  if [ ! -e monorepo-public ]; then
-    git clone --filter=blob:none --sparse --depth=1 --branch main \
-      https://github.com/kkimdev/monorepo-public.git
-  fi
-  if [ "$(git -C monorepo-public config --bool core.sparseCheckout)" = true ]; then
-    git -C monorepo-public sparse-checkout add chromeos-dev-setup
-  fi
-  git -C monorepo-public ls-files --error-unmatch chromeos-dev-setup/setup.bash >/dev/null
-  bash monorepo-public/chromeos-dev-setup/setup.bash
-)
+sudo apt-get update && sudo apt-get install -y curl
+curl -fsSL https://raw.githubusercontent.com/kkimdev/monorepo-public/main/chromeos-dev-setup/setup.bash | bash
 ```
 
-Reopen the terminal after installation. Keep the checkout at this path, or
+It clones the repository to `~/workspaces/monorepo-public` (shallow and
+sparse), installs Nix and the configuration, and upgrades Debian. Rerunning it
+is safe. Maintainers end the second line with `| bash -s -- --maintainer`.
+
+Open a new terminal after installation. Keep the checkout at this path, or
 rerun `setup.bash` from its new location after moving it.
 
 ```bash

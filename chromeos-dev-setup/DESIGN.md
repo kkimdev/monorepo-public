@@ -20,7 +20,8 @@ with the alternatives that lost.
 
 ```text
 chromeos-dev-setup/
-  setup.bash          bootstrap: prerequisites, Nix, then `cros apply`
+  setup.bash          bootstrap: clone when piped, prerequisites, Nix,
+                      `cros apply`, then a Debian upgrade
   flake.nix           pure flake; inputs include `host` (per-user data)
   flake.lock
   home.nix            Home Manager configuration shared by all users
@@ -52,9 +53,9 @@ a user named `ci`. Every build passes
 refuses a USER/HOME mismatch, so a build that forgets the override cannot be
 activated by accident.
 
-Git identity is not managed at all: users set it in their own `~/.gitconfig`
-(nothing in the setup needs it); Home Manager keeps shared Git settings in
-`~/.config/git/config`.
+Git identity is not managed: users set it in their own `~/.gitconfig`. Only
+`cros bump` needs it (it commits), and it checks before changing anything.
+Home Manager keeps shared Git settings in `~/.config/git/config`.
 
 ## Builds
 
@@ -81,9 +82,10 @@ The flake is evaluated from the checkout itself:
 Root-owned configuration is the local package `cros-dev-system`, built by Nix
 (`packages.x86_64-linux.system-deb`, `dpkg-deb`) and installed with
 `apt-get install --allow-downgrades <deb>` whenever the built version differs
-from the installed one. The version embeds a hash of the package tree.
+from the installed one. The version embeds a hash of `system/` (the package
+tree and the recipe that builds it).
 
-- `Depends`: `uidmap cros-im btrfs-progs curl ca-certificates git xz-utils python3`
+- `Depends`: `uidmap cros-im btrfs-progs e2fsprogs curl ca-certificates git xz-utils python3`
 - `Conflicts`: `vim vim-tiny command-not-found` (removes them)
 - Files live in vendor directories so they are package-owned, not conffiles:
   `/usr/lib/udev/rules.d/51-cros-android.rules`,
@@ -94,7 +96,9 @@ from the installed one. The version embeds a hash of the package tree.
   `/usr/lib/cros-dev-system/debian-sources` writes
   `/etc/apt/sources.list.d/cros-dev-debian.list` with `<codename>-security` and
   `<codename>-updates` (codename from `/etc/os-release`), skipping a suite that
-  another uncommented source already names. `postinst` runs it, and the apt hook
+  another enabled binary source already provides (a one-line `deb` entry, or a
+  deb822 stanza with `Types: deb` that is not `Enabled: no`; `deb-src` entries
+  and comments do not count). `postinst` runs it, and the apt hook
   `/etc/apt/apt.conf.d/50cros-dev-system` (`APT::Update::Pre-Invoke`, never
   fatal) reruns it before every update, so a Debian release upgrade follows
   automatically; apt reads its sources before the hook, so a change applies from
@@ -115,16 +119,27 @@ nothing, and the `00-` tmpfiles name wins over systemd's `tmp.conf`.
 
 Only user-specific or Nix-level steps remain in `setup.bash`: the `render`
 group, installing Nix, and ensuring `trusted-users` includes the user (restart
-`nix-daemon` only when that line changes).
+`nix-daemon` only when that line changes). It also installs `cros-im` up front,
+because `cros apply` records its GTK paths before installing the system
+package, and after `cros apply` it upgrades Debian once (`update`,
+`full-upgrade`, `autoremove`), when the security and updates suites are in
+place.
+
+Piped into bash (`curl … | bash`, the README's install command), it has no
+file of its own: after the user, architecture, and device checks it installs
+git if missing, clones the repository shallow and sparse to
+`~/workspaces/monorepo-public` (or reuses that checkout), and reruns itself
+from there. The body is a `main` function called on the last line, so bash
+has read the whole script before any command can read the piped stdin.
 
 ## The `cros` CLI
 
 | Command | Effect |
 | --- | --- |
 | `cros sync` | Requires a clean `main`; `git pull --ff-only`, `apt-get update/full-upgrade/autoremove`, `determinate-nixd upgrade`, then `apply`. |
-| `cros apply` | Add sparse paths, install the system package if changed, refresh host data, build and activate Home Manager, start inactive desktop services. If the build or activation fails (or is interrupted), the previous host data is restored, so the machine keeps following its previous checkout. |
+| `cros apply` | Add sparse paths, build the system package, refresh host data, build Home Manager, then install the system package if changed, activate Home Manager, and start inactive desktop services (units systemd has not loaded are skipped). A failed build changes nothing on the system; if a build or activation fails (or is interrupted), the previous host data is restored, so the machine keeps following its previous checkout. |
 | `cros check` | Build the system package and the Home Manager configuration without installing or activating anything, then report whether this machine already runs that build (installed package version, active Home Manager generation). |
-| `cros bump [input…]` | Maintainer: requires a clean `main`; `git pull --ff-only` (so the commit can be published), `nix flake update [input…]`, `apply`, print input and package-version changes and workaround status, commit only `flake.lock`. Does not push. |
+| `cros bump [input…]` | Maintainer: requires a clean `main` and a Git identity; `git pull --ff-only` (so the commit can be published), `nix flake update [input…]`, `apply`, print input and package-version changes and workaround status, commit only `flake.lock`. When inputs are already current but the pull brought commits, it applies them. Does not push. |
 | `cros publish` | Maintainer: requires a clean `main` that is ahead of and descends from `origin/main`; push. |
 | `cros clean` | Delete generations older than 14 days (recent ones stay for rollback), collect garbage, optimise the store. |
 | `cros reset [--hard]` | Start inactive desktop services; `--hard` restarts them (closes GUI apps). |
@@ -183,7 +198,7 @@ A full Home Manager build is out of scope for hosted runners.
 | Login shell | bash execs zsh | `chsh` to the Nix zsh (terminal fails to open if the profile breaks) |
 | Desktop entries | Home Manager links | `rm -rf` + copy (deletes unrelated entries); own manifest |
 | Update flow | `bump` commits, `publish` pushes | push inside `bump` |
-| Debian upgrades | `cros sync` only (manual), with security and updates suites | `unattended-upgrades` (security only, or everything) |
+| Debian upgrades | `setup.bash` once, then `cros sync` (manual), with security and updates suites | `unattended-upgrades` (security only, or everything) |
 | Reminders | in `cros` output only | shell start, prompt, desktop notifications |
 | CI | tests + pure eval + deb build | full build; none |
 | W1 trusted-users | ensured in code | note only |

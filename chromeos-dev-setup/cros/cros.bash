@@ -7,6 +7,8 @@ readonly SETUP_SUBDIR="chromeos-dev-setup"
 readonly REMINDER_DAYS=14
 # `cros clean` keeps generations this recent so a bad update can be rolled back.
 readonly KEEP_GENERATIONS_DAYS=14
+# GTK lives in the x86_64 multiarch directory; i386 GTK may exist beside it.
+readonly MULTIARCH_LIB=/usr/lib/x86_64-linux-gnu
 readonly HM_PROFILE="$HOME/.local/state/nix/profiles/home-manager"
 readonly NIX_FLAGS=(--accept-flake-config)
 # Desktop session units; `cros reset --hard` restarts these, earlyoom keeps running.
@@ -102,17 +104,25 @@ require_clean_main() {
     die "this command requires a clean checkout, including untracked files"
 }
 
+# Replaces $2 with a copy of $1 atomically (temp file in the same directory).
+restore_file() {
+  local tmp
+  tmp="$(mktemp "$(dirname -- "$2")/.cros-restore.XXXXXX")"
+  cp -- "$1" "$tmp"
+  mv -f -- "$tmp" "$2"
+}
+
 # ---------------------------------------------------------------- host data
 
 # Writes host.json atomically. $2 is "keep", "true", or "false" for maintainer.
 write_host_data() {
   local root="$1" maintainer="$2" gtk3 gtk4 tmp
-  gtk3="$(find /usr/lib -type f -path '*/gtk-3.0/*/immodules.cache' -print -quit 2>/dev/null || true)"
-  gtk4="$(find /usr/lib -type d -path '*/gtk-4.0' -print -quit 2>/dev/null || true)"
+  gtk3="$(find "$MULTIARCH_LIB" -type f -path '*/gtk-3.0/*/immodules.cache' -print -quit 2>/dev/null || true)"
+  gtk4="$(find "$MULTIARCH_LIB" -maxdepth 1 -type d -name gtk-4.0 -print -quit 2>/dev/null || true)"
   if [[ -z "$gtk3" ]] || ! grep -q 'im-cros-gtk3\.so' "$gtk3"; then
     die "GTK3's immodules cache is missing or does not list cros-im; reinstall libgtk-3-0 and cros-im"
   fi
-  [[ -n "$gtk4" ]] || die "GTK4's module directory was not found under /usr/lib; reinstall cros-im"
+  [[ -n "$gtk4" ]] || die "GTK4's module directory was not found under $MULTIARCH_LIB; reinstall cros-im"
   if [[ "$maintainer" == keep ]]; then
     maintainer=false
     if [[ -f "$HOST_JSON" ]]; then
@@ -159,8 +169,7 @@ system_package_is_installed() {
 }
 
 install_system_package() {
-  local deb want have
-  deb="$(build_system_package "$1")"
+  local deb="$1" want have
   want="$(dpkg-deb --field "$deb" Version)"
   if system_package_is_installed "$deb"; then
     log "system package $want is current"
@@ -222,14 +231,14 @@ APPLY_DONE=0
 finish_apply() {
   [[ -n "$HOST_BACKUP" ]] || return 0
   if ((!APPLY_DONE)) && ! cmp -s -- "$HOST_BACKUP" "$HOST_JSON"; then
-    cp -- "$HOST_BACKUP" "$HOST_JSON"
+    restore_file "$HOST_BACKUP" "$HOST_JSON"
     log "restored the previous host data; this machine still follows $(recorded_checkout)"
   fi
   rm -f -- "$HOST_BACKUP"
 }
 
 cmd_apply() {
-  local checkout="" maintainer=keep root activation
+  local checkout="" maintainer=keep root deb backup activation
   while (($#)); do
     case "$1" in
       --checkout)
@@ -246,17 +255,21 @@ cmd_apply() {
   done
   root="$(resolve_checkout "$checkout")"
   ensure_sparse_paths "$root"
-  install_system_package "$root"
+  # Build everything before changing the system: a failed build leaves both the
+  # system package and the recorded checkout as they were.
+  deb="$(build_system_package "$root")"
   if [[ -f "$HOST_JSON" ]]; then
-    HOST_BACKUP="$(mktemp)"
+    backup="$(mktemp)"
+    cp -- "$HOST_JSON" "$backup"
+    HOST_BACKUP="$backup"
     trap finish_apply EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
-    cp -- "$HOST_JSON" "$HOST_BACKUP"
   fi
   write_host_data "$root" "$maintainer"
-  activation="$(build_home "$root")" || die "the Home Manager build failed; nothing was activated"
+  activation="$(build_home "$root")" || die "the Home Manager build failed; nothing was installed or activated"
   [[ -x "$activation/activate" ]] || die "no activation script in $activation"
+  install_system_package "$deb"
   HOME_MANAGER_BACKUP_EXT=backup "$activation/activate" ||
     die "Home Manager activation failed; inspect its output, or run the previous generation's activate"
   APPLY_DONE=1
@@ -344,33 +357,43 @@ BUMP_COMMITTED=0
 finish_bump() {
   [[ -n "$BUMP_PREVIOUS" ]] || return 0
   if ((!BUMP_COMMITTED)) && ! cmp -s -- "$BUMP_PREVIOUS" "$BUMP_LOCK"; then
-    cp -- "$BUMP_PREVIOUS" "$BUMP_LOCK"
+    restore_file "$BUMP_PREVIOUS" "$BUMP_LOCK"
     log "restored the previous flake.lock; run 'cros apply' if the new one was activated"
   fi
   rm -f -- "$BUMP_PREVIOUS"
 }
 
 cmd_bump() {
-  local root lock previous before after inputs packages workarounds message
+  local root head lock previous before after inputs packages workarounds message
   root="$(resolve_checkout "")"
   require_clean_main "$root"
+  # The commit comes last; fail now rather than after the update and apply.
+  git -C "$root" var GIT_COMMITTER_IDENT >/dev/null 2>&1 ||
+    die "cros bump commits flake.lock; set your Git identity first: git config --global user.name/user.email"
+  head="$(git -C "$root" rev-parse HEAD)"
   # Start from the published lock; otherwise `publish` cannot fast-forward.
   git -C "$root" pull --ff-only origin main ||
     die "main cannot fast-forward to origin/main; reconcile them, then run 'cros bump' again"
   lock="$root/$SETUP_SUBDIR/flake.lock"
   previous="$(mktemp)"
+  cp -- "$lock" "$previous"
   BUMP_LOCK="$lock"
   BUMP_PREVIOUS="$previous"
   trap finish_bump EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  cp -- "$lock" "$previous"
   before="$(readlink -f "$HM_PROFILE" 2>/dev/null || true)"
 
   nix flake update "${NIX_FLAGS[@]}" "$@" --flake "$(flake_dir "$root")"
   if cmp -s -- "$previous" "$lock"; then
     log "flake inputs are already current"
-    print_reminders "$root"
+    if [[ "$(git -C "$root" rev-parse HEAD)" != "$head" ]]; then
+      log "applying the commits pulled from origin/main"
+      nix run "${NIX_FLAGS[@]}" "$(flake_dir "$root")#cros" -- apply ||
+        die "apply failed with the pulled commits"
+    else
+      print_reminders "$root"
+    fi
     return 0
   fi
   CROS_NO_REMINDERS=1 nix run "${NIX_FLAGS[@]}" "$(flake_dir "$root")#cros" -- apply ||
@@ -422,21 +445,36 @@ cmd_reset() {
     --hard) hard=1 ;;
     *) die "unknown reset option: $1" ;;
   esac
+  local runtime="${XDG_RUNTIME_DIR:-/run/user/$UID}" units
   if ((hard)); then
     log "restarting desktop services; running GUI apps will close"
-    systemctl --user stop "${SESSION_UNITS[@]}"
-    rm -f "/run/user/$UID/wayland-1.lock" "/run/user/$UID/wayland-2.lock" \
-      "/run/user/$UID/wayland-1" "/run/user/$UID/wayland-2"
+    mapfile -t units < <(loaded_units "${SESSION_UNITS[@]}")
+    ((${#units[@]} == 0)) || systemctl --user stop "${units[@]}"
+    rm -f "$runtime/wayland-1.lock" "$runtime/wayland-2.lock" "$runtime/wayland-1" "$runtime/wayland-2"
   fi
   start_desktop_services
 }
 
+# Prints the given units that systemd has loaded. A unit that does not exist
+# (for example one a local.nix turned off) would make systemctl fail.
+loaded_units() {
+  local unit
+  for unit in "$@"; do
+    if [[ "$(systemctl --user show --property=LoadState --value "$unit" 2>/dev/null || true)" == loaded ]]; then
+      printf '%s\n' "$unit"
+    fi
+  done
+}
+
 # Starting an inactive unit never disturbs running apps.
 start_desktop_services() {
+  local units
   log "starting inactive desktop services"
   systemctl --user daemon-reload
-  systemctl --user reset-failed earlyoom.service "${SESSION_UNITS[@]}"
-  systemctl --user start earlyoom.service "${SESSION_UNITS[@]}"
+  mapfile -t units < <(loaded_units earlyoom.service "${SESSION_UNITS[@]}")
+  ((${#units[@]} > 0)) || return 0
+  systemctl --user reset-failed "${units[@]}"
+  systemctl --user start "${units[@]}"
 }
 
 main() {

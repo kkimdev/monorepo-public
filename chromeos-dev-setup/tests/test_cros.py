@@ -102,8 +102,8 @@ if name == "sudo":
 if name == "git":
     os.execv(variable("CROS_TEST_REAL_GIT"), ["git", *args])
 
-if name == "find" and args[:1] == ["/usr/lib"]:
-    # write_host_data searches /usr/lib; point it at the fixtures instead.
+if name == "find" and args[:1] == ["/usr/lib/x86_64-linux-gnu"]:
+    # write_host_data searches the x86_64 GTK directory; use the fixtures.
     if any("immodules.cache" in arg for arg in args):
         if variable("CROS_TEST_GTK3"):
             print(variable("CROS_TEST_GTK3"))
@@ -171,6 +171,12 @@ if name == "determinate-nixd":
 
 if name == "gh":
     print("OPEN")
+    sys.exit(0)
+
+if name == "systemctl" and "show" in args:
+    # loaded_units asks for LoadState; CROS_TEST_MISSING_UNITS are not loaded.
+    missing = variable("CROS_TEST_MISSING_UNITS", "").split()
+    print("not-found" if args[-1] in missing else "loaded")
     sys.exit(0)
 
 if name in {"systemctl", "apt-get"}:
@@ -299,6 +305,8 @@ class CrosTestCase(unittest.TestCase):
             "CROS_TEST_REAL_GIT": REAL_GIT,
             "CROS_TEST_REAL_FIND": shutil.which("find"),
             "CROS_TEST_REAL_RM": shutil.which("rm"),
+            # `cros reset --hard` deletes Wayland sockets here, never the real ones.
+            "XDG_RUNTIME_DIR": str(self.audit / "run"),
         })
         (self.root / "tmp").mkdir()
         self.environment.pop("BASH_ENV", None)
@@ -506,14 +514,17 @@ class Apply(CrosTestCase):
             lambda a: a[:2] == ["nix", "build"] and "#homeConfigurations" in a[-1]
         )
         activate = self.index(lambda a: a[0] == "activate")
-        self.assertLess(system_build, install)
-        self.assertLess(install, home_build)
-        self.assertLess(home_build, activate)
+        # Both builds succeed before anything is installed or activated.
+        self.assertLess(system_build, home_build)
+        self.assertLess(home_build, install)
+        self.assertLess(install, activate)
 
         system_call = self.calls()[system_build]
         self.assertIs(system_call["host_json_exists"], False)
-        install_call = self.calls()[install]
-        self.assertIs(install_call["host_json_exists"], False)
+        # GTK is looked up only in the x86_64 directory, never i386.
+        finds = [argv for argv in self.argvs() if argv[0] == "find"]
+        self.assertTrue(finds)
+        self.assertTrue(all(argv[1] == "/usr/lib/x86_64-linux-gnu" for argv in finds))
         home_call = self.calls()[home_build]
         self.assertIsNotNone(home_call["host_json"])
         self.assertEqual(home_call["host_json"]["checkout"], str(self.repo))
@@ -641,7 +652,7 @@ class Apply(CrosTestCase):
     def test_desktop_services_are_started_without_stopping_them(self):
         result = self.apply("--checkout", str(self.repo))
         self.assertEqual(result.returncode, 0, self.output(result))
-        systemctl = [argv for argv in self.argvs() if argv[0] == "systemctl"]
+        systemctl = [argv for argv in self.argvs() if argv[0] == "systemctl" and "show" not in argv]
         self.assertEqual(systemctl, [
             ["systemctl", "--user", "daemon-reload"],
             ["systemctl", "--user", "reset-failed", "earlyoom.service", *SESSION_UNITS],
@@ -661,6 +672,9 @@ class Apply(CrosTestCase):
                 self.assertEqual(result.returncode, 1, self.output(result))
                 self.assertIn(f"this machine still follows {self.repo}", result.stderr)
                 self.assertEqual((self.host_dir / "host.json").read_bytes(), before)
+                if variable == "CROS_TEST_HOME_BUILD_EXIT":
+                    # Nothing is installed when a build fails.
+                    self.assertEqual(self.matching(lambda a: a[0] == "apt-get"), [])
                 self.assertEqual(list(self.host_dir.iterdir()), [self.host_dir / "host.json"])
 
     def test_successful_apply_follows_the_new_checkout(self):
@@ -672,6 +686,15 @@ class Apply(CrosTestCase):
         self.assertNotIn("restored", result.stderr)
         host = json.loads((self.host_dir / "host.json").read_text())
         self.assertEqual(host["checkout"], str(worktree))
+
+    def test_units_that_are_not_loaded_are_skipped(self):
+        environment = dict(self.environment)
+        environment["CROS_TEST_MISSING_UNITS"] = "atuin-daemon.service sommelier-x@1.service"
+        result = self.apply("--checkout", str(self.repo), environment=environment)
+        self.assertEqual(result.returncode, 0, self.output(result))
+        present = [u for u in SESSION_UNITS if u not in ("atuin-daemon.service", "sommelier-x@1.service")]
+        systemctl = [argv for argv in self.argvs() if argv[0] == "systemctl" and "show" not in argv]
+        self.assertEqual(systemctl[-1], ["systemctl", "--user", "start", "earlyoom.service", *present])
 
     def test_unknown_apply_option_is_refused(self):
         result = self.apply("--frobnicate")
@@ -886,6 +909,29 @@ class Bump(CrosTestCase):
             self.git("-C", str(self.repo), "rev-parse", "HEAD~1").stdout.strip(), published
         )
 
+    def test_missing_git_identity_is_refused_before_anything_changes(self):
+        strict = self.root / "gitconfig-strict"
+        strict.write_text("[user]\n\tuseConfigOnly = true\n")
+        environment = dict(self.environment)
+        for key in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME",
+                    "GIT_COMMITTER_EMAIL", "EMAIL"):
+            environment.pop(key, None)
+        environment["GIT_CONFIG_GLOBAL"] = str(strict)
+        result = self.run_cros("bump", environment=environment)
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("set your Git identity first", result.stderr)
+        self.assertFalse(any("pull" in argv for argv in self.argvs()))
+        self.assertEqual(self.matching(lambda a: a[:2] == ["nix", "flake"]), [])
+
+    def test_pulled_commits_are_applied_when_inputs_are_current(self):
+        self.push_from_another_clone("other clone", "elsewhere.txt", "published\n")
+        environment = dict(self.environment)
+        environment["CROS_TEST_UPDATE_CHANGE"] = "0"
+        result = self.run_cros("bump", environment=environment)
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertIn("applying the commits pulled from origin/main", result.stderr)
+        self.assertEqual(len(self.matching(lambda a: a[:2] == ["nix", "run"])), 1)
+
     def test_diverged_main_is_refused_before_the_update(self):
         self.push_from_another_clone("other clone", "elsewhere.txt", "published\n")
         (self.repo / "local.txt").write_text("unpublished\n")
@@ -1070,7 +1116,7 @@ class Reset(CrosTestCase):
         result = self.run_cros("reset")
         self.assertEqual(result.returncode, 0, self.output(result))
         self.assertEqual(
-            [argv for argv in self.argvs() if argv[0] == "systemctl"],
+            [argv for argv in self.argvs() if argv[0] == "systemctl" and "show" not in argv],
             [
                 ["systemctl", "--user", "daemon-reload"],
                 ["systemctl", "--user", "reset-failed", "earlyoom.service", *SESSION_UNITS],
@@ -1082,7 +1128,7 @@ class Reset(CrosTestCase):
     def test_reset_hard_stops_restarts_and_removes_wayland_sockets(self):
         result = self.run_cros("reset", "--hard")
         self.assertEqual(result.returncode, 0, self.output(result))
-        systemctl = [argv for argv in self.argvs() if argv[0] == "systemctl"]
+        systemctl = [argv for argv in self.argvs() if argv[0] == "systemctl" and "show" not in argv]
         self.assertEqual(systemctl, [
             ["systemctl", "--user", "stop", *SESSION_UNITS],
             ["systemctl", "--user", "daemon-reload"],
@@ -1094,7 +1140,7 @@ class Reset(CrosTestCase):
         self.assertEqual(removals[0][1], "-f")
         self.assertEqual(len(removals[0]) - 2, 4)
         for path in removals[0][2:]:
-            self.assertTrue(path.startswith("/run/user/"))
+            self.assertTrue(path.startswith(str(self.audit / "run") + "/"))
             self.assertIn("wayland-", path)
 
     def test_unknown_reset_option_is_refused(self):

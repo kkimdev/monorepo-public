@@ -144,6 +144,17 @@ class PackageBuildTest(unittest.TestCase):
                 deb_field(build_deb(copy), "Version"),
             )
 
+    def test_changing_the_recipe_changes_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            copy = Path(tmp) / "system"
+            shutil.copytree(SYSTEM, copy)
+            recipe = copy / "default.nix"
+            recipe.write_text(recipe.read_text() + "\n# version-change probe\n")
+            self.assertNotEqual(
+                deb_field(self.deb, "Version"),
+                deb_field(build_deb(copy), "Version"),
+            )
+
     def test_maintainer_scripts_are_valid_posix_sh(self):
         for script in (
             SYSTEM / "tree/DEBIAN/postinst",
@@ -377,6 +388,18 @@ class PackageContainerTest(unittest.TestCase):
         self.assertIn("forky-security", self.sources_file(container))
         self.assertNotIn("trixie", self.sources_file(container))
 
+        # deb-src entries and disabled deb822 stanzas do not provide a suite.
+        self.exec_in(
+            container,
+            "echo 'deb-src https://deb.debian.org/debian-security forky-security main'"
+            " >> /etc/apt/sources.list && "
+            "printf 'Types: deb\\nURIs: https://deb.debian.org/debian\\nSuites: forky-updates\\n"
+            "Components: main\\nEnabled: no\\n' > /etc/apt/sources.list.d/off.sources && "
+            "sh /usr/lib/cros-dev-system/debian-sources",
+        )
+        self.assertIn("forky-security main", self.sources_file(container))
+        self.assertIn("forky-updates main", self.sources_file(container))
+
         # A suite another file provides (even after a comment) is not repeated.
         self.exec_in(
             container,
@@ -388,6 +411,13 @@ class PackageContainerTest(unittest.TestCase):
             "# Managed by cros-dev-system; rewritten before every apt update.\n"
             "deb https://deb.debian.org/debian forky-updates main\n",
         )
+        # An enabled deb822 stanza provides its suites; nothing is left to add.
+        self.exec_in(
+            container,
+            "sed -i 's/^Enabled: no$/Enabled: yes/' /etc/apt/sources.list.d/off.sources && "
+            "sh /usr/lib/cros-dev-system/debian-sources",
+        )
+        self.assertIsNone(self.sources_file(container))
 
         self.exec_in(container, "apt-get remove -y cros-dev-system")
         self.assertIsNone(self.sources_file(container))
