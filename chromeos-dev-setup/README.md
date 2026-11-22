@@ -5,7 +5,8 @@ Start with ChromeOS Flex for better hardware compatibility and a smoother experi
 - **[ChromeOS Flex](https://support.google.com/chromeosflex/answer/11541904):** Google's official ChromeOS variant for PCs and Macs.
 - **[Brunch Framework](https://github.com/sebanc/brunch):** Community framework for running ChromeOS on PCs with Android app support.
 
-### Brunch Framework settings
+<details>
+<summary><strong>Brunch Framework settings</strong></summary>
 
 ![Brunch Framework only](brunch-framework-only.svg)
 
@@ -22,12 +23,19 @@ Start with ChromeOS Flex for better hardware compatibility and a smoother experi
 - Kernel Options: `acpi_power_button` to make power button power menu work.
 - Kernel Commandline Parameters: `enforce_hyperthreading=1 initcall_blacklist=ucsi_acpi_platform_driver_init modprobe.blacklist=ucsi_acpi` to fix sleep mode.
 
+</details>
+
 ## Terminal App Settings
 
 Open `chrome-untrusted://terminal/html/terminal_settings.html` in Chrome's address bar.
 
+<details>
+<summary>Screenshots</summary>
+
 ![Terminal App Keyboard & mouse tab](Terminal%20App%20Keyboard%20&%20mouse%20tab.png)
 ![Terminal App behavior tab](Terminal%20App%20behavior%20tab.png)
+
+</details>
 
 ## Terminal App Nerd Font
 
@@ -89,7 +97,8 @@ Per-user files live in `~/.config/cros/host/`: `host.json` is written by
 `cros apply`; an optional `local.nix` Home Manager module adds personal
 packages or settings without touching the repository.
 
-### Maintainers
+<details>
+<summary><strong>Maintainers</strong>: refresh dependencies for everyone</summary>
 
 Install with `bash chromeos-dev-setup/setup.bash --maintainer` (once) to enable
 update reminders. Then, periodically:
@@ -104,7 +113,10 @@ cros publish         # Push the tested commits to main for everyone
 workarounds listed in `workarounds.json`. See [DESIGN.md](DESIGN.md) for how
 the setup is structured.
 
-### Optional local services
+</details>
+
+<details>
+<summary><strong>Optional local services</strong></summary>
 
 No configuration is needed for installation. The supervisor stays inactive
 without `~/.config/local-services/process-compose.yaml`.
@@ -113,6 +125,8 @@ For personal background services, create that file and run:
 ```bash
 systemctl --user start local-services.service
 ```
+
+</details>
 
 ## SSH Key Generation & Github Registration
 ```bash
@@ -131,6 +145,9 @@ cat ~/.ssh/id_ed25519.pub
 
 Requires root access to ChromeOS, e.g. Brunch Framework.
 
+<details>
+<summary>Steps</summary>
+
 Open Crosh (`Ctrl+Alt+T`), run `shell --isolated`, then:
 
 ```bash
@@ -139,6 +156,8 @@ echo "86400000" | sudo tee /usr/share/power_manager/keyboard_backlight_keep_on_m
 
 sudo restart powerd
 ```
+
+</details>
 
 ## Enable GPU Acceleration
 
@@ -151,6 +170,11 @@ Reference: https://www.reddit.com/r/chromeos/comments/1u0niv3/crostini_linux_on_
 ## Troubleshooting
 
 ### GitHub API rate limit during `cros bump`
+
+**Symptom:** `cros bump` fails with HTTP 403 from GitHub.
+
+<details>
+<summary>Fix</summary>
 
 Nix resolves `github:` inputs through GitHub's API, which allows 60 anonymous
 requests per hour; one full `cros bump` uses about 15. If it fails with HTTP
@@ -166,6 +190,8 @@ The Home Manager-managed `~/.config/nix/nix.conf` includes that file when it
 exists. For a single run, `NIX_CONFIG="access-tokens = github.com=<token>" cros bump`
 also works.
 
+</details>
+
 ### Internal Microphone Not Working in Chrome
 
 Requires root access to ChromeOS, e.g. Brunch Framework.
@@ -174,6 +200,9 @@ Requires root access to ChromeOS, e.g. Brunch Framework.
 
 **Symptom:** Selecting the DMIC manually restores the internal mic, but it
 stops working again after disconnecting a Bluetooth microphone.
+
+<details>
+<summary>Fix, verification, and rollback</summary>
 
 **Fix:** Use the installed CRAS UCM profile, which sets `FullySpecifiedUCM "1"`
 and maps `Internal Mic` to the actual DMIC (`hw:sofhdadsp,6`, mixer `Dmic0`).
@@ -237,11 +266,16 @@ disconnect were verified on ThinkBook 16 G6 IRL on 2026-10-09. Reboot
 persistence has not yet been tested. ChromeOS/Brunch updates may replace the
 UCM files; recheck the active profile if the issue returns after an update.
 
+</details>
+
 ### HDMI Audio Output Not Working
 
 Requires root access to ChromeOS, e.g. Brunch Framework.
 
 **Known to affect:** ThinkBook 16 G6 IRL
+
+<details>
+<summary>Fix</summary>
 
 Reference: https://github.com/sebanc/brunch/issues/2273
 
@@ -284,11 +318,16 @@ To debug if it fails after reboot:
 sudo grep "hdmi-audio" /var/log/messages | tail -5
 ```
 
+</details>
+
 ### Touchpad initial touch delay and tap suppression
 
 **Known to affect:** ThinkBook 16 G9 AHP (ChromeOS Flex)
 
 **Symptom:** Delayed initial movement and unreliable taps or tap-dragging.
+
+<details>
+<summary>Fix</summary>
 
 **Fix:** Enable automatic reapplication (preview).
 
@@ -336,6 +375,8 @@ gesture_prop set <id> "Motion Tap Prevent Timeout" array:double:0.0
 ```
 
 Manual changes reset when Chrome restarts; device IDs can change.
+
+</details>
 
 </details>
 
