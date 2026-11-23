@@ -212,6 +212,10 @@ in
       nerd-fonts.jetbrains-mono
       noto-fonts
       google-fonts
+      # Korean fonts google-fonts lacks: Pretendard for UI text, D2Coding
+      # for code. Installed only; fonts.fontconfig sets the defaults.
+      pretendard
+      d2coding
     ];
     sessionVariables = desktopEnvironment // {
       NIXPKGS_ALLOW_UNFREE = "1";
