@@ -143,6 +143,7 @@ has read the whole script before any command can read the piped stdin.
 | `cros sync` | Requires a clean `main`; `git pull --ff-only`, `apt-get update/full-upgrade/autoremove`, `determinate-nixd upgrade`, then `apply`. |
 | `cros apply` | Add sparse paths, build the system package, refresh host data, build Home Manager, then install the system package if changed, activate Home Manager, link that generation's GPU drivers if `/run/opengl-driver` points elsewhere (Home Manager's `non-nixos-gpu-setup`, which needs sudo; Home Manager itself only warns), and start inactive desktop services (units systemd has not loaded are skipped). A failed build changes nothing on the system; if a build or activation fails (or is interrupted), the previous host data is restored, so the machine keeps following its previous checkout. |
 | `cros check` | Build the system package and the Home Manager configuration without installing or activating anything, then report whether this machine already runs that build (installed package version, active Home Manager generation, GPU driver link). |
+| `cros audit` | Report what drifted or got worse without a build: third-party inputs the lock took before the 7-day cooldown, package downgrades between the previous and active generation, and Debian security updates `sync` has not installed yet. Exits 1 when it finds any. Uses only local data. |
 | `cros bump [--no-cooldown] [input…]` | Maintainer: requires a clean `main` and a Git identity; `git pull --ff-only` (so the commit can be published), update the inputs with a 7-day cooldown (below), `apply`, print input and package-version changes and workaround status, commit only `flake.lock`. When inputs are already current but the pull brought commits, it applies them. Does not push. |
 | `cros publish` | Maintainer: requires a clean `main` that is ahead of and descends from `origin/main`; push. |
 | `cros clean` | Delete generations older than 14 days (recent ones stay for rollback), collect garbage, optimise the store. |
@@ -167,6 +168,30 @@ stable updates are conservative and security fixes should not wait.
 the reminder names the command that returns to the primary checkout. On
 maintainer machines on `main`, reminders report unpushed `bump` commits or a
 last lock change older than 14 days.
+
+Audit: `apply` prints reminders only when it runs, so a machine can sit on a
+stale or unsoaked lock without anyone noticing. `audit` reports, from local
+data only:
+
+- Cooldown shortfall: for each third-party GitHub input, the soak between the
+  commit it is locked at and the commit that last changed that revision in
+  `flake.lock`. Under 7 days means the gate did not apply — `keep` and
+  `--no-cooldown` leave no trace in the lock, and bound inputs (llm-agents
+  carries nixpkgs) move newer than their own cooldown. Git history is the
+  only record; a shallow clone falls back to the last lock commit.
+- Downgrades: packages whose version went backwards between the previous and
+  the active Home Manager generation (`nix store diff-closures`, compared
+  with `sort -V`). A downgrade means an upstream revert or a bad pin, which
+  is exactly the shape of the xz incident.
+- Debian: pending upgrades from the security archive, from `apt-get -s` (no
+  root, no network).
+
+`audit` deliberately makes no network calls and does not scan for CVEs.
+Advisory feeds are high volume and map poorly onto Nix store paths (see
+Decisions), so the useful outward signal is a curated one: a human reports a
+problem, and `bump`/`sync` act on it. What `audit` adds is the ability to
+notice that the machine drifted, and to date an incident ("openssl moved to
+3.5.1 on this generation"), before deciding to roll back.
 
 ## Home Manager changes
 
@@ -230,6 +255,10 @@ A full Home Manager build is out of scope for hosted runners.
 | Desktop entries | Home Manager links | `rm -rf` + copy (deletes unrelated entries); own manifest |
 | Update flow | `bump` commits, `publish` pushes | push inside `bump` |
 | Update cooldown | `bump` pins each third-party GitHub input to its newest commit at least 7 days old (never older than the locked one) | skip inputs whose newest commit is too new (daily inputs would never update); none |
+| Drift detection | `audit` reads local data only: lock history (soak at pin time), generations (downgrades), apt (pending security updates) | a weekly CI `nix flake update` (nobody applies or tests the result on this machine, which is the only deployment target); CVE scanners in `audit` (`vulnix`, `grype`, `syft`, `osv-scanner`: CPE/ecosystem mapping does not describe Nix closures, so false positives drown the signal); advisory feeds (hundreds of open nixpkgs security issues, no reliable package mapping) |
+| nixpkgs source | `nixpkgs.follows = "llm-agents/nixpkgs"`: one nixpkgs and numtide's cache | FlakeHub `nixpkgs-weekly` (breaks the `follows` design; soak becomes 0–7 days, averaging 3.5); a separate nixpkgs pin (cache misses for llm-agents) |
+| home-manager source | flake input | `pkgs.home-manager` (CLI only, no module tree, and months behind the input) |
+| nix-index-database source | flake input | nixpkgs (unavailable: it is per-revision index data, not a package); `nix-index --build` locally (hours and large memory) |
 | Debian upgrades | `setup.bash` once, then `cros sync` (manual), with security and updates suites | `unattended-upgrades` (security only, or everything) |
 | Reminders | in `cros` output only | shell start, prompt, desktop notifications |
 | CI | tests + pure eval + deb build | full build; none |

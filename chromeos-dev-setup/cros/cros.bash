@@ -31,6 +31,7 @@ readonly COMMANDS=(
   "sync||Pull main, upgrade Debian and Nix, then apply."
   "apply|[options]|Apply the current checkout (system package + Home Manager)."
   "check||Build without installing; report whether this machine runs it."
+  "audit||Report cooldown shortfalls, downgrades, and pending Debian security fixes."
   "bump|[input...]|Maintainer: pull main, update inputs (cooldown), apply, commit."
   "publish||Maintainer: push bump commits to main, releasing them to all."
   "clean||Delete generations over 14 days old, collect garbage, optimise."
@@ -334,6 +335,132 @@ cmd_check() {
   fi
 }
 
+# ---------------------------------------------------------------- audit
+# Answers "did anything this machine runs get worse without our noticing?".
+# It reads only local data: git history, store paths, and apt's metadata.
+# Outward advisory feeds are deliberately out of scope; see DESIGN.md.
+
+# Prints "<days>.<tenths>" for a duration in seconds; a future date reads 0.
+format_days() {
+  local seconds="$1"
+  ((seconds > 0)) || seconds=0
+  printf '%d.%d' $((seconds / 86400)) $(((seconds % 86400) * 10 / 86400))
+}
+
+# Prints the store path of the Home Manager generation before the active one.
+previous_generation() {
+  local current link previous=""
+  current="$(readlink -f "$HM_PROFILE" 2>/dev/null || true)"
+  [[ -n "$current" ]] || return 0
+  # Each link is created in order, so the one before the active link is the
+  # previous generation even after a rollback.
+  while IFS= read -r link; do
+    if [[ "$(readlink -f "$link")" == "$current" ]]; then
+      [[ -z "$previous" ]] || printf '%s\n' "$previous"
+      return 0
+    fi
+    previous="$(readlink -f "$link")"
+  done < <(find "${HM_PROFILE%/*}" -maxdepth 1 -name "$(basename "$HM_PROFILE")-*-link" | sort -V)
+}
+
+# Prints one line per third-party input the lock took with less than
+# COOLDOWN_DAYS of soak, measured from the commit that last changed its
+# revision. Neither `keep` nor --no-cooldown leaves a trace in flake.lock, so
+# history is the only record of whether the gate actually applied.
+audit_soak() {
+  local root="$1" lock owner name node type repo_owner repo rev pinned changed age
+  lock="$root/$SETUP_SUBDIR/flake.lock"
+  owner="$(repository_owner "$root")"
+  while read -r name node; do
+    IFS=$'\t' read -r type repo_owner repo rev pinned < <(jq -r --arg node "$node" \
+      '.nodes[$node] | [.original.type, .original.owner // "-", .original.repo // "-", .locked.rev // "-", .locked.lastModified // 0] | @tsv' "$lock")
+    [[ "$type" == github && "$repo_owner" != "$owner" && "$rev" != - ]] || continue
+    changed="$(git -C "$root" log -1 --format=%ct -S"$rev" -- "$SETUP_SUBDIR/flake.lock" 2>/dev/null || true)"
+    # A shallow clone may not reach the commit that introduced this revision.
+    [[ -n "$changed" ]] ||
+      changed="$(git -C "$root" log -1 --format=%ct -- "$SETUP_SUBDIR/flake.lock" 2>/dev/null || true)"
+    [[ -n "$changed" ]] || continue
+    age=$((changed - pinned))
+    ((age >= 0)) || age=0
+    ((age < COOLDOWN_DAYS * 86400)) || continue
+    printf -- '- %s: %s days (pinned %s, %s)\n' \
+      "$name" "$(format_days "$age")" "${rev:0:7}" "$(date -u -d "@$pinned" +%F)"
+  done < <(jq -r '.nodes.root.inputs | to_entries[] | select(.value | type == "string") | "\(.key) \(.value)"' "$lock")
+}
+
+# Prints "- name: old -> new" for packages whose version went backwards
+# between two generations. A downgrade means a revert or a bad pin.
+audit_downgrades() {
+  local before="$1" after="$2" line name old new
+  [[ -n "$before" && -n "$after" && "$before" != "$after" ]] || return 0
+  while IFS= read -r line; do
+    [[ "$line" == *" → "* ]] || continue
+    name="${line%%:*}"
+    old="${line#*: }"
+    old="${old%% →*}"
+    new="${line##*→ }"
+    [[ "$old" != "$new" && "$old" != ∅ && "$new" != ∅ ]] || continue
+    [[ "$(printf '%s\n%s\n' "$old" "$new" | sort -V | head -1)" == "$new" ]] || continue
+    printf -- '- %s: %s -> %s\n' "$name" "$old" "$new"
+  done < <(nix store diff-closures "$before" "$after" 2>/dev/null |
+    sed 's/\x1b\[[0-9;]*m//g; s/, [-+]\?[0-9.]*[[:space:]][KMGT]\?i\?B$//')
+}
+
+# Prints pending Debian upgrades that come from the security archive, which
+# `cros sync` would install. Simulating an upgrade needs neither root nor
+# network; the package lists are already on disk.
+audit_debian() {
+  LC_ALL=C apt-get -s full-upgrade 2>/dev/null |
+    sed -n '/^Inst .*[Ss]ecurity/ s/^Inst \([^ ]*\) .*/- \1/p'
+}
+
+cmd_audit() {
+  local root changed generation current previous findings=0
+  local -a soak downgrades security
+  (($# == 0)) || die "audit takes no arguments"
+  root="$(resolve_checkout "")"
+  changed="$(git -C "$root" log -1 --format=%ct -- "$SETUP_SUBDIR/flake.lock" 2>/dev/null || true)"
+  generation="$(stat -c %Y "$HM_PROFILE" 2>/dev/null || true)"
+  if [[ -n "$changed" && -n "$generation" ]]; then
+    log "flake.lock changed $(format_days $(($(date +%s) - changed))) days ago;" \
+      "the Home Manager generation is $(format_days $(($(date +%s) - generation))) days old"
+  elif [[ -n "$changed" ]]; then
+    log "flake.lock changed $(format_days $(($(date +%s) - changed))) days ago"
+  else
+    log "the flake.lock history is unavailable (shallow clone?)"
+  fi
+
+  mapfile -t soak < <(audit_soak "$root")
+  if ((${#soak[@]})); then
+    printf 'Cooldown shortfall (third-party inputs younger than %s days when pinned):\n' "$COOLDOWN_DAYS"
+    printf '%s\n' "${soak[@]}"
+    findings=$((findings + ${#soak[@]}))
+  fi
+
+  current="$(readlink -f "$HM_PROFILE" 2>/dev/null || true)"
+  previous="$(previous_generation)"
+  mapfile -t downgrades < <(audit_downgrades "$previous" "$current")
+  if ((${#downgrades[@]})); then
+    printf 'Downgrades in the running generation:\n'
+    printf '%s\n' "${downgrades[@]}"
+    findings=$((findings + ${#downgrades[@]}))
+  fi
+
+  mapfile -t security < <(audit_debian)
+  if ((${#security[@]})); then
+    printf 'Debian security updates pending (%s):\n' "${#security[@]}"
+    printf '%s\n' "${security[@]}"
+    findings=$((findings + ${#security[@]}))
+  fi
+
+  if ((findings == 0)); then
+    log "no findings"
+    return 0
+  fi
+  log "$findings finding(s); 'cros sync' applies Debian updates, 'cros bump' moves inputs with the cooldown"
+  return 1
+}
+
 cmd_sync() {
   local root
   (($# == 0)) || die "sync takes no arguments"
@@ -387,6 +514,14 @@ print_workarounds() {
   done < <(jq -r '.[] | [.id, .check.type, (.check.repo // "-"), (.check.number // "-" | tostring), .removeWhen] | @tsv' "$file")
 }
 
+# Prints the GitHub owner of the checkout's origin, or nothing when the
+# checkout has no origin or a non-GitHub one.
+repository_owner() {
+  local url
+  url="$(git -C "$1" config --get remote.origin.url 2>/dev/null || true)"
+  sed -n 's#.*github\.com[:/]\([^/]*\)/.*#\1#p' <<<"$url"
+}
+
 # Prints the bump plan for the given root inputs, one line each:
 #   update NAME           update to the newest commit (no cooldown applies)
 #   pin NAME URL DATE     pin to the input's newest commit from before CUTOFF
@@ -398,7 +533,7 @@ plan_cooldown() {
   local root="$1" cutoff="$2" lock owner name node type repo_owner repo ref locked reply sha date
   shift 2
   lock="$root/$SETUP_SUBDIR/flake.lock"
-  owner="$(git -C "$root" config --get remote.origin.url | sed -n 's#.*github\.com[:/]\([^/]*\)/.*#\1#p')"
+  owner="$(repository_owner "$root")"
   for name in "$@"; do
     node="$(jq -r --arg name "$name" '.nodes.root.inputs[$name] // empty | strings' "$lock")"
     [[ -n "$node" ]] || die "no input named $name (an input that follows another moves with it)"

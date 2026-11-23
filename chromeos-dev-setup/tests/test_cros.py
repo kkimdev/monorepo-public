@@ -168,7 +168,7 @@ if name == "nix":
         lock.write_text(json.dumps(data, indent=2) + "\n")
         sys.exit(int(variable("CROS_TEST_UPDATE_EXIT", "0")))
     if subcommand == "store" and args[1:2] == ["diff-closures"]:
-        print("test-package: 1.0 -> 2.0")
+        print(variable("CROS_TEST_DIFF_CLOSURES", "test-package: 1.0 -> 2.0"))
         sys.exit(0)
     if subcommand == "store" and args[1:2] == ["optimise"]:
         sys.exit(0)
@@ -202,6 +202,12 @@ if name == "systemctl" and "show" in args:
     print("not-found" if args[-1] in missing else "loaded")
     sys.exit(0)
 
+if name == "apt-get" and "-s" in args:
+    # `cros audit` simulates an upgrade and counts the security archive.
+    for package in variable("CROS_TEST_APT_SECURITY", "").split():
+        print(f"Inst {package} [1.0] (1.1 Debian-Security:trixie-security [amd64])")
+    sys.exit(0)
+
 if name in {"systemctl", "apt-get"}:
     sys.exit(0)
 
@@ -230,6 +236,12 @@ DEFAULT_LOCK = {
     "root": "root",
     "version": 7,
 }
+
+
+def epoch(text):
+    """Seconds since the epoch for a UTC timestamp such as 2026-03-10T00:00:00Z."""
+    moment = datetime.datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ")
+    return int(moment.replace(tzinfo=datetime.timezone.utc).timestamp())
 
 
 def base_path_directories():
@@ -460,7 +472,7 @@ class Dispatch(CrosTestCase):
         listed = self.run_cros("__commands")
         self.assertEqual(listed.returncode, 0, self.output(listed))
         names = [line.split(":", 1)[0] for line in listed.stdout.splitlines()]
-        self.assertEqual(names, ["sync", "apply", "check", "bump", "publish", "clean", "reset"])
+        self.assertEqual(names, ["sync", "apply", "check", "audit", "bump", "publish", "clean", "reset"])
         self.assertTrue(all(line.split(":", 1)[1] for line in listed.stdout.splitlines()))
         usage = self.run_cros("--help").stdout
         for name in names:
@@ -1339,6 +1351,111 @@ class CheckAndClean(CrosTestCase):
             ["nix-collect-garbage", "--delete-older-than", "14d"],
             ["nix", "store", "optimise"],
         ])
+
+
+class Audit(CrosTestCase):
+    """`cros audit` reads git history, generations, and apt; all local."""
+    CHECKOUT_INITIAL = "2026-02-01T00:00:00Z"
+    LOCK_CHANGED = "2026-03-10T00:00:00Z"
+
+    def setUp(self):
+        super().setUp()
+        self.checkout = self.make_checkout(self.root / "audit checkout",
+                                          commit_date=self.CHECKOUT_INITIAL)
+        self.write_host_json(checkout=str(self.checkout), maintainer=False)
+        self.lock = self.checkout / "chromeos-dev-setup" / "flake.lock"
+
+    def add_input(self, name, owner, repo, soaked_days):
+        """Adds a GitHub input pinned soaked_days before the lock commit."""
+        lock = json.loads(self.lock.read_text())
+        lock["nodes"]["root"]["inputs"][name] = name
+        lock["nodes"][name] = {
+            "original": {"type": "github", "owner": owner, "repo": repo, "ref": "main"},
+            "locked": {
+                "lastModified": epoch(self.LOCK_CHANGED) - soaked_days * 86400,
+                "narHash": "sha256-test",
+                "owner": owner,
+                "repo": repo,
+                "rev": name[0] * 40,
+                "type": "github",
+            },
+        }
+        self.lock.write_text(json.dumps(lock, indent=2) + "\n")
+        self.commit(self.checkout, f"Pin {name}", date=self.LOCK_CHANGED)
+
+    def add_generations(self, before, after):
+        profiles = self.home / ".local/state/nix/profiles"
+        profiles.mkdir(parents=True, exist_ok=True)
+        for number, path in ((1, before), (2, after)):
+            path.mkdir(exist_ok=True)
+            (profiles / f"home-manager-{number}-link").symlink_to(path)
+        (profiles / "home-manager").symlink_to("home-manager-2-link")
+
+    def test_inputs_pinned_with_enough_soak_report_no_findings(self):
+        self.add_input("llm-agents", "numtide", "llm-agents", soaked_days=30)
+        result = self.run_cros("audit")
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertIn("no findings", result.stderr)
+        self.assertNotIn("Cooldown shortfall", self.output(result))
+        # Only local reads: no build, no privilege, no network.
+        self.assertEqual(self.matching(lambda a: a[0] in {"curl", "sudo", "nix"}), [])
+
+    def test_input_pinned_inside_the_cooldown_is_reported(self):
+        self.add_input("llm-agents", "numtide", "llm-agents", soaked_days=2)
+        result = self.run_cros("audit")
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("Cooldown shortfall", result.stdout)
+        self.assertIn("- llm-agents: 2.0 days (pinned lllllll, 2026-03-08)", result.stdout)
+        # The lock's own inputs (nixpkgs, pinned in 2020) are old enough.
+        self.assertNotIn("- nixpkgs:", result.stdout)
+
+    def test_inputs_of_the_repository_owner_and_paths_skip_the_cooldown(self):
+        self.git("-C", str(self.checkout), "remote", "add", "origin",
+                 "https://github.com/kkimdev/monorepo-public.git")
+        self.add_input("sommelier-rs", "kkimdev", "sommelier-rs", soaked_days=0)
+        result = self.run_cros("audit")
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertIn("no findings", result.stderr)
+        self.assertNotIn("sommelier-rs", self.output(result))
+
+    def test_downgrade_in_the_running_generation_is_reported(self):
+        self.add_generations(self.audit / "generation-1", self.audit / "generation-2")
+        environment = dict(self.environment)
+        environment["CROS_TEST_DIFF_CLOSURES"] = "openssl: 3.5.1 → 3.5.0"
+        result = self.run_cros("audit", environment=environment)
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("Downgrades in the running generation", result.stdout)
+        self.assertIn("- openssl: 3.5.1 -> 3.5.0", result.stdout)
+        [diff] = [argv for argv in self.argvs() if argv[:3] == ["nix", "store", "diff-closures"]]
+        self.assertEqual(diff[3:], [str(self.audit / "generation-1"),
+                                    str(self.audit / "generation-2")])
+
+    def test_updates_between_generations_are_not_downgrades(self):
+        self.add_generations(self.audit / "generation-1", self.audit / "generation-2")
+        environment = dict(self.environment)
+        environment["CROS_TEST_DIFF_CLOSURES"] = "python3: 3.14.9 → 3.14.10"
+        result = self.run_cros("audit", environment=environment)
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertIn("no findings", result.stderr)
+
+    def test_pending_debian_security_updates_are_reported(self):
+        environment = dict(self.environment)
+        environment["CROS_TEST_APT_SECURITY"] = "openssl libc6"
+        result = self.run_cros("audit", environment=environment)
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("Debian security updates pending (2)", result.stdout)
+        self.assertIn("- openssl", result.stdout)
+        self.assertIn("- libc6", result.stdout)
+        # A simulation installs nothing.
+        self.assertEqual(self.matching(lambda a: a[0] == "sudo"), [])
+        self.assertIn(["-s", "full-upgrade"],
+                      [argv[1:] for argv in self.argvs() if argv[0] == "apt-get"])
+
+    def test_audit_takes_no_arguments(self):
+        result = self.run_cros("audit", "extra")
+        self.assertEqual(result.returncode, 1, self.output(result))
+        self.assertIn("audit takes no arguments", result.stderr)
+        self.assertEqual(self.argvs(), [])
 
 
 class SparseCheckout(CrosTestCase):

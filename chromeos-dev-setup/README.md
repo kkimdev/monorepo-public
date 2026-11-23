@@ -72,6 +72,7 @@ rerun `setup.bash` from its new location after moving it.
 cros sync          # Pull main, upgrade Debian and Nix, then apply
 cros apply         # Reapply the current checkout; running GUI services stay up
 cros check         # Build without installing; say whether this machine runs it
+cros audit         # Report inputs pinned too recently, downgrades, Debian security updates
 cros reset         # Start inactive desktop services
 cros reset --hard  # Restart desktop services (running GUI apps close)
 cros clean         # Delete generations older than 14 days, collect Nix garbage
@@ -82,6 +83,25 @@ cros clean         # Delete generations older than 14 days, collect Nix garbage
 The setup does not manage your Git identity; set it once with
 `git config --global user.name "…"` and `git config --global user.email "…"`.
 New files must be added to Git (`git add`) before Nix can see them.
+
+`cros audit` is the "is anything wrong without a build telling me?" command. It
+reads only local data, and prints two status lines with `no findings` when all
+is well; it exits 1 when it reports something, so a timer can call it:
+
+```bash
+cros audit
+# Cooldown shortfall (third-party inputs younger than 7 days when pinned):
+# - llm-agents: 0.1 days (pinned 1e9d20f, 2026-11-22)
+# Downgrades in the running generation:
+# - openssl: 3.5.1 -> 3.5.0
+# Debian security updates pending (1):
+# - libc6
+```
+
+It does not consult advisory feeds or scan for CVEs: those map poorly onto Nix
+store paths, so the noise hides the signal. Use it to notice drift and to date
+an incident (`nix store diff-closures` for the generations involved), then act
+with `cros sync`, `cros bump`, or by rolling the Home Manager generation back.
 
 Per-user files live in `~/.config/cros/host/`: `host.json` is written by
 `cros apply`; an optional `local.nix` Home Manager module adds personal
@@ -104,7 +124,9 @@ Third-party inputs move only to commits at least 7 days old (a cooldown that
 gives a compromised release time to be found and pulled first); inputs in this
 repository and the owner's own repositories update immediately.
 `cros bump` prints changed inputs, package versions, and the status of the
-workarounds listed in `workarounds.json`. See [DESIGN.md](DESIGN.md) for how
+workarounds listed in `workarounds.json`. `cros audit` reports inputs that did
+enter the lock younger than the cooldown, so a `--no-cooldown` bump or a
+hand-edited lock does not go unnoticed. See [DESIGN.md](DESIGN.md) for how
 the setup is structured.
 
 </details>
