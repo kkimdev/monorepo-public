@@ -182,11 +182,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1795381691,
-        "narHash": "sha256-KoFIqy3P8KMpF3L3PTsL0LFaG9G7w+hoxl44uSo/228=",
+        "lastModified": 1795403639,
+        "narHash": "sha256-8ufQ7xcSVAooMalhUDRJZRfgNzapE7TFiCG9MEQvmsM=",
         "owner": "kkimdev",
         "repo": "sommelier-rs",
-        "rev": "995a74be89dfce1d571e5dda887ce2c05f8b122e",
+        "rev": "ff38a629edecc0d3bbafef57d888ef8480f1e96e",
         "type": "github"
       },
       "original": {
